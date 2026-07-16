@@ -1,0 +1,22 @@
+tracker_type: bytetrack
+
+# High-confidence detections: used for new track creation and primary matching.
+# Should match INFERENCE_THRESHOLD in .env.
+track_high_thresh: 0.20
+
+# Low-confidence detections: only used to MATCH existing tracks (not create new ones).
+# Allows ByteTrack to bridge brief occlusions (person behind a van, etc.).
+track_low_thresh: 0.08
+
+# Minimum confidence required to start a brand-new track.
+new_track_thresh: 0.20
+
+# Frames a track stays alive with no detection before being deleted.
+# 75 frames ≈ 3.75 s @ 20 fps — long enough to survive walking behind a vehicle.
+track_buffer: 75
+
+# IoU threshold for track-to-detection matching.
+match_thresh: 0.80
+
+# Required by this version of ultralytics — fuse detection score into IoU distance.
+fuse_score: False

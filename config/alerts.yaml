@@ -1,0 +1,21 @@
+# ── Alert channels ────────────────────────────────────────────────────────────
+alerts:
+  # Minimum VLM confidence to fire external alerts (0.0–1.0)
+  min_confidence: 0.60
+
+  # Seconds before the same event type can fire again
+  cooldown_seconds:
+    rodent: 120   # 2 min — rodents pass through fast; still avoid flooding
+
+  home_assistant:
+    enabled: false
+    rodent_webhook_id: rodent_detected
+
+  generic_webhook:
+    enabled: false
+    url: ""
+    headers: {}
+
+  # Save annotated JPEG snapshot for every alert
+  save_snapshot: true
+  snapshot_dir: snapshots

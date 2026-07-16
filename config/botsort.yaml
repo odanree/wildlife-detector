@@ -1,0 +1,32 @@
+tracker_type: botsort
+
+# Match our inference threshold
+track_high_thresh: 0.20
+track_low_thresh: 0.08
+new_track_thresh: 0.20
+
+# Keep lost tracks alive for ~6 s @ 20 fps — PE officer walks ~15 ft between cars.
+# ByteTrack was 75 (3.75 s); bump higher so the track survives the inter-car gap.
+track_buffer: 120
+
+match_thresh: 0.80
+fuse_score: True
+
+# Re-ID using YOLO backbone appearance features — no separate model download.
+# This is the main reason to use BoT-SORT over ByteTrack: appearance similarity
+# helps re-associate the same person after occlusion or a missed detection.
+with_reid: True
+model: auto
+
+# How similar the appearance must be to re-associate a lost track.
+# Lower = more permissive re-association. 0.35 works well for overhead footage
+# where the same person looks slightly different from frame to frame.
+appearance_thresh: 0.35
+
+# Min IoU overlap required before appearance matching is attempted.
+# Set low so Re-ID fires even when the predicted position is far from the
+# actual position (e.g. officer walked to the next car while track was lost).
+proximity_thresh: 0.10
+
+# Static camera — global motion compensation adds no value and wastes CPU.
+gmc_method: none

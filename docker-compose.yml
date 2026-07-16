@@ -1,0 +1,12 @@
+services:
+  detector:
+    build: .
+    container_name: wildlife-detector
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+      - ./snapshots:/app/snapshots
+      - ./data:/app/data
+    network_mode: host   # simplest way to reach the LAN NVR / RTSP feed
