@@ -61,6 +61,7 @@ class ObjectDetector:
         tracker_config: str = "config/bytetrack.yaml",
         fp_grid_cell_px: int = 48,
         fp_suppress_seconds: float = 10.0,
+        yolo_imgsz: int = 640,   # YOLO's internal inference size — drop to 480 for ~40% CPU speedup at some recall cost
     ) -> None:
         self._model = YOLO(model_path)
         self._model_path = model_path
@@ -79,6 +80,7 @@ class ObjectDetector:
         self._max_area = max_area_fraction
         self._stationary_px = stationary_px
         self._stationary_frames = stationary_frames
+        self._yolo_imgsz = yolo_imgsz
 
         # track_id -> deque of recent centers
         self._position_history: dict[int, list[tuple[int, int]]] = {}
@@ -114,6 +116,7 @@ class ObjectDetector:
             tracker=self._tracker_config,
             classes=self._class_ids(),
             verbose=False,
+            imgsz=self._yolo_imgsz,
         )
 
         detections: list[Detection] = []

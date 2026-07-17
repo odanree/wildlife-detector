@@ -94,6 +94,14 @@ class Notifier:
     ) -> Path | None:
         try:
             out = frame.copy()
+            fh, fw = out.shape[:2]
+            # Diagnostic: report the frame shape + bbox at write time so we can
+            # spot resolution/coord mismatches that put boxes 'outside the zone'.
+            logger.info(
+                "snapshot save: frame=%dx%d bbox=%s species=%s conf=%.2f",
+                fw, fh, list(bbox) if bbox else None,
+                result.get("species", "?"), result.get("confidence", 0.0),
+            )
             if bbox is not None:
                 x1, y1, x2, y2 = bbox
                 color = (0, 0, 255)
@@ -101,8 +109,14 @@ class Notifier:
                 label = f"{result.get('species', '?')} {result.get('confidence', 0):.0%}"
                 cv2.putText(out, label, (x1, max(y1 - 6, 14)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            path = self._snapshot_dir / f"{event_type}_{ts}.jpg"
+            now = datetime.now()
+            ts = now.strftime("%Y%m%d_%H%M%S")
+            # Archive by date — snapshots land in snapshots/YYYY-MM-DD/ so the
+            # top-level directory doesn't grow unbounded and the AlertLog
+            # backfill can walk one day at a time.
+            day_dir = self._snapshot_dir / now.strftime("%Y-%m-%d")
+            day_dir.mkdir(parents=True, exist_ok=True)
+            path = day_dir / f"{event_type}_{ts}.jpg"
             cv2.imwrite(str(path), out, [cv2.IMWRITE_JPEG_QUALITY, 85])
             return path
         except Exception:
