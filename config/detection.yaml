@@ -1,54 +1,25 @@
-# Wildlife detection config.
-# Loaded by src/pipeline.py at startup.
-
-detector:
-  fp_grid_cell_px: 32
-  fp_suppress_seconds: 4.0
-  input_height: 720
-  input_width: 1280
-  # Rodents are small — a low min_area_fraction keeps tiny bboxes alive
-  # through YOLO's post-track gate. YOLO is advisory in this pipeline
-  # (COCO has no rat/mouse); motion + VLM classification is load-bearing.
-  max_area_fraction: 0.10
-  min_area_fraction: 0.0002
-  model: yolov8n.pt
-  threshold: 0.35
-
-motion_detector:
-  # Tuned for small movers — lower var_threshold + min_area than a PE feed.
-  edge_margin: 20
-  history: 400
-  max_area: 4000
-  min_area: 80
-  seam_margin: 0
-  seam_x: 0
-  var_threshold: 18
-
-stationary_mask:
-  enabled: true
-  frames: 60
-  pixel_threshold: 8
-
-# Which entry in `zones` below the pipeline uses as the primary zone.
+detector: {fp_grid_cell_px: 32, fp_suppress_seconds: 4.0, input_height: 720, input_width: 1280,
+  max_area_fraction: 0.1, min_area_fraction: 0.0002, model: yolov8n.pt, threshold: 0.35}
+motion_detector: {edge_margin: 20, history: 400, max_area: 4000, min_area: 80, seam_margin: 0,
+  seam_x: 0, var_threshold: 18}
+stationary_mask: {enabled: true, frames: 60, pixel_threshold: 8}
 zone_key: yard_zone
-
+osd_masks:
+- [0.705, 0.0147, 0.989, 0.0654]
+- [0.9375, 0.9134, 0.9825, 0.9608]
 zones:
   yard_zone:
     polygon:
-      - [0, 0]
-      - [1280, 0]
-      - [1280, 720]
-      - [0, 720]
-
-# Zone → secondary-camera preset lookup.
-# Save presets on the secondary Amcrest/Dahua PTZ in the NVR UI, then map
-# primary-FOV polygons to those preset numbers here. First match wins.
-# polygon is a list of [x, y] pairs in PRIMARY-camera detection coords.
+    - [0.6066, 0.0686]
+    - [0.2399, 0.2892]
+    - [0.2123, 0.9902]
+    - [0.9954, 0.9984]
+    - [0.9752, 0.2516]
 slew_presets:
-  - name: default
-    polygon:
-      - [0, 0]
-      - [1280, 0]
-      - [1280, 720]
-      - [0, 720]
-    preset: 1
+- name: default
+  polygon:
+  - [0, 0]
+  - [1280, 0]
+  - [1280, 720]
+  - [0, 720]
+  preset: 1
