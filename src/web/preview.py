@@ -258,6 +258,25 @@ class Stats:
         with self._lock:
             self._detection_size = (w, h)
 
+    def seed_from_state(self, state: "StateDB") -> None:
+        """Called once after StateDB opens — seeds the alerts_total counter
+        and last_alert dict from persisted rows so /status reflects
+        history across restarts, not just this session."""
+        total = state.total_alerts()
+        latest = state.latest_alert()
+        with self._lock:
+            self._alerts = total
+            if latest:
+                self._last_alert = {
+                    "species":     latest.get("species"),
+                    "confidence":  latest.get("confidence"),
+                    "description": latest.get("description"),
+                    "ts":          latest.get("ts"),
+                    "snapshot":    latest.get("snapshot"),
+                }
+        logger.info("Stats seeded from DB: alerts_total=%d, last_alert=%s",
+                    total, "yes" if latest else "no")
+
     def snapshot(self) -> dict:
         with self._lock:
             fps = 0.0
@@ -283,56 +302,65 @@ stats = _stats  # public alias
 # ── Alert log (in-memory ring buffer) ───────────────────────────────────────
 
 class AlertLog:
-    """Fixed-size ring buffer of recent alerts.
+    """Persistent alert history backed by SQLite (see src/storage/state_db.py).
 
-    Not persistent — resets when the process restarts. If you need history
-    across restarts, add SQLite here later. For now the snapshot files on
-    disk are the durable trace.
+    Phase 1 of ADR 002 — this used to be an in-memory ring buffer; now it's a
+    thin façade over StateDB so history survives detector restarts. Existing
+    callers (Stats.record_alert, /api/alerts) get the same public API.
+
+    The ``capacity`` kwarg is retained for backwards compat but no longer
+    applies — SQLite has no ring semantic. Callers that want to cap the
+    returned page use ``.list(limit=N)``.
     """
 
     def __init__(self, capacity: int = 500) -> None:
-        self._lock = threading.Lock()
-        self._buf: collections.deque[dict] = collections.deque(maxlen=capacity)
-        self._seq = 0
+        # No local state — everything lives in StateDB. The instance still
+        # exists as a public API surface for the pipeline.
+        self._capacity = capacity   # unused; kept for compat
+        self._state: "StateDB | None" = None
+
+    def bind_state(self, state: "StateDB") -> None:
+        """Wire this façade to a StateDB. Called by init_alert_log()."""
+        self._state = state
 
     def append(self, species: str, confidence: float, description: str,
                snapshot: str | None = None,
                track_id: int | None = None,
                yolo_conf: float | None = None) -> None:
-        with self._lock:
-            self._seq += 1
-            self._buf.appendleft({
-                "id":          self._seq,
-                "ts":          time.time(),
-                "species":     species,
-                "confidence":  round(float(confidence), 3),
-                "description": description,
-                "snapshot":    snapshot,
-                "track_id":    track_id,
-                "yolo_conf":   round(float(yolo_conf), 3) if yolo_conf is not None else None,
-            })
+        if self._state is None:
+            return   # AlertLog wasn't init'd; no-op like before
+        self._state.append_alert(
+            species=species,
+            confidence=confidence,
+            description=description,
+            snapshot=snapshot,
+            track_id=track_id,
+            yolo_conf=yolo_conf,
+            is_rodent=species in ("rat", "mouse"),
+            historical=False,
+        )
 
-    def list(self, limit: int = 200) -> list[dict]:
-        with self._lock:
-            return list(self._buf)[:limit]
+    def list(self, limit: int = 200, species: str | None = None) -> list[dict]:
+        if self._state is None:
+            return []
+        return self._state.list_alerts(limit=limit, species=species)
+
+    def total(self) -> int:
+        return 0 if self._state is None else self._state.total_alerts()
+
+    def latest(self) -> dict | None:
+        return None if self._state is None else self._state.latest_alert()
 
     def backfill_from_disk(self, snapshot_dir: Path) -> int:
-        """Walk snapshots/ and prepend a placeholder entry for every JPEG.
-
-        The notifier writes files as ``<event_type>_YYYYMMDD_HHMMSS.jpg`` so
-        we can recover the timestamp + event type from the filename. Species,
-        confidence, description, track_id, and yolo_conf were never persisted
-        anywhere durable — they show as null and the UI renders '—' for those.
-
-        Called once at startup so an overnight run's alerts are visible after
-        a detector restart. Newer JPEGs end up at the head of the buffer.
+        """Walk snapshots/ (recursively) and INSERT OR IGNORE each JPEG into
+        alerts as a historical row. Idempotent — running on every startup
+        re-imports any files added while the detector was down without
+        duplicating existing rows (uniqueness enforced on (ts, species, snapshot)).
         """
-        if not snapshot_dir.exists():
+        if self._state is None or not snapshot_dir.exists():
             return 0
         pattern = re.compile(r'^([a-z_]+)_(\d{8})_(\d{6})\.jpg$', re.IGNORECASE)
-        entries: list[tuple[float, str, str]] = []
-        # rglob walks subdirs — new snapshots land in snapshots/YYYY-MM-DD/,
-        # legacy ones may still be at the top level.
+        rows: list[dict] = []
         for f in snapshot_dir.rglob('*.jpg'):
             m = pattern.match(f.name)
             if not m:
@@ -340,47 +368,55 @@ class AlertLog:
             event_type, date, hms = m.groups()
             try:
                 ts = datetime.strptime(f"{date}_{hms}", "%Y%m%d_%H%M%S").timestamp()
-                # Store the relative path (subdir/filename or just filename) so
-                # /snapshots/<relpath> resolves correctly.
                 relpath = str(f.relative_to(snapshot_dir)).replace('\\', '/')
-                entries.append((ts, event_type, relpath))
             except ValueError:
                 continue
-        # Oldest first so appendleft() lands the newest at the head of the buffer.
-        entries.sort(key=lambda e: e[0])
-        with self._lock:
-            for ts, event_type, filename in entries:
-                self._seq += 1
-                self._buf.appendleft({
-                    "id":          self._seq,
-                    "ts":          ts,
-                    "species":     event_type,   # e.g. "rodent" — no species detail available
-                    "confidence":  None,
-                    "description": "(loaded from disk — details not persisted before this restart)",
-                    "snapshot":    filename,
-                    "track_id":    None,
-                    "yolo_conf":   None,
-                    "historical":  True,
-                })
-        logger.info("AlertLog: backfilled %d historical entries from %s",
-                    len(entries), snapshot_dir)
-        return len(entries)
+            rows.append({
+                "ts":          ts,
+                "species":     event_type,     # e.g. "rodent" — no species detail available
+                "confidence":  None,
+                "description": "(loaded from disk — details not persisted before this restart)",
+                "snapshot":    relpath,
+                "track_id":    None,
+                "yolo_conf":   None,
+                "is_rodent":   1 if event_type == "rodent" else 0,
+                "historical":  1,
+            })
+        inserted = self._state.append_alerts_bulk(rows)
+        logger.info("AlertLog: backfill scanned %d JPEGs, %d new rows inserted from %s",
+                    len(rows), inserted, snapshot_dir)
+        return inserted
 
 
-_alerts = AlertLog(capacity=int(500))
+_alerts = AlertLog(capacity=500)
 _snapshot_dir: Path | None = None
+_state_db: "StateDB | None" = None
 
 
-def init_alert_log(snapshot_dir: str, capacity: int = 500) -> None:
-    """Called by the pipeline at startup so /snapshots/<name> knows where to
-    serve from and so the ring buffer gets pre-populated with the historical
-    JPEGs still on disk — that's how overnight alerts show up after a restart.
+def get_state_db() -> "StateDB | None":
+    return _state_db
+
+
+def init_alert_log(snapshot_dir: str, capacity: int = 500,
+                   db_path: str | None = None) -> None:
+    """Open the SQLite state store, backfill historical snapshots, and wire
+    the AlertLog façade to it. Called once at pipeline startup.
+
+    db_path defaults to data/state.db — override via STATE_DB_PATH env for
+    tests or a non-default location.
     """
-    global _alerts, _snapshot_dir
-    _alerts = AlertLog(capacity=capacity)
+    global _alerts, _snapshot_dir, _state_db
+    from src.storage.state_db import StateDB
     _snapshot_dir = Path(snapshot_dir).resolve()
-    logger.info("AlertLog initialized (capacity=%d, snapshots=%s)", capacity, _snapshot_dir)
+    resolved_db_path = db_path or os.getenv("STATE_DB_PATH", "data/state.db")
+    _state_db = StateDB(resolved_db_path)
+    _alerts = AlertLog(capacity=capacity)
+    _alerts.bind_state(_state_db)
+    logger.info("AlertLog initialized (snapshots=%s, db=%s)", _snapshot_dir, resolved_db_path)
     _alerts.backfill_from_disk(_snapshot_dir)
+    # Seed the process-local Stats counter from the DB so /status shows the
+    # true across-restart alert count on the very first poll.
+    _stats.seed_from_state(_state_db)
 
 
 # ── Zone holder (hot-reload from /api/zone) ─────────────────────────────────
@@ -1441,13 +1477,14 @@ def create_app() -> Flask:
             limit = min(500, max(1, int(request.args.get("limit", "200"))))
         except ValueError:
             limit = 200
-        species_filter = (request.args.get("species") or "").lower().strip()
-        items = _alerts.list(limit=500)
-        if species_filter:
-            items = [a for a in items if a.get("species", "").lower() == species_filter]
+        species_filter = (request.args.get("species") or "").lower().strip() or None
+        # Filter + limit push into SQL now that AlertLog is SQLite-backed
+        # (Phase 1 of ADR 002). Total is a COUNT(*), not the local stats
+        # counter — this makes it correct across restarts.
+        items = _alerts.list(limit=limit, species=species_filter)
         return jsonify({
-            "total": _stats.snapshot().get("alerts_total", 0),
-            "items": items[:limit],
+            "total": _alerts.total(),
+            "items": items,
         })
 
     @app.get("/snapshots/<path:filename>")
