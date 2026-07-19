@@ -1,6 +1,6 @@
 # Launch detector + web sidecar in split mode (Phase 2 of ADR 002).
 #
-# Both processes run in the current terminal — Ctrl+C to stop both cleanly.
+# Both processes run in the current terminal -- Ctrl+C to stop both cleanly.
 # For a background service, wrap each in Start-Job or convert to a Windows service.
 #
 # Usage:
@@ -17,6 +17,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Pin CWD to the project root regardless of where the user launched the script.
+# `python -m src.*` requires the project root on sys.path.
+$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+Set-Location $ProjectRoot
+
 # Generate a shared bearer token for this run. Both processes read it from env.
 # For a persistent deployment set INTERNAL_API_TOKEN in .env instead.
 if (-not $env:INTERNAL_API_TOKEN) {
@@ -26,8 +31,8 @@ if (-not $env:INTERNAL_API_TOKEN) {
     Write-Host "Generated ephemeral INTERNAL_API_TOKEN for this run" -ForegroundColor DarkGray
 }
 
-# Kill any stale wildlife-detector / web_service processes from a previous
-# aborted run — closing the terminal doesn't always cascade-kill on Windows.
+# Kill any stale detector / web_service / main processes from a previous
+# aborted run -- closing the terminal doesn't always cascade-kill on Windows.
 Get-WmiObject Win32_Process -Filter "name='python.exe'" |
     Where-Object { $_.CommandLine -match "src\.(detector_service|web_service|main)" } |
     ForEach-Object {
@@ -40,33 +45,43 @@ $detectorArgs = @("-m", "src.detector_service")
 if ($Video) { $detectorArgs += @("--video", $Video) }
 if ($Rtsp)  { $detectorArgs += @("--rtsp", $Rtsp) }
 
-# Start detector as a background job
+# Start detector as a background job.
+# Note: renamed the scriptblock param from $args (PowerShell automatic variable) to $pyArgs.
 Write-Host "Starting detector service..." -ForegroundColor Green
 $detectorJob = Start-Job -Name "detector" -ArgumentList $detectorArgs, $env:INTERNAL_API_TOKEN -ScriptBlock {
-    param($args, $token)
+    param($pyArgs, $token)
     Set-Location $using:PWD
     $env:INTERNAL_API_TOKEN = $token
-    & python $args 2>&1
+    & python $pyArgs 2>&1
 }
 
 # Give detector ~3s to open its internal HTTP before launching the web sidecar
 Start-Sleep -Seconds 3
 
 # Start web sidecar in the foreground so Ctrl+C targets it first
-Write-Host "Starting web sidecar (foreground) — Ctrl+C to stop both..." -ForegroundColor Green
+Write-Host "Starting web sidecar (foreground) -- Ctrl+C to stop both..." -ForegroundColor Green
 try {
     python -m src.web_service
 }
 finally {
-    # When web sidecar exits, stop the detector job too
-    Write-Host "Web sidecar exited — stopping detector..." -ForegroundColor Yellow
-    if ($detectorJob) {
-        Stop-Job -Job $detectorJob -ErrorAction SilentlyContinue
-        Receive-Job -Job $detectorJob -Wait -AutoRemoveJob -ErrorAction SilentlyContinue
-    }
-    # Belt-and-suspenders: kill any stragglers
+    # When web sidecar exits, stop the detector too. Order matters on Windows:
+    # Stop-Job only signals the PS pipeline — it does NOT kill the native
+    # python.exe child of the job's runspace. If we call Receive-Job -Wait
+    # before killing python.exe, the runspace never exits and we hang.
+    # So: kill python.exe FIRST, then reap the job.
+    Write-Host "Web sidecar exited -- stopping detector..." -ForegroundColor Yellow
     Get-WmiObject Win32_Process -Filter "name='python.exe'" |
         Where-Object { $_.CommandLine -match "src\.detector_service" } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        ForEach-Object {
+            Write-Host "  Killing detector pid $($_.ProcessId)" -ForegroundColor DarkGray
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    if ($detectorJob) {
+        # Bounded wait — python is dead so the runspace exits fast; the -Timeout
+        # is just a backstop in case a Stop-Job hook stalls.
+        Stop-Job -Job $detectorJob -ErrorAction SilentlyContinue
+        Wait-Job -Job $detectorJob -Timeout 5 -ErrorAction SilentlyContinue | Out-Null
+        Remove-Job -Job $detectorJob -Force -ErrorAction SilentlyContinue
+    }
     Write-Host "Split-mode shutdown complete." -ForegroundColor DarkGreen
 }

@@ -224,10 +224,40 @@ class Stats:
         self._camera = "unknown"
         self._detection_size = (0, 0)
         self._last_alert: dict | None = None
+        # Gate funnel counters — process-local, reset on restart.
+        # Answers "is the VLM silent because there's no motion, or because the
+        # baseline pre-filter is eating everything?" — read them via /status.
+        self._motion_events = 0        # MOG2 fired at least once this frame
+        self._zone_events = 0          # at least one motion/YOLO det landed in zone
+        self._baseline_filtered = 0    # zone det skipped VLM (pixel-diff below threshold)
+        self._vlm_calls = 0            # VLM invocation submitted
+        self._vlm_rejected = 0         # VLM returned wildlife_detected=False
+        self._vlm_confirmed_session = 0  # VLM confirmed a wildlife event THIS session
+                                        # (distinct from self._alerts which is DB-seeded lifetime total)
 
     def record_frame(self) -> None:
         with self._lock:
             self._frame_ts.append(time.monotonic())
+
+    def record_motion(self, count: int = 1) -> None:
+        with self._lock:
+            self._motion_events += count
+
+    def record_zone_motion(self, count: int = 1) -> None:
+        with self._lock:
+            self._zone_events += count
+
+    def record_baseline_filtered(self) -> None:
+        with self._lock:
+            self._baseline_filtered += 1
+
+    def record_vlm_call(self) -> None:
+        with self._lock:
+            self._vlm_calls += 1
+
+    def record_vlm_rejected(self) -> None:
+        with self._lock:
+            self._vlm_rejected += 1
 
     def record_alert(self, species: str, confidence: float, description: str,
                      snapshot: str | None = None,
@@ -235,6 +265,7 @@ class Stats:
                      yolo_conf: float | None = None) -> None:
         with self._lock:
             self._alerts += 1
+            self._vlm_confirmed_session += 1
             self._last_alert = {
                 "species":     species,
                 "confidence":  round(float(confidence), 3),
@@ -292,6 +323,16 @@ class Stats:
                 "camera":         self._camera,
                 "detection_size": self._detection_size,
                 "last_alert":     self._last_alert,
+                # Gate funnel — reset on restart. Ratios tell you which stage
+                # is doing the filtering work: motion → zone → baseline_pass → vlm → confirmed.
+                "gate_funnel": {
+                    "motion_events":     self._motion_events,
+                    "zone_events":       self._zone_events,
+                    "baseline_filtered": self._baseline_filtered,
+                    "vlm_calls":         self._vlm_calls,
+                    "vlm_rejected":      self._vlm_rejected,
+                    "vlm_confirmed":     self._vlm_confirmed_session,
+                },
             }
 
 

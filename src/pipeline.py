@@ -86,12 +86,20 @@ def _load_yaml(path: str) -> dict:
 
 
 def _crop_wide_bytes(frame: np.ndarray, bbox: tuple[int, int, int, int]) -> bytes:
-    """Close-up crop around the detection — VLM input."""
+    """Close-up crop around the detection — VLM input.
+
+    Padding = max(bbox_dim * MULT, MIN_PAD_PX) per axis. Bumping either dial
+    gives the VLM more scene context — helpful for small bboxes where the
+    model needs surroundings to reason about scale ("is this on the floor or
+    on a wall?"). Env: VLM_CROP_PAD_MULT (default 3), VLM_CROP_MIN_PAD (default 160).
+    """
     h, w = frame.shape[:2]
     x1, y1, x2, y2 = bbox
     bw, bh = max(1, x2 - x1), max(1, y2 - y1)
-    pad_x = max(bw * 2, 80)
-    pad_y = max(bh * 2, 60)
+    pad_mult = float(os.getenv("VLM_CROP_PAD_MULT", "3"))
+    pad_min = int(os.getenv("VLM_CROP_MIN_PAD", "160"))
+    pad_x = max(int(bw * pad_mult), pad_min)
+    pad_y = max(int(bh * pad_mult), pad_min)
     crop = frame[max(0, y1 - pad_y): min(h, y2 + pad_y),
                  max(0, x1 - pad_x): min(w, x2 + pad_x)]
     ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
@@ -256,6 +264,29 @@ def _annotate(
     return out
 
 
+def _save_reject_crop(crop_bytes: bytes, tid: int, bbox: tuple,
+                      bw: int, bh: int, description: str) -> None:
+    """Write the exact JPEG the VLM was shown into snapshots/rejected/<date>/.
+
+    Naming: vlmreject_<HHMMSS>_track<tid>_<W>x<H>.jpg. Description is stashed
+    in a same-name .txt sidecar so you can see what VLM said about the crop.
+    Guarded by SAVE_REJECTED_CROPS=1 — diagnostic mode, disk-hungry over time.
+    """
+    from datetime import datetime
+    from pathlib import Path
+    snap_root = Path(os.getenv("SNAPSHOT_DIR", "snapshots"))
+    now = datetime.now()
+    day = snap_root / "rejected" / now.strftime("%Y-%m-%d")
+    day.mkdir(parents=True, exist_ok=True)
+    stem = f"vlmreject_{now.strftime('%H%M%S')}_track{tid}_{bw}x{bh}"
+    (day / f"{stem}.jpg").write_bytes(crop_bytes)
+    if description:
+        (day / f"{stem}.txt").write_text(
+            f"bbox={bbox}\ndims={bw}x{bh}\nvlm_description={description}\n",
+            encoding="utf-8",
+        )
+
+
 def _overlaps(bbox_a: tuple, bbox_b: tuple, pad: int = 5, min_frac: float = 0.5) -> bool:
     ax1, ay1, ax2, ay2 = bbox_a
     bx1, by1, bx2, by2 = bbox_b
@@ -354,12 +385,9 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     if zone_holder is not None:
         _, _zone_version = zone_holder.snapshot()
 
-    vlm = VLMAnalyzer(
-        backend=os.getenv("VLM_BACKEND", "claude"),
-        claude_model=os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001"),
-        ollama_url=os.getenv("OLLAMA_URL", "http://localhost:11434"),
-        ollama_model=os.getenv("OLLAMA_MODEL", "llava:7b-v1.6-mistral-q4_K_M"),
-    )
+    # Env-driven factory: single-backend or cascade (VLM_BACKEND=cascade).
+    from src.vlm.analyzer import build_vlm_analyzer_from_env
+    vlm = build_vlm_analyzer_from_env()
 
     # Publish stats source metadata for the /status endpoint.
     _preview_stats.set_backend(vlm._backend if hasattr(vlm, "_backend") else "unknown")
@@ -394,12 +422,24 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     _baseline_holder = _preview_init_baseline(os.getenv("BASELINE_PATH", "data/baseline.jpg"))
     # (version, mode) → decoded ndarray. Cache invalidates when either changes.
     _baseline_cache: tuple[tuple, "np.ndarray | None"] = ((-1, ""), None)
-    _baseline_diff_threshold = float(os.getenv("BASELINE_DIFF_THRESHOLD", "0.06"))  # mean grayscale diff / 255
+    # Night IR baseline is stable; a 6% mean-diff crossing motion clearly.
+    # Daytime shadows produce ~0.05-0.10 diffs on a per-second basis; use a
+    # higher threshold when the day baseline is active to keep the VLM budget
+    # sane during shadow-heavy afternoon hours.
+    _baseline_diff_threshold_night = float(os.getenv("BASELINE_DIFF_THRESHOLD", "0.06"))
+    _baseline_diff_threshold_day = float(os.getenv("DAY_BASELINE_DIFF_THRESHOLD", "0.12"))
+    # Filter tiny bboxes at the motion stage — real rats measured 24x22 minimum
+    # in our production data. Anything smaller is bugs, dust, or shadow-edge noise.
+    _min_motion_bbox_px = int(os.getenv("MIN_MOTION_BBOX_PX", "22"))
 
     vlm_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vlm")
-    vlm_jobs: dict[int, tuple[Future, np.ndarray, tuple, float]] = {}
+    # (future, snap_frame, bbox, yolo_conf, crop_bytes_sent_to_vlm)
+    vlm_jobs: dict[int, tuple[Future, np.ndarray, tuple, float, bytes]] = {}
     last_vlm_ts: dict[int, float] = {}
     VLM_INTERVAL_S = float(os.getenv("VLM_INTERVAL_S", "2.0"))
+    _save_rejected_crops = os.getenv("SAVE_REJECTED_CROPS", "0") == "1"
+    if _save_rejected_crops:
+        logger.info("SAVE_REJECTED_CROPS=1 — rejected VLM crops will be dumped to snapshots/rejected/")
 
     # Track IDs that fired a positive alert this frame — drawn red on the preview.
     # Cleared each iteration; brief flash is fine, cooldown suppresses re-fires anyway.
@@ -461,7 +501,17 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 d for d in motion_dets
                 if not any(_overlaps(d.bbox, yb) for yb in yolo_bboxes)
             ]
+            # Enforce minimum bbox size — filters bugs, dust, shadow-edge noise
+            # before any downstream stage does expensive work.
+            if _min_motion_bbox_px > 0:
+                motion_dets = [
+                    d for d in motion_dets
+                    if (d.bbox[2] - d.bbox[0]) >= _min_motion_bbox_px
+                    and (d.bbox[3] - d.bbox[1]) >= _min_motion_bbox_px
+                ]
             all_dets = all_dets + motion_dets
+            if motion_dets:
+                _preview_stats.record_motion(len(motion_dets))
 
             zone_dets = zone_filter.filter(all_dets, zone_key)
             # Reject any bbox whose center falls inside an OSD mask — the
@@ -469,10 +519,12 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             if osd_masks:
                 zone_dets = [d for d in zone_dets if not _in_any_mask(d.center, osd_masks)]
             active_ids = {d.track_id for d in zone_dets}
+            if zone_dets:
+                _preview_stats.record_zone_motion(len(zone_dets))
 
             # ── Harvest completed VLM jobs ──────────────────────────────────
             for tid in list(vlm_jobs.keys()):
-                fut, snap_fr, bbox, yolo_conf = vlm_jobs[tid]
+                fut, snap_fr, bbox, yolo_conf, crop_bytes = vlm_jobs[tid]
                 if not fut.done():
                     continue
                 del vlm_jobs[tid]
@@ -482,11 +534,22 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     logger.exception("VLM job for track=%d raised", tid)
                     continue
 
-                logger.info("DECISION track=%d species=%s rodent=%s conf=%.2f",
+                _bw, _bh = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                logger.info("DECISION track=%d species=%s rodent=%s conf=%.2f bbox=%s (%dx%d)",
                             tid, result.get("species"), result.get("is_rodent"),
-                            result.get("confidence", 0.0))
+                            result.get("confidence", 0.0), bbox, _bw, _bh)
 
                 if not result.get("wildlife_detected", False):
+                    _preview_stats.record_vlm_rejected()
+                    # Diagnostic: dump the crop the VLM actually looked at so
+                    # we can eyeball model-blindness vs bad-crop-framing.
+                    # Enable with SAVE_REJECTED_CROPS=1 in .env.
+                    if _save_rejected_crops and crop_bytes:
+                        try:
+                            _save_reject_crop(crop_bytes, tid, bbox, _bw, _bh,
+                                              result.get("description", ""))
+                        except Exception:
+                            logger.exception("Failed to save rejected crop for track=%d", tid)
                     continue
 
                 # Positive rodent — fire alert + slew secondary camera
@@ -543,17 +606,76 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 if now - last_vlm_ts.get(det.track_id, 0.0) < VLM_INTERVAL_S:
                     continue
 
+                # ── YOLO fast-path — DAYTIME ONLY ────────────────────────────
+                # Two-detector routing by time-of-day:
+                #   - DAY: YOLO on COCO catches cat/dog/bird directly. Skip VLM.
+                #   - NIGHT: rats via VLM eyeshine cascade (COCO has no rodent
+                #     class, so YOLO can't help). Silently drop any YOLO hits at
+                #     night — the MOG2 cascade is the sole nighttime signal.
+                # YOLO track_ids are < 1000 by convention; MOG2 supplements are
+                # >= 1000.
+                if det.track_id < 1000 and not _is_daytime:
+                    # Silently drop nighttime YOLO detections — the cascade owns nights.
+                    last_vlm_ts[det.track_id] = now
+                    continue
+                if det.track_id < 1000:
+                    last_vlm_ts[det.track_id] = now
+                    _yolo_result = {
+                        "wildlife_detected": True,
+                        "species":           det.class_name,
+                        "is_rodent":         False,
+                        "confidence":        float(det.confidence),
+                        "description":       f"YOLO/COCO detection: {det.class_name} conf={det.confidence:.2f}",
+                    }
+                    logger.info("YOLO fast-path: track=%d species=%s conf=%.2f bbox=%s",
+                                det.track_id, det.class_name, det.confidence, det.bbox)
+                    snap_path = notifier.send(det.class_name, _yolo_result, frame,
+                                              det.bbox, yolo_conf=det.confidence)
+                    sh, sw = frame.shape[:2]
+                    maybe_slew(bbox=det.bbox, event_key=(det.class_name, det.track_id),
+                               frame_width=sw, frame_height=sh)
+                    alert_ttl[det.track_id] = ALERT_FLASH_FRAMES
+                    _snap_ref = None
+                    if snap_path:
+                        try:
+                            _snap_ref = str(snap_path.relative_to(snap_path.parent.parent)).replace('\\', '/')
+                        except Exception:
+                            _snap_ref = snap_path.name
+                    _preview_stats.record_alert(
+                        species=det.class_name,
+                        confidence=float(det.confidence),
+                        description=_yolo_result["description"],
+                        snapshot=_snap_ref,
+                        track_id=int(det.track_id),
+                        yolo_conf=float(det.confidence),
+                    )
+                    continue
+
                 # Baseline pixel-diff pre-filter: skip VLM if the pixels inside
                 # this motion bbox barely changed vs the empty reference. Cheap,
                 # kills FPs from lighting jitter / IR grain / static objects.
                 # OSD masks are zeroed in both frames before diff so timestamp
                 # churn doesn't inflate the score.
                 _baseline_np = _baseline_cache[1]
-                if _baseline_np is not None:
+                if _baseline_np is None:
+                    # Load-bearing signal is silent — surface it prominently.
+                    logger.info("baseline pre-filter: BASELINE NOT LOADED — VLM will run on every zone motion. "
+                                "Check data/baseline_{day,night}.jpg and baseline holder init.")
+                else:
                     _score = _diff_score(_baseline_np, frame, det.bbox, osd_masks=osd_masks)
-                    if _score < _baseline_diff_threshold:
-                        logger.debug("baseline pre-filter: track=%d bbox=%s diff=%.3f<%.3f → skip VLM",
-                                     det.track_id, det.bbox, _score, _baseline_diff_threshold)
+                    # Pick threshold based on active baseline mode — shadows during
+                    # daytime need a higher bar than IR-clean nighttime.
+                    _threshold = (
+                        _baseline_diff_threshold_day
+                        if _baseline_cache[0][1] == "day"
+                        else _baseline_diff_threshold_night
+                    )
+                    logger.info("baseline diff: track=%d bbox=%s diff=%.3f threshold=%.3f (%s) → %s",
+                                det.track_id, det.bbox, _score, _threshold,
+                                _baseline_cache[0][1],
+                                "SKIP VLM" if _score < _threshold else "run VLM")
+                    if _score < _threshold:
+                        _preview_stats.record_baseline_filtered()
                         # Still update last_vlm_ts so we don't retry every frame.
                         last_vlm_ts[det.track_id] = now
                         continue
@@ -573,8 +695,19 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 # Pass day/night context so analyzer can apply time-of-day rules
                 # (e.g. daytime rodent skepticism gate).
                 _is_daytime = _baseline_cache[0][1] == "day" if _baseline_cache[1] is not None else None
+                # Optional daytime VLM bypass — rats are nocturnal; skip Claude
+                # cost during the sun-and-shadow hours. Set VLM_SKIP_DAYTIME=1
+                # in .env to enable. Motion + zone still tracked; only VLM stage
+                # gates. Cat/dog/squirrel daytime detection sacrificed.
+                if _is_daytime and os.getenv("VLM_SKIP_DAYTIME", "0") == "1":
+                    logger.debug("VLM_SKIP_DAYTIME active — skipping VLM for track=%d", det.track_id)
+                    last_vlm_ts[det.track_id] = now
+                    continue
                 fut = vlm_pool.submit(vlm.analyze, _vlm_input, _is_daytime)
-                vlm_jobs[det.track_id] = (fut, frame.copy(), det.bbox, det.confidence)
+                # Stash `crop` (the current-frame JPEG bytes actually sent to VLM)
+                # so a rejected verdict can save it for eyeballing.
+                vlm_jobs[det.track_id] = (fut, frame.copy(), det.bbox, det.confidence, crop)
+                _preview_stats.record_vlm_call()
 
             # Evict gone tracks
             for tid in list(last_vlm_ts.keys()):

@@ -54,6 +54,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("web_service")
 
+# Quiet chatty client loggers — httpx logs one INFO line per request, which
+# at 15 fps floods the log (~54K lines/hour) and rolls the 10 MB file every
+# ~20 minutes. Keep werkzeug at INFO so browser-facing access logs stay visible.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 # ── Detector proxy client ───────────────────────────────────────────────────
 
