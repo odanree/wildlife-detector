@@ -78,11 +78,18 @@ class StateDB:
     # ── Schema ──────────────────────────────────────────────────────────────
 
     def _migrate(self) -> None:
-        """Create tables if missing. Additive only — never DROP or ALTER."""
+        """Create tables if missing + additive schema migrations. Never DROPs.
+
+        Migration strategy: introspect existing columns; if a column we need
+        is absent, ALTER TABLE ADD COLUMN. New DBs get the full schema via the
+        CREATE TABLE below. Old DBs (from before multi-camera) get camera_id
+        appended with a 'yard' default so existing 150+ alerts stay attributable.
+        """
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS alerts (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts           REAL    NOT NULL,
+                camera_id    TEXT    NOT NULL DEFAULT 'yard',
                 species      TEXT    NOT NULL,
                 confidence   REAL,
                 description  TEXT,
@@ -103,6 +110,16 @@ class StateDB:
             CREATE UNIQUE INDEX IF NOT EXISTS uniq_alerts_ts_species_snap
                 ON alerts(ts, species, COALESCE(snapshot, ''));
         """)
+        # In-place upgrade for existing DBs — SQLite ALTER TABLE only supports
+        # ADD COLUMN, so old rows get camera_id='yard' via the DEFAULT.
+        cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(alerts)")}
+        if "camera_id" not in cols:
+            self._conn.execute(
+                "ALTER TABLE alerts ADD COLUMN camera_id TEXT NOT NULL DEFAULT 'yard'"
+            )
+            logger.info("StateDB: added camera_id column (defaulted to 'yard' for existing rows)")
+        # Camera-scoped queries need an index once we're multi-camera.
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_camera ON alerts(camera_id)")
 
     # ── Writes (detector-side only) ─────────────────────────────────────────
 
@@ -117,6 +134,7 @@ class StateDB:
         yolo_conf: float | None = None,
         is_rodent: bool = False,
         historical: bool = False,
+        camera_id: str = "yard",
     ) -> int | None:
         """Insert an alert row. Returns the row ID, or None if the unique
         constraint suppressed it (already exists).
@@ -124,11 +142,12 @@ class StateDB:
         with self._write_lock:
             cur = self._conn.execute(
                 """INSERT OR IGNORE INTO alerts
-                   (ts, species, confidence, description, snapshot,
+                   (ts, camera_id, species, confidence, description, snapshot,
                     track_id, yolo_conf, is_rodent, historical)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     ts if ts is not None else time.time(),
+                    camera_id,
                     species,
                     round(confidence, 3) if confidence is not None else None,
                     description,
@@ -143,15 +162,22 @@ class StateDB:
 
     def append_alerts_bulk(self, rows: list[dict]) -> int:
         """Batch insert for backfill. Returns the number of new rows inserted
-        (existing rows are silently skipped by the unique constraint)."""
+        (existing rows are silently skipped by the unique constraint).
+
+        Each row dict must include camera_id; callers can fall back to 'yard'
+        for the historical single-camera path."""
         if not rows:
             return 0
+        # Normalize — pre-camera_id backfills omit the field; default it here
+        # so the SQL bind never fails on missing key.
+        for r in rows:
+            r.setdefault("camera_id", "yard")
         with self._write_lock:
             cur = self._conn.executemany(
                 """INSERT OR IGNORE INTO alerts
-                   (ts, species, confidence, description, snapshot,
+                   (ts, camera_id, species, confidence, description, snapshot,
                     track_id, yolo_conf, is_rodent, historical)
-                   VALUES (:ts, :species, :confidence, :description, :snapshot,
+                   VALUES (:ts, :camera_id, :species, :confidence, :description, :snapshot,
                            :track_id, :yolo_conf, :is_rodent, :historical)""",
                 rows,
             )
@@ -164,9 +190,11 @@ class StateDB:
         limit: int = 200,
         species: str | None = None,
         since_ts: float | None = None,
+        camera_id: str | None = None,
     ) -> list[dict]:
         """Return alerts, newest first. Filters push into SQL, so page size
-        doesn't blow up memory."""
+        doesn't blow up memory. camera_id=None returns rows from ALL cameras
+        (unified view); pass a specific id for per-camera pages."""
         query = "SELECT * FROM alerts"
         clauses: list[str] = []
         params: list = []
@@ -176,6 +204,9 @@ class StateDB:
         if since_ts is not None:
             clauses.append("ts >= ?")
             params.append(since_ts)
+        if camera_id:
+            clauses.append("camera_id = ?")
+            params.append(camera_id)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY ts DESC LIMIT ?"

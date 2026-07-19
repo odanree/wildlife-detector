@@ -7,3 +7,7 @@ PyYAML>=6.0
 python-dotenv>=1.0
 # Optional — only imported when PREVIEW_ENABLED=true or --preview is passed.
 Flask>=3.0
+# Optional — only used by Stats.snapshot() to report the detector process's
+# own CPU/RSS on /status so the UI can chart resource spikes against
+# motion-event bursts. Falls back gracefully if not installed.
+psutil>=5.9
