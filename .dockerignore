@@ -1,0 +1,45 @@
+# Keep the build context tiny — the current repo is >100MB with clips/snapshots.
+
+.git/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# Local data — mounted as volumes at runtime, not baked into image
+logs/
+snapshots/
+data/
+models/
+clips/
+
+# Local dev files
+.env
+.env.local
+*.log
+.playwright-mcp/
+
+# Test artifacts
+tests/
+htmlcov/
+.coverage
+
+# Editor and OS junk
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Docs / diagrams (rebuilding image on doc changes is waste)
+docs/
+*.md
+!README.md
+
+# Screenshots, plans, scratch outputs
+*.png
+!config/*.png
+scratchpad/

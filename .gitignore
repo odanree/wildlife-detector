@@ -13,6 +13,7 @@ venv/
 snapshots/
 logs/
 data/
+clips/
 
 # IDE
 .vscode/
@@ -26,3 +27,4 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+docker-compose.override.yml

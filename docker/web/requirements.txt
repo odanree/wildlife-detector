@@ -1,0 +1,9 @@
+Flask>=3.0
+httpx>=0.27.0
+PyYAML>=6.0
+python-dotenv>=1.0
+# preview.py imports cv2 at module level (shared with detector process),
+# so the sidecar needs opencv-headless even though it never calls encode/decode.
+# ~30 MB. Cleaner long-term: extract HTML+AlertLog into a cv2-free module.
+opencv-python-headless>=4.9.0
+numpy>=1.24

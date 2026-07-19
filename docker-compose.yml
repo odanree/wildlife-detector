@@ -1,12 +1,106 @@
+# wildlife-detector — three-plane architecture from ADR-002 mapped to docker-compose.
+#
+# services:
+#   detector  → RTSP ingest + MOG2/YOLO + cascade VLM; internal HTTP on 8101
+#   web       → Flask UI on 8100; reads state.db + snapshots directly, proxies frames via HTTP
+#
+# Trust boundaries (unchanged from the process-split path):
+#   - Web → detector writes are bearer-token-gated (INTERNAL_API_TOKEN in .env)
+#   - Detector's internal HTTP is loopback-only inside the compose network
+#     (never published to the host)
+#   - Detector reaches Ollama on the host via host.docker.internal:11434
+#
+# Volumes (named, so a `docker compose down` doesn't nuke them):
+#   state       → SQLite state.db + WAL. Single writer (detector), single reader (web).
+#   snapshots   → JPEG alerts written by detector, served by web.
+#   logs        → rotating log files (both services write here).
+#   models      → YOLO auto-downloaded weights, cached across image rebuilds.
+#
+# Bring up:
+#   docker compose up -d --build
+#   docker compose logs -f detector    # or web
+#
+# Bring down without losing state:
+#   docker compose down
+#
+# Bring down and wipe state:
+#   docker compose down -v
+
 services:
   detector:
-    build: .
+    build:
+      context: .
+      dockerfile: docker/detector/Dockerfile
     container_name: wildlife-detector
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      # Override the host addresses that .env can't sensibly express in-container.
+      OLLAMA_URL: http://host.docker.internal:11434
+      DETECTOR_INTERNAL_HOST: 0.0.0.0
+      DETECTOR_INTERNAL_PORT: 8101
+    extra_hosts:
+      # host.docker.internal is auto-mapped on Docker Desktop (Windows/macOS)
+      # but Linux hosts need it declared explicitly. The `host-gateway` sentinel
+      # resolves to the Docker bridge gateway → host.
+      - "host.docker.internal:host-gateway"
     volumes:
-      - ./logs:/app/logs
-      - ./snapshots:/app/snapshots
+      # Bind-mount ./data (rather than named volume) so state.db + baseline
+      # JPEGs written by split-mode are visible to the container.
       - ./data:/app/data
-    network_mode: host   # simplest way to reach the LAN NVR / RTSP feed
+      - ./snapshots:/app/snapshots
+      - ./logs:/app/logs
+      - models:/app/models
+      - ./config:/app/config:ro
+    # Do NOT publish 8101 — internal HTTP is bearer-gated but not intended for LAN.
+    expose:
+      - "8101"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8101/internal/health', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web/Dockerfile
+    container_name: wildlife-web
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DETECTOR_INTERNAL_URL: http://detector:8101
+      PREVIEW_HOST: 0.0.0.0
+      PREVIEW_PORT: 8100
+      STATE_DB_PATH: /app/data/state.db
+      SNAPSHOT_DIR: /app/snapshots
+    volumes:
+      # Web only READS state.db and snapshots — mount read-only where possible.
+      # SQLite WAL requires write access to the WAL/SHM files; leave state RW.
+      - ./data:/app/data
+      - ./snapshots:/app/snapshots:ro
+      - ./logs:/app/logs
+      - ./config:/app/config:ro
+    ports:
+      - "8100:8100"   # user-facing UI
+    depends_on:
+      detector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/status', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  # `state`, `snapshots`, `logs` are now bind-mounts to ./data, ./snapshots,
+  # ./logs on the host — see the service volumes blocks above. This lets the
+  # containerized deployment share state with split-mode (state.db, baseline
+  # JPEGs) so migration is stateless.
+  # `models` stays a named volume — YOLO auto-downloaded weights don't need
+  # host visibility and named volume avoids polluting the repo.
+  models:
