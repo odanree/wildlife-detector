@@ -118,16 +118,78 @@ class DetectorClient:
         return body, r.status_code
 
 
+class DetectorRegistry:
+    """Multi-camera routing: keyed by camera_id, populated from DETECTOR_URLS.
+
+    Each detector's /internal/status carries its own camera_id; on first probe
+    we learn the mapping so URLs like ?camera=rooftop route to the right
+    backend. Falls back to positional camera_id (cam0, cam1, ...) if the
+    detector is unreachable at probe time — the client will keep retrying.
+    """
+
+    def __init__(self, urls: list[str], token: str) -> None:
+        self._token = token
+        self._clients: dict[str, DetectorClient] = {}
+        self._url_by_id: dict[str, str] = {}
+        self._default_id: str | None = None
+        for idx, url in enumerate(urls):
+            client = DetectorClient(url.strip(), token)
+            camera_id = self._probe_camera_id(client) or f"cam{idx}"
+            self._clients[camera_id] = client
+            self._url_by_id[camera_id] = url.strip()
+            if self._default_id is None:
+                self._default_id = camera_id
+            logger.info("DetectorRegistry: registered '%s' → %s", camera_id, url)
+
+    @staticmethod
+    def _probe_camera_id(client: DetectorClient) -> str | None:
+        try:
+            s = client.status()
+            return s.get("camera_id")
+        except Exception:
+            return None
+
+    def resolve(self, camera_id: str | None) -> DetectorClient:
+        """Return client for the given camera; falls back to default (first
+        detector in DETECTOR_URLS) if unknown."""
+        if camera_id and camera_id in self._clients:
+            return self._clients[camera_id]
+        return self._clients[self._default_id]  # type: ignore[index]
+
+    @property
+    def camera_ids(self) -> list[str]:
+        return list(self._clients.keys())
+
+    @property
+    def default(self) -> str:
+        return self._default_id or ""
+
+    def close_all(self) -> None:
+        for c in self._clients.values():
+            c.close()
+
+
 # ── State readers (SQLite + YAML + disk) ────────────────────────────────────
 
 _SNAPSHOT_DIR = Path(os.getenv("SNAPSHOT_DIR", "snapshots")).resolve()
 _DATA_DIR = Path("data")
-_BASELINE_DAY = _DATA_DIR / "baseline_day.jpg"
-_BASELINE_NIGHT = _DATA_DIR / "baseline_night.jpg"
 _DETECTION_CFG = Path("config/detection.yaml")
 
 
-def _read_zone_polygon() -> tuple[list, int]:
+def _baseline_paths(camera_id: str) -> tuple[Path, Path]:
+    """Return (day_path, night_path) for a given camera. Yard uses the legacy
+    'baseline_{day,night}.jpg' names (no camera in the stem) for backwards
+    compat with the pre-multi-camera on-disk layout. Other cameras get
+    'baseline_<camera>_{day,night}.jpg'."""
+    if not camera_id or camera_id == "yard":
+        return _DATA_DIR / "baseline_day.jpg", _DATA_DIR / "baseline_night.jpg"
+    return (
+        _DATA_DIR / f"baseline_{camera_id}_day.jpg",
+        _DATA_DIR / f"baseline_{camera_id}_night.jpg",
+    )
+
+
+def _read_zone_polygon(zone_key: str | None = None) -> tuple[list, int]:
     """Read polygon coords from YAML directly. Returns (polygon, mtime_version).
 
     The mtime is used as a coarse version so we can tell the browser 'poly
@@ -138,8 +200,9 @@ def _read_zone_polygon() -> tuple[list, int]:
         return [], 0
     try:
         cfg = yaml.safe_load(_DETECTION_CFG.read_text(encoding="utf-8")) or {}
-        zone_key = cfg.get("zone_key", "yard_zone")
-        raw = cfg.get("zones", {}).get(zone_key, {}).get("polygon", [])
+        # Priority: explicit zone_key arg > yaml top-level default.
+        key = zone_key or cfg.get("zone_key", "yard_zone")
+        raw = cfg.get("zones", {}).get(key, {}).get("polygon", [])
         version = int(_DETECTION_CFG.stat().st_mtime)
         return raw, version
     except Exception:
@@ -147,12 +210,18 @@ def _read_zone_polygon() -> tuple[list, int]:
         return [], 0
 
 
-def _read_osd_masks() -> tuple[list, int]:
+def _read_osd_masks(camera_id: str = "yard") -> tuple[list, int]:
+    """Read the mask list for one camera. Handles both legacy flat-list form
+    (all masks belonged to yard) and per-camera dict form."""
     if not _DETECTION_CFG.exists():
         return [], 0
     try:
         cfg = yaml.safe_load(_DETECTION_CFG.read_text(encoding="utf-8")) or {}
-        raw = cfg.get("osd_masks", []) or []
+        osd = cfg.get("osd_masks", []) or []
+        if isinstance(osd, dict):
+            raw = osd.get(camera_id, []) or []
+        else:
+            raw = osd if camera_id == "yard" else []
         version = int(_DETECTION_CFG.stat().st_mtime)
         return raw, version
     except Exception:
@@ -185,16 +254,18 @@ def _scale_normalized_masks(raw: list, det_w: int, det_h: int) -> list:
     return out
 
 
-def _baseline_meta() -> dict:
+def _baseline_meta(camera_id: str = "yard") -> dict:
     """Compute baseline metadata from disk (both processes see the same
-    files, so no IPC needed for this read)."""
+    files, so no IPC needed for this read). camera_id picks which pair of
+    JPEGs to inspect — see _baseline_paths()."""
     def _slot(path: Path) -> dict:
         if not path.exists():
             return {"exists": False, "ts": 0, "bytes": 0}
         st = path.stat()
         return {"exists": True, "ts": st.st_mtime, "bytes": st.st_size}
-    day = _slot(_BASELINE_DAY)
-    night = _slot(_BASELINE_NIGHT)
+    day_path, night_path = _baseline_paths(camera_id)
+    day = _slot(day_path)
+    night = _slot(night_path)
     return {
         "exists": day["exists"] or night["exists"],
         "version": int(day["ts"] + night["ts"]),   # coarse but stable
@@ -205,17 +276,23 @@ def _baseline_meta() -> dict:
 
 # ── Flask app ───────────────────────────────────────────────────────────────
 
-def create_app(detector: DetectorClient) -> Flask:
+def create_app(registry: DetectorRegistry) -> Flask:
     """Build the web-sidecar Flask app. Reuses the HTML constants from the
-    existing preview.py so the UI is byte-identical to the all-in-one path."""
-    # Import HTML strings from the existing module — the UI is unchanged.
+    existing preview.py so the UI is byte-identical to the all-in-one path.
+
+    Multi-camera routing: every camera-scoped endpoint accepts ?camera=<id>
+    (default: first camera in DETECTOR_URLS). /status_all returns aggregated
+    status across all registered cameras for the dashboard summary strip.
+    """
     from src.web import preview
-    # Open a read-only StateDB handle for the alerts endpoint. The detector
-    # is the sole writer; we only need SELECTs.
     from src.storage.state_db import StateDB
     _state = StateDB(os.getenv("STATE_DB_PATH", "data/state.db"))
 
     app = Flask(__name__)
+
+    def _pick(req) -> DetectorClient:
+        """Route helper — parse ?camera=<id> and hand back the client."""
+        return registry.resolve(req.args.get("camera"))
 
     # ── Pages ───────────────────────────────────────────────────────────────
 
@@ -227,10 +304,20 @@ def create_app(detector: DetectorClient) -> Flask:
     def alerts_page():
         return Response(preview._ALERTS_HTML, mimetype="text/html")
 
+    # ── Cameras roster (for UI dropdown) ────────────────────────────────────
+
+    @app.get("/api/cameras")
+    def api_cameras():
+        return jsonify({
+            "cameras": registry.camera_ids,
+            "default": registry.default,
+        })
+
     # ── Frames / stream (proxy to detector) ────────────────────────────────
 
     @app.get("/snapshot")
     def snapshot():
+        detector = _pick(request)
         jpeg, status, ver = detector.frame(since=-1, timeout=2.0)
         if not jpeg:
             return Response(b"", status=204)
@@ -239,6 +326,7 @@ def create_app(detector: DetectorClient) -> Flask:
     @app.get("/stream")
     def stream():
         """MJPEG that pulls fresh frames from the detector via long-poll."""
+        detector = _pick(request)
         boundary = b"--frame"
 
         def generate():
@@ -258,10 +346,12 @@ def create_app(detector: DetectorClient) -> Flask:
             mimetype="multipart/x-mixed-replace; boundary=frame",
         )
 
-    # ── Status (proxy to detector) ─────────────────────────────────────────
+    # ── Status (per-camera or aggregated) ──────────────────────────────────
 
     @app.get("/status")
     def status():
+        """Per-camera status. ?camera=<id> switches which detector is queried."""
+        detector = _pick(request)
         try:
             return jsonify(detector.status())
         except Exception:
@@ -281,12 +371,17 @@ def create_app(detector: DetectorClient) -> Flask:
 
     @app.get("/api/alerts")
     def api_alerts():
+        """Unified alerts across all cameras. Filter with ?camera=<id> for
+        per-camera view. Alerts are camera-tagged since the ADR-002 multi-cam
+        migration; older rows default to camera_id='yard'."""
         try:
             limit = min(500, max(1, int(request.args.get("limit", "200"))))
         except ValueError:
             limit = 200
         species_filter = (request.args.get("species") or "").lower().strip() or None
-        items = _state.list_alerts(limit=limit, species=species_filter)
+        camera_filter = (request.args.get("camera") or "").strip() or None
+        items = _state.list_alerts(limit=limit, species=species_filter,
+                                    camera_id=camera_filter)
         return jsonify({
             "total": _state.total_alerts(),
             "items": items,
@@ -301,13 +396,17 @@ def create_app(detector: DetectorClient) -> Flask:
 
     @app.get("/api/zone")
     def get_zone():
-        # Need det_w/det_h from detector's status to scale normalized coords.
+        # Need det_w/det_h + zone_key from detector's status so the right
+        # polygon is fetched (yard_zone vs rooftop_zone) and scaled correctly.
+        detector = _pick(request)
         try:
             st = detector.status()
             det_w, det_h = st.get("detection_size", [1280, 720])
+            zone_key = st.get("zone_key")   # None means fallback to yaml default
         except Exception:
             det_w, det_h = 1280, 720
-        raw, ver = _read_zone_polygon()
+            zone_key = None
+        raw, ver = _read_zone_polygon(zone_key=zone_key)
         return jsonify({
             "polygon": _scale_normalized_polygon(raw, det_w, det_h),
             "version": ver,
@@ -315,6 +414,7 @@ def create_app(detector: DetectorClient) -> Flask:
 
     @app.post("/api/zone")
     def post_zone():
+        detector = _pick(request)
         body = request.get_json(silent=True) or {}
         result, status_code = detector.post_command("/internal/zone", json_body=body)
         return jsonify(result), status_code
@@ -323,12 +423,14 @@ def create_app(detector: DetectorClient) -> Flask:
 
     @app.get("/api/masks")
     def get_masks():
+        detector = _pick(request)
+        cam_id = request.args.get("camera") or registry.default
         try:
             st = detector.status()
             det_w, det_h = st.get("detection_size", [1280, 720])
         except Exception:
             det_w, det_h = 1280, 720
-        raw, ver = _read_osd_masks()
+        raw, ver = _read_osd_masks(camera_id=cam_id)
         return jsonify({
             "masks": _scale_normalized_masks(raw, det_w, det_h),
             "version": ver,
@@ -336,6 +438,7 @@ def create_app(detector: DetectorClient) -> Flask:
 
     @app.post("/api/masks")
     def post_masks():
+        detector = _pick(request)
         body = request.get_json(silent=True) or {}
         result, status_code = detector.post_command("/internal/masks", json_body=body)
         return jsonify(result), status_code
@@ -344,28 +447,33 @@ def create_app(detector: DetectorClient) -> Flask:
 
     @app.get("/api/baseline")
     def api_baseline_meta():
-        return jsonify(_baseline_meta())
+        cam_id = request.args.get("camera") or registry.default
+        return jsonify(_baseline_meta(camera_id=cam_id))
 
     @app.get("/api/baseline.jpg")
     def api_baseline_jpeg():
+        cam_id = request.args.get("camera") or registry.default
+        day_path, night_path = _baseline_paths(cam_id)
         requested = (request.args.get("mode") or "").lower()
         if requested == "night":
-            path = _BASELINE_NIGHT
+            path = night_path
         elif requested == "day":
-            path = _BASELINE_DAY
+            path = day_path
         else:
-            path = _BASELINE_DAY if _BASELINE_DAY.exists() else _BASELINE_NIGHT
+            path = day_path if day_path.exists() else night_path
         if not path.exists():
             return Response(b"", status=404)
         return Response(path.read_bytes(), mimetype="image/jpeg")
 
     @app.post("/api/baseline/capture")
     def post_baseline_capture():
+        detector = _pick(request)
         result, status_code = detector.post_command("/internal/baseline/capture")
         return jsonify(result), status_code
 
     @app.post("/api/baseline/clear")
     def post_baseline_clear():
+        detector = _pick(request)
         params = {"mode": request.args.get("mode")} if request.args.get("mode") else None
         result, status_code = detector.post_command("/internal/baseline/clear", params=params)
         return jsonify(result), status_code
@@ -388,8 +496,14 @@ def _signal_handler(signum, _frame):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Wildlife detector web sidecar")
+    # Multi-camera preferred: DETECTOR_URLS is a comma-separated list of
+    # detector internal HTTP URLs. Falls back to the legacy single-detector
+    # DETECTOR_INTERNAL_URL / --detector so old deployments keep working.
     ap.add_argument("--detector",
                     default=os.getenv("DETECTOR_INTERNAL_URL", "http://127.0.0.1:8101"))
+    ap.add_argument("--detector-urls",
+                    default=os.getenv("DETECTOR_URLS", ""),
+                    help="Comma-separated list of detector URLs for multi-camera mode")
     ap.add_argument("--token", default=os.getenv("INTERNAL_API_TOKEN", ""))
     ap.add_argument("--host", default=os.getenv("PREVIEW_HOST", "0.0.0.0"))
     ap.add_argument("--port", type=int, default=int(os.getenv("PREVIEW_PORT", "8100")))
@@ -406,15 +520,20 @@ def main() -> None:
             "value the detector process logged at startup."
         )
 
-    detector = DetectorClient(args.detector, args.token)
-    logger.info("Web sidecar starting — will proxy to detector at %s", args.detector)
+    # Prefer DETECTOR_URLS (multi-camera) over single --detector fallback.
+    urls = [u.strip() for u in args.detector_urls.split(",") if u.strip()]
+    if not urls:
+        urls = [args.detector]
+    registry = DetectorRegistry(urls, args.token)
+    logger.info("Web sidecar starting — cameras: %s (default '%s')",
+                registry.camera_ids, registry.default)
     logger.info("Web sidecar listening on http://%s:%d", args.host, args.port)
 
-    app = create_app(detector)
+    app = create_app(registry)
     try:
         app.run(host=args.host, port=args.port, debug=False, use_reloader=False, threaded=True)
     finally:
-        detector.close()
+        registry.close_all()
         logger.info("Web sidecar exiting")
         os._exit(0)
 
