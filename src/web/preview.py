@@ -762,14 +762,28 @@ _INDEX_HTML = r"""<!doctype html>
     header button.active { background: #2a6cbf; border-color: #2a6cbf; }
     header button.warn { background: #4b2020; border-color: #6c3030; }
     #wrap { position: relative; display: inline-block; margin: 0 auto; padding: 0; line-height: 0; }
+    /* Secondary pane — always shows the OTHER camera below the main pane.
+       Independent zoom; no zone/mask editor overlay (edit on active only). */
+    #secondary-wrap { position: relative; display: inline-block; margin: 12px auto 0; padding: 0; line-height: 0; }
+    #secondary-header { display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+                       background: #1c1c22; border: 1px solid #26262c; border-bottom: none;
+                       font-size: 12px; color: #9aa; }
+    #secondary-header b { color: #eef; }
+    #secondary-header button { padding: 1px 8px; font-size: 12px;
+                               background: #26262c; color: #eef; border: 1px solid #444;
+                               border-radius: 3px; cursor: pointer; }
+    #secondary-header button:hover { background: #303038; }
+    #secondary-stream { display: block; height: auto; user-select: none; border: 1px solid #26262c; }
     /* Render at native source resolution — no max-width cap. Wider than the
        viewport → horizontal scroll (acceptable on wide displays). Set
        PREVIEW_FIT=contain in .env to fall back to responsive scaling. */
     #stream-img { display: block; height: auto; user-select: none; }
     #zone-svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
     #zone-svg.editing { pointer-events: auto; cursor: crosshair; }
-    #zone-svg .poly { fill: rgba(0, 200, 255, 0.08); stroke: rgba(0, 200, 255, 0.7); stroke-width: 2; stroke-dasharray: 4 4; }
-    #zone-svg .poly.editing { fill: rgba(255, 180, 0, 0.10); stroke: rgba(255, 180, 0, 0.9); stroke-dasharray: none; }
+    /* No fill on the saved polygon — the preview needs to be visible under it.
+       Editing mode gets a very faint fill so partial polygons are easier to see. */
+    #zone-svg .poly { fill: none; stroke: rgba(0, 200, 255, 0.8); stroke-width: 2; stroke-dasharray: 4 4; }
+    #zone-svg .poly.editing { fill: rgba(255, 180, 0, 0.06); stroke: rgba(255, 180, 0, 0.95); stroke-dasharray: none; }
     #zone-svg circle { fill: #ffb400; stroke: #000; stroke-width: 1; cursor: grab; }
     #zone-svg circle:hover { fill: #fff; }
     #zone-svg circle.dragging { cursor: grabbing; }
@@ -779,7 +793,7 @@ _INDEX_HTML = r"""<!doctype html>
     #zone-svg .mask-delete:hover { fill: #fff; }
     #zone-svg .mask-delete-x { fill: #fff; font-family: sans-serif; font-size: 20px; font-weight: bold;
                                pointer-events: none; text-anchor: middle; dominant-baseline: central; }
-    #main { display: flex; justify-content: center; padding: 12px; overflow-x: auto; }
+    #main { display: flex; flex-direction: column; align-items: center; padding: 12px; overflow-x: auto; }
     footer { padding: 8px 16px; font-size: 12px; color: #666; border-top: 1px solid #2a2a30; text-align: center; }
     kbd { background: #26262c; padding: 1px 6px; border-radius: 3px; font-size: 11px; color: #bbc; }
   </style>
@@ -828,6 +842,22 @@ _INDEX_HTML = r"""<!doctype html>
            map to the wrong pixel space if the user downscales in .env. -->
       <svg id="zone-svg" viewBox="0 0 1280 720" preserveAspectRatio="none"></svg>
     </div>
+    <!-- Secondary pane — always shows the OTHER camera stacked below. JS
+         swaps its src to whichever camera isn't currently active in the
+         header dropdown. Zone/mask editing stays on the primary above.
+         Hidden until we've probed the camera roster and confirmed there's
+         more than one detector to show. -->
+    <div id="secondary-wrap" style="display:none;">
+      <div id="secondary-header">
+        <b id="secondary-cam-name">—</b>
+        <span style="flex:1"></span>
+        <button onclick="setSecondaryZoom(-0.1)" title="Shrink secondary">−</button>
+        <span id="secondary-zoom" style="min-width:44px;text-align:center;">1.00×</span>
+        <button onclick="setSecondaryZoom(0.1)" title="Enlarge secondary">+</button>
+        <button onclick="promoteSecondary()" title="Swap this camera into the primary pane">Swap</button>
+      </div>
+      <img id="secondary-stream" src="" alt="secondary stream" />
+    </div>
   </div>
   <footer id="footer">
     <span id="mode-hint">
@@ -861,6 +891,8 @@ _INDEX_HTML = r"""<!doctype html>
       // Restore saved selection if valid, else use server default.
       if (!j.cameras.includes(activeCamera)) activeCamera = j.default || j.cameras[0] || '';
       sel.value = activeCamera;
+      // Stash the roster so dropdown handler + secondary refresh both see it.
+      window.__cameraRoster = j.cameras;
       sel.addEventListener('change', () => {
         activeCamera = sel.value;
         localStorage.setItem('activeCamera', activeCamera);
@@ -874,7 +906,11 @@ _INDEX_HTML = r"""<!doctype html>
         // hoisted-referenced here via the module scope.
         if (typeof loadZone   === 'function') loadZone();
         if (typeof loadMasks  === 'function') loadMasks();
+        // Secondary pane now shows whichever camera the dropdown didn't pick.
+        refreshSecondary(window.__cameraRoster || []);
       });
+      // Initial fill of the secondary pane.
+      refreshSecondary(j.cameras);
     } catch (e) { console.warn('loadCameras failed', e); }
   }
   // ── Status polling ────────────────────────────────────────────────────
@@ -914,6 +950,66 @@ _INDEX_HTML = r"""<!doctype html>
     previewZoom = loadZoomFor(activeCamera);
     applyZoom();
   };
+
+  // ── Secondary pane (the OTHER camera, stacked below the main one) ─────
+  // Independent zoom persistence keyed by its camera_id, own /status poll
+  // for detection_size so the image scale is right when INPUT_WIDTH differs
+  // per camera. No zone/mask overlays here — edit those on the primary pane.
+  let secondaryCamera = '';
+  let secondaryDetW = 1280, secondaryDetH = 720;
+  let secondaryZoom = 1.0;
+  function applySecondaryZoom() {
+    const dw = Math.round(secondaryDetW * secondaryZoom);
+    const dh = Math.round(secondaryDetH * secondaryZoom);
+    const img = document.getElementById('secondary-stream');
+    if (img) { img.style.width = dw + 'px'; img.style.height = dh + 'px'; }
+    const z = document.getElementById('secondary-zoom');
+    if (z) z.textContent = secondaryZoom.toFixed(2) + '×';
+  }
+  window.setSecondaryZoom = function(delta) {
+    secondaryZoom = Math.max(0.5, Math.min(3.0, secondaryZoom + delta));
+    localStorage.setItem(zoomKey(secondaryCamera), String(secondaryZoom));
+    applySecondaryZoom();
+  };
+  window.promoteSecondary = function() {
+    // Swap primary ↔ secondary. Same effect as picking the secondary camera
+    // from the dropdown, wrapped in a single click for convenience.
+    const sel = document.getElementById('s-cam-select');
+    if (!sel || !secondaryCamera) return;
+    sel.value = secondaryCamera;
+    sel.dispatchEvent(new Event('change'));
+  };
+  function pickSecondaryCamera(cameras, active) {
+    // Deterministic: first camera in the roster that isn't the active one.
+    return cameras.find(c => c !== active) || '';
+  }
+  async function refreshSecondary(cameras) {
+    if (!cameras || cameras.length < 2) {
+      // Single-camera deploy — hide the secondary pane entirely.
+      const w = document.getElementById('secondary-wrap');
+      if (w) w.style.display = 'none';
+      return;
+    }
+    secondaryCamera = pickSecondaryCamera(cameras, activeCamera);
+    if (!secondaryCamera) return;
+    secondaryZoom = loadZoomFor(secondaryCamera);
+    document.getElementById('secondary-cam-name').textContent = secondaryCamera;
+    document.getElementById('secondary-wrap').style.display = '';
+    const img = document.getElementById('secondary-stream');
+    if (img) img.src = '/stream?camera=' + encodeURIComponent(secondaryCamera) + '&t=' + Date.now();
+    // Probe secondary /status for detection_size so the zoom math is right.
+    try {
+      const r = await fetch('/status?camera=' + encodeURIComponent(secondaryCamera));
+      if (r.ok) {
+        const s = await r.json();
+        if (s.detection_size && s.detection_size[0] && s.detection_size[1]) {
+          secondaryDetW = s.detection_size[0];
+          secondaryDetH = s.detection_size[1];
+        }
+      }
+    } catch (e) { console.warn('secondary status probe failed', e); }
+    applySecondaryZoom();
+  }
   async function pollStatus() {
     try {
       const r = await fetch(camAppend('/status'));
