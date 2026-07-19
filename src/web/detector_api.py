@@ -155,8 +155,15 @@ def create_app() -> Flask:
             return jsonify({"error": "baseline not initialized"}), 503
         # Pull the most-recent RAW frame (no overlays baked in).
         jpeg, _ = preview._latest_raw.get_next(last_seen=-1, timeout=2.0)
+        # Optional ?mode=day|night override — bypasses the brightness auto-picker
+        # which misclassifies IR-lit foliage as "day". The BaselineHolder's
+        # capture() defaults to auto when mode is missing; pass through as-is.
+        mode_override = (request.args.get("mode") or "").lower().strip()
         try:
-            mode = b.capture(jpeg)
+            if mode_override in ("day", "night"):
+                mode = b.capture(jpeg, mode=mode_override)
+            else:
+                mode = b.capture(jpeg)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         return jsonify({"ok": True, "captured_mode": mode, **b.snapshot()})

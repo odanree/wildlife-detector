@@ -142,12 +142,20 @@ class Baseline:
         with self._lock:
             return self._jpegs.get(mode, b""), self._version, mode
 
-    def capture(self, jpeg: bytes) -> str:
-        """Auto-picks day/night slot based on frame brightness. Returns which
-        slot was written to."""
+    def capture(self, jpeg: bytes, mode: str | None = None) -> str:
+        """Save the current frame as the baseline reference.
+
+        mode: 'day' | 'night' | None
+          - Explicit mode bypasses the brightness auto-picker. Necessary for
+            rooftop / overhead cameras where bright IR-lit foliage confuses
+            the day/night detector.
+          - None uses brightness auto-detect (single-camera default).
+        Returns which slot was written to.
+        """
         if not jpeg:
             raise ValueError("empty JPEG — no live frame available yet")
-        mode = _detect_brightness_mode(jpeg)
+        if mode not in ("day", "night"):
+            mode = _detect_brightness_mode(jpeg)
         with self._lock:
             self._paths[mode].parent.mkdir(parents=True, exist_ok=True)
             self._paths[mode].write_bytes(jpeg)
@@ -774,6 +782,21 @@ _INDEX_HTML = r"""<!doctype html>
                                border-radius: 3px; cursor: pointer; }
     #secondary-header button:hover { background: #303038; }
     #secondary-stream { display: block; height: auto; user-select: none; border: 1px solid #26262c; }
+    /* Floating edit-mode banner — position:fixed so it stays visible no matter
+       where the user's viewport is scrolled. Only shown while editing zone or
+       masks, since those actions live on the primary (top) pane which may be
+       off-screen when the user clicked the action button on the bottom pane. */
+    #edit-banner {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
+      padding: 8px 16px; background: #ffb400; color: #1a1a1e;
+      font: bold 13px/1.4 -apple-system, "Segoe UI", sans-serif;
+      display: none; align-items: center; gap: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+      cursor: pointer;
+    }
+    #edit-banner.visible { display: flex; }
+    #edit-banner .banner-hint { flex: 1; }
+    #edit-banner .banner-scroll { text-decoration: underline; }
     /* Render at native source resolution — no max-width cap. Wider than the
        viewport → horizontal scroll (acceptable on wide displays). Set
        PREVIEW_FIT=contain in .env to fall back to responsive scaling. */
@@ -799,6 +822,10 @@ _INDEX_HTML = r"""<!doctype html>
   </style>
 </head>
 <body>
+  <div id="edit-banner" onclick="window.scrollTo({top: 0, behavior: 'auto'})">
+    <span class="banner-hint"><b id="edit-banner-mode">Editing</b> on <b id="edit-banner-camera">—</b> · scroll up to draw and save</span>
+    <span class="banner-scroll">↑ Scroll up</span>
+  </div>
   <header>
     <span class="title">wildlife-detector</span>
     <span class="stat">camera
@@ -851,9 +878,19 @@ _INDEX_HTML = r"""<!doctype html>
       <div id="secondary-header">
         <b id="secondary-cam-name">—</b>
         <span style="flex:1"></span>
-        <button onclick="setSecondaryZoom(-0.1)" title="Shrink secondary">−</button>
-        <span id="secondary-zoom" style="min-width:44px;text-align:center;">1.00×</span>
-        <button onclick="setSecondaryZoom(0.1)" title="Enlarge secondary">+</button>
+        <!-- Editor actions on the secondary camera. Since only one pane can
+             be in edit mode at a time, clicking any of these first promotes
+             the secondary → primary, then triggers the corresponding primary
+             toolbar button. Preserves the existing editor state machine. -->
+        <button onclick="secondaryAction('btn-draw-zone')" title="Draw zone on this camera">Draw zone</button>
+        <button onclick="secondaryAction('btn-draw-mask')" title="Draw OSD mask on this camera">Draw OSD mask</button>
+        <button onclick="secondaryCaptureBaseline('day')"   title="Capture as DAY baseline (visible-light mode)">Cap day</button>
+        <button onclick="secondaryCaptureBaseline('night')" title="Capture as NIGHT baseline (IR mode)">Cap night</button>
+        <span style="border-left:1px solid #3a3a40;padding-left:8px;margin-left:4px;">
+          <button onclick="setSecondaryZoom(-0.1)" title="Shrink secondary">−</button>
+          <span id="secondary-zoom" style="min-width:44px;text-align:center;display:inline-block;">1.00×</span>
+          <button onclick="setSecondaryZoom(0.1)" title="Enlarge secondary">+</button>
+        </span>
         <button onclick="promoteSecondary()" title="Swap this camera into the primary pane">Swap</button>
       </div>
       <img id="secondary-stream" src="" alt="secondary stream" />
@@ -978,6 +1015,65 @@ _INDEX_HTML = r"""<!doctype html>
     if (!sel || !secondaryCamera) return;
     sel.value = secondaryCamera;
     sel.dispatchEvent(new Event('change'));
+  };
+  window.secondaryCaptureBaseline = async function(modeOverride) {
+    // Baseline capture doesn't need editing — just a POST to the right camera.
+    // No swap, no scroll jump, no reflow.
+    //
+    // modeOverride: 'day' | 'night' | undefined
+    //   - Force which slot the capture goes into. Auto-picker uses frame
+    //     brightness and can misclassify IR-bright foliage as day; passing
+    //     the mode explicitly is the reliable way to save the right file.
+    if (!secondaryCamera) return;
+    let url = '/api/baseline/capture?camera=' + encodeURIComponent(secondaryCamera);
+    if (modeOverride === 'day' || modeOverride === 'night') url += '&mode=' + modeOverride;
+    try {
+      const r = await fetch(url, { method: 'POST' });
+      const j = await r.json();
+      if (r.ok && j.ok) {
+        alert('Captured ' + secondaryCamera + ' baseline (' + (j.captured_mode || 'auto') + ')');
+      } else {
+        alert('Capture failed: ' + (j.error || r.status));
+      }
+    } catch (e) { alert('Capture failed: ' + e); }
+  };
+  window.secondaryAction = async function(targetBtnId) {
+    // Draw zone / OSD mask on the secondary camera. The editor is coupled to
+    // the primary pane, so we swap camera → wait for the new camera's zone/mask
+    // state to fully load → THEN call the editor entry directly. Avoids racing
+    // a button click against async /api/zone reloads, which was making the
+    // click look like a swap-only no-op when loadZone resolved after btn.click().
+    if (!secondaryCamera) return;
+    const wasPrimary = activeCamera;
+    if (secondaryCamera === wasPrimary) return;
+    const main = document.getElementById('main');
+    if (main) main.style.minHeight = main.offsetHeight + 'px';
+
+    // Do the promotion synchronously and drive loadZone/loadMasks ourselves
+    // so we can await them, rather than relying on the change handler's
+    // fire-and-forget calls.
+    const sel = document.getElementById('s-cam-select');
+    if (sel) sel.value = secondaryCamera;
+    activeCamera = secondaryCamera;
+    localStorage.setItem('activeCamera', activeCamera);
+    if (window.__reloadZoomForCamera) window.__reloadZoomForCamera();
+    const img = document.getElementById('stream-img');
+    if (img) img.src = camAppend('/stream') + '&t=' + Date.now();
+    refreshSecondary(window.__cameraRoster || []);
+    if (typeof loadZone === 'function') await loadZone();
+    if (typeof loadMasks === 'function') await loadMasks();
+
+    // State is fully loaded — activate the editor directly, no button-click
+    // indirection needed.
+    if (targetBtnId === 'btn-draw-zone' && window.__enterZoneEdit) {
+      window.__enterZoneEdit();
+    } else if (targetBtnId === 'btn-draw-mask' && window.__enterMaskEdit) {
+      window.__enterMaskEdit();
+    }
+    // Instant jump to the primary pane's toolbar so the user actually sees
+    // the editor now active (button label = "Save zone", cursor = crosshair).
+    window.scrollTo({ top: 0, behavior: 'auto' });
+    setTimeout(() => { if (main) main.style.minHeight = ''; }, 500);
   };
   function pickSecondaryCamera(cameras, active) {
     // Deterministic: first camera in the roster that isn't the active one.
@@ -1185,6 +1281,7 @@ _INDEX_HTML = r"""<!doctype html>
     svg.classList.remove('editing');
     editEntry = null;
     modeHint.innerHTML = 'YOLO <span style="color:#4d9">green</span> · motion <span style="color:#cc4">yellow</span> · alert <span style="color:#f66">red</span> · zone <span style="color:#6cf">cyan</span>';
+    if (window.__hideEditBanner) window.__hideEditBanner();
   }
 
   async function toggleSave() {
@@ -1293,6 +1390,24 @@ _INDEX_HTML = r"""<!doctype html>
   };
   render = renderAll;
 
+  // Exposed so the secondary-pane action buttons can trigger edit modes
+  // directly after a promote, without depending on button-click round-trips
+  // that could race with async /api/zone loads.
+  window.__enterZoneEdit = () => { enterEditMode('draw'); showEditBanner('zone'); };
+  window.__enterMaskEdit = () => { enterMaskEditMode(); showEditBanner('mask'); };
+  function showEditBanner(mode) {
+    const b = document.getElementById('edit-banner');
+    if (!b) return;
+    document.getElementById('edit-banner-mode').textContent =
+      mode === 'mask' ? 'Editing OSD mask' : 'Editing zone';
+    document.getElementById('edit-banner-camera').textContent = activeCamera || 'primary';
+    b.classList.add('visible');
+  }
+  window.__hideEditBanner = function() {
+    const b = document.getElementById('edit-banner');
+    if (b) b.classList.remove('visible');
+  };
+
   function enterMaskEditMode() {
     if (editing) exitEditMode();   // exit zone edit if it was open
     maskEditing = true;
@@ -1312,6 +1427,7 @@ _INDEX_HTML = r"""<!doctype html>
     btnCancelMask.style.display = 'none';
     if (!editing) svg.classList.remove('editing');
     modeHint.innerHTML = 'YOLO <span style="color:#4d9">green</span> · motion <span style="color:#cc4">yellow</span> · alert <span style="color:#f66">red</span> · zone <span style="color:#6cf">cyan</span> · masks <span style="color:#f66">red-fill</span>';
+    if (window.__hideEditBanner) window.__hideEditBanner();
     renderAll();
   }
 
