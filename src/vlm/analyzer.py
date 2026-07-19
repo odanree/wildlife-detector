@@ -45,12 +45,25 @@ _OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "1h")
 
 
 _SYSTEM_PROMPT = (
-    "You are a skeptical vision analyst reviewing IR night footage of a yard/patio. "
-    "Your job is to detect live rodents (rats, mice) while rejecting the many common "
-    "false-positive sources this environment generates. Be conservative — the cost of "
-    "a false positive is high (a false alarm every few minutes); the cost of a miss is "
-    "low (the same rodent will pass again). Always respond with valid JSON only, no "
-    "markdown, no commentary."
+    "You are a vision analyst reviewing IR night and daytime footage from multiple "
+    "cameras on the same property: (a) a yard/patio side-angle camera, and (b) a "
+    "roof-mounted overhead camera looking DOWN at the ground. Your job is to detect "
+    "live wildlife (rats, mice, raccoons, opossums, cats, dogs, squirrels, birds) "
+    "while rejecting common false positives.\n"
+    "\n"
+    "Two important calibrations for this task:\n"
+    "  1. Camera angle CHANGES what evidence is available. Side-angle cameras show "
+    "     legs/head/tail (Pattern 1) and eyeshine at night (Pattern 2). Overhead "
+    "     cameras show only a silhouette from above (Pattern 3) — legs are hidden "
+    "     under the body, eyes point sideways not up. Judge each crop by which "
+    "     patterns are physically POSSIBLE for its angle.\n"
+    "  2. The pipeline in front of you has ALREADY filtered obvious noise (motion "
+    "     detection + zone polygon + baseline pixel-diff). If a crop reached you, "
+    "     the operator thinks something meaningful appeared. Give credible "
+    "     silhouettes the benefit of the doubt with a modest confidence rather "
+    "     than reflexively defaulting to 'twig' or 'debris'.\n"
+    "\n"
+    "Always respond with valid JSON only, no markdown, no commentary."
 )
 
 _USER_PROMPT = (
@@ -161,6 +174,52 @@ _COMPARE_USER_PROMPT = (
     "         estimated body size in the description.\n"
     "       - A bright point up on a shelf, wall, or hardware with no dark body around it\n"
     "         is a reflection or LED — that's false.\n"
+    "\n"
+    "  PATTERN 3 — OVERHEAD SILHOUETTE (top-down / roof-mounted camera):\n"
+    "     When the camera looks DOWN at the ground from a rooftop, birds-eye angle,\n"
+    "     the animal projects as a compact dark shape against a lighter surface\n"
+    "     (concrete, tile, dirt). At this angle, Pattern 1's legs/head/tail\n"
+    "     articulation and Pattern 2's eyeshine are BOTH invisible — legs are\n"
+    "     hidden under the body, eyes point sideways not up. DO NOT reject an\n"
+    "     overhead crop for missing those features; they're geometrically\n"
+    "     impossible from above.\n"
+    "\n"
+    "     At overhead angle in IR footage, a real rat / mouse commonly appears as\n"
+    "     one of the following legitimate silhouettes — treat ALL of these as\n"
+    "     positive evidence:\n"
+    "       - A dark ELONGATED shape with a rounded 'head' end and a thinner\n"
+    "         trailing tail (comma or teardrop). Body ~2-4x wider than the tail.\n"
+    "       - A dark line where the body-to-tail transition is SUBTLE — the whole\n"
+    "         thing may look nearly uniform width at low crop resolution. This is\n"
+    "         normal for a small rodent overhead in IR; DO NOT auto-reject as\n"
+    "         a twig on width alone.\n"
+    "       - A single compact dark blob (rat coiled or facing straight down)\n"
+    "         with slight curvature at ground level.\n"
+    "\n"
+    "     Motion is the primary rodent-vs-debris discriminator. If TWO frames are\n"
+    "     provided (baseline + current):\n"
+    "       - Shape APPEARED between baseline and current, or MOVED to a new\n"
+    "         position → rodent, high confidence (0.6-0.8).\n"
+    "       - Shape identical in both frames, same position → stationary debris,\n"
+    "         reject (twig, stick, leaf on ground).\n"
+    "\n"
+    "     If only ONE frame is provided (probe testing, no baseline available):\n"
+    "       - Give the shape the BENEFIT OF THE DOUBT if it has any of the\n"
+    "         silhouettes above and its length is 5-25% of the frame width.\n"
+    "         Return true with confidence 0.4-0.6 and species='rat' (or 'mouse'\n"
+    "         if smaller) and say the motion evidence is unavailable in the\n"
+    "         description so the operator knows it's a single-frame call.\n"
+    "       - Only reject a single-frame overhead shape if it is CLEARLY attached\n"
+    "         to vegetation, embedded in clutter, or has right-angle joints\n"
+    "         (planks, screws, hardware).\n"
+    "\n"
+    "     Sizing / species:\n"
+    "       - Shape < 3% of frame width in longest dimension → probably a leaf\n"
+    "         piece or insect. Reject unless motion is unambiguous.\n"
+    "       - Shape 3-8% of frame width → mouse (species='mouse').\n"
+    "       - Shape 8-25% of frame width → rat (species='rat').\n"
+    "       - Shape > 25% of frame width → cat/raccoon/opossum. Still return\n"
+    "         wildlife_detected=true with the appropriate larger species.\n"
     "\n"
     "═══ HARD REJECTS (regardless of pattern) ═══\n"
     "\n"
@@ -371,6 +430,20 @@ class VLMAnalyzer:
             fb["description"] = f"VLM error — {type(exc).__name__}: {exc}"
             return fb
 
+    @staticmethod
+    def _sniff_media_type(data: bytes) -> str:
+        """Detect image mime by magic bytes so callers can pass PNG (probe
+        harness, saved diagnostic crops) or JPEG (pipeline norm) without
+        having to convert. Falls back to JPEG when unknown — Anthropic's API
+        rejects the mismatch loudly if we guess wrong."""
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if data.startswith(b"GIF8"):
+            return "image/gif"
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return "image/webp"
+        return "image/jpeg"
+
     def _analyze_claude(self, frames: list[bytes], user_prompt: str | None = None) -> dict:
         prompt_text = user_prompt or self._user_prompt
         content: list[dict] = []
@@ -379,7 +452,7 @@ class VLMAnalyzer:
                 "type": "image",
                 "source": {
                     "type": "base64",
-                    "media_type": "image/jpeg",
+                    "media_type": self._sniff_media_type(fb),
                     "data": base64.standard_b64encode(fb).decode(),
                 },
             })
@@ -445,11 +518,16 @@ _ALERTABLE_SPECIES = {"rat", "mouse", "raccoon", "opossum", "cat", "dog", "squir
 # alongside descriptions that reveal they didn't actually see the animal.
 # Post-processing catches what the prompt fails to prevent.
 _HEDGE_TOKENS = [
+    # True uncertainty markers — model is genuinely unsure.
     "partially", "obscured", "hidden", "peeking",
     "appears to be", "seems to be", "looks like it could",
-    "consistent with", "possibly", "might be",
+    "possibly", "might be",
     "behind a", "behind the", "under a", "under the",
     "silhouette of", "outline of what",
+    # Note: "consistent with" was removed 2026-07-19 — Opus-tier models use it
+    # as standard technical positive language ("body-plus-tail consistent
+    # with a rat viewed from above"), not as hedging. Rejecting on it killed
+    # correct overhead identifications during the rooftop rat replay eval.
 ]
 
 # Whitelist — descriptions containing any of these tokens bypass the hedge rail.
@@ -457,12 +535,18 @@ _HEDGE_TOKENS = [
 # where the ONLY visible evidence is a pair of bright points; the body will
 # naturally be "partially" visible or "behind" darkness. Rejecting eyeshine
 # because it needs to mention "eyes" alongside language like "small dark body"
-# would kill genuine nighttime detections.
+# would kill genuine nighttime detections. Same for overhead identifications
+# where "trailing tail" is the load-bearing evidence.
 _EVIDENCE_WHITELIST = [
     "eyeshine", "eye shine", "eye-shine",
     "tapetum", "reflective points", "reflective eye",
     "bright eye", "eyes glow", "pair of eyes",
     "two bright points", "eye pair",
+    # Overhead-silhouette evidence tokens (Pattern 3):
+    "trailing tail", "trailing behind", "tail-like extension",
+    "rounded torso", "rounded body", "body mass",
+    "overhead silhouette", "overhead view", "viewed from above",
+    "from above",
 ]
 
 
