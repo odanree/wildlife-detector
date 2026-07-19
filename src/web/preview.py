@@ -850,8 +850,19 @@ _INDEX_HTML = r"""<!doctype html>
     <span class="stat" title="Detector RSS memory (MB) — current / peak since start">
       mem <b id="s-mem">–</b><span style="color:#666"> / peak <b id="s-mem-peak">–</b></span>
     </span>
-    <span class="stat" title="Gate funnel — motion→zone→baseline-passed→vlm→confirmed. Ratios show which stage is filtering.">
-      gate <b id="s-gate" style="font-family:ui-monospace,monospace">– → – → – → – → –</b>
+    <span class="stat" title="Gate funnel — motion → zone → baseline-passed → vlm → confirmed. Ratios show which stage is filtering.">
+      gate
+      <span id="s-gate" style="font-family:ui-monospace,monospace;font-size:11px;">
+        <span style="color:#9aa" title="MOG2 motion events">motion <b id="s-g-mot">–</b></span>
+        <span style="color:#666">→</span>
+        <span style="color:#9aa" title="Motion inside zone polygon">zone <b id="s-g-zone">–</b></span>
+        <span style="color:#666">→</span>
+        <span style="color:#9aa" title="Passed baseline pixel-diff pre-filter">base <b id="s-g-base">–</b></span>
+        <span style="color:#666">→</span>
+        <span style="color:#9aa" title="VLM calls submitted (rate-limited per track)">vlm <b id="s-g-vlm">–</b></span>
+        <span style="color:#666">→</span>
+        <span style="color:#4d9" title="VLM confirmed a real wildlife event">hit <b id="s-g-hit">–</b></span>
+      </span>
     </span>
     <div class="toolbar">
       <button id="btn-draw-zone"  title="Clear the polygon and draw a new one from scratch">Draw zone</button>
@@ -1160,10 +1171,14 @@ _INDEX_HTML = r"""<!doctype html>
       // is doing the filtering work.
       const g = s.gate_funnel || {};
       if (Object.keys(g).length) {
-        // baseline-passed = zone_events - baseline_filtered
+        // baseline-passed = zone_events - baseline_filtered (what actually
+        // reached the VLM stage, before per-track rate-limit dedup).
         const baselinePassed = Math.max(0, (g.zone_events || 0) - (g.baseline_filtered || 0));
-        document.getElementById('s-gate').textContent =
-          `${g.motion_events||0} → ${g.zone_events||0} → ${baselinePassed} → ${g.vlm_calls||0} → ${g.vlm_confirmed||0}`;
+        document.getElementById('s-g-mot').textContent  = g.motion_events   || 0;
+        document.getElementById('s-g-zone').textContent = g.zone_events     || 0;
+        document.getElementById('s-g-base').textContent = baselinePassed;
+        document.getElementById('s-g-vlm').textContent  = g.vlm_calls       || 0;
+        document.getElementById('s-g-hit').textContent  = g.vlm_confirmed   || 0;
       }
     } catch (e) { /* ignore */ }
   }
