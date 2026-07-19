@@ -275,14 +275,18 @@ def _save_reject_crop(crop_bytes: bytes, tid: int, bbox: tuple,
     from datetime import datetime
     from pathlib import Path
     snap_root = Path(os.getenv("SNAPSHOT_DIR", "snapshots"))
+    camera_id = os.getenv("CAMERA_ID", "yard")
     now = datetime.now()
-    day = snap_root / "rejected" / now.strftime("%Y-%m-%d")
+    # Camera-scoped subdir so multi-detector deploys don't mix each other's
+    # rejection corpora in the same folder. Also filename prefix so an
+    # ls without cd immediately says which camera the crop came from.
+    day = snap_root / "rejected" / camera_id / now.strftime("%Y-%m-%d")
     day.mkdir(parents=True, exist_ok=True)
-    stem = f"vlmreject_{now.strftime('%H%M%S')}_track{tid}_{bw}x{bh}"
+    stem = f"{camera_id}_vlmreject_{now.strftime('%H%M%S')}_track{tid}_{bw}x{bh}"
     (day / f"{stem}.jpg").write_bytes(crop_bytes)
     if description:
         (day / f"{stem}.txt").write_text(
-            f"bbox={bbox}\ndims={bw}x{bh}\nvlm_description={description}\n",
+            f"camera={camera_id}\nbbox={bbox}\ndims={bw}x{bh}\nvlm_description={description}\n",
             encoding="utf-8",
         )
 
@@ -307,10 +311,21 @@ def run(stream_url: str | None = None, video_path: str | None = None,
 
     det_cfg = cfg_det["detector"]
     mot_cfg = cfg_det.get("motion_detector", {})
-    zone_key = cfg_det.get("zone_key", "yard_zone")
-    # Load polygon → auto-detect if it's normalized floats (new format) or
-    # absolute pixels (legacy). See _is_normalized_polygon() heuristic below.
-    _raw_polygon = cfg_det["zones"][zone_key]["polygon"]
+    # ZONE_KEY env takes precedence over YAML so each camera in the multi-cam
+    # docker deploy can point at its own polygon (yard_zone, rooftop_zone, …)
+    # without needing to swap detection.yaml per container.
+    zone_key = os.getenv("ZONE_KEY") or cfg_det.get("zone_key", "yard_zone")
+    _zones_section = cfg_det.get("zones", {})
+    if zone_key not in _zones_section:
+        # Cameras added before their zone is drawn get an empty-polygon default
+        # — pipeline runs full-frame until the operator saves a real one via UI.
+        logger.warning("ZONE_KEY '%s' not found in config/detection.yaml — using empty polygon "
+                       "(full-frame detection until UI zone save)", zone_key)
+        _raw_polygon = []
+    else:
+        # Load polygon → auto-detect if it's normalized floats (new format) or
+        # absolute pixels (legacy). See _is_normalized_polygon() heuristic below.
+        _raw_polygon = _zones_section[zone_key].get("polygon", [])
 
     video_path = video_path or os.getenv("VIDEO_PATH", "") if stream_url is None else ""
     if video_path:
@@ -365,9 +380,17 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     # rejected; the baseline diff pre-filter zeros out mask pixels before
     # computing absdiff so OSD churn doesn't fool the pipeline into a VLM call.
     # Same normalize-or-pixel detection as the polygon.
-    osd_masks = _scale_masks(cfg_det.get("osd_masks", []), det_w, det_h)
+    # Camera-scoped OSD masks (dict form) with backwards-compat for legacy
+    # flat list. Same shape as osd_masks handling in MaskHolder.
+    _osd_cfg = cfg_det.get("osd_masks", []) or []
+    _camera_id_env = os.getenv("CAMERA_ID", "yard")
+    if isinstance(_osd_cfg, dict):
+        _osd_raw = _osd_cfg.get(_camera_id_env, []) or []
+    else:
+        _osd_raw = _osd_cfg if _camera_id_env == "yard" else []
+    osd_masks = _scale_masks(_osd_raw, det_w, det_h)
     if osd_masks:
-        logger.info("OSD masks: %d region(s) %s", len(osd_masks), osd_masks)
+        logger.info("OSD masks (%s): %d region(s) %s", _camera_id_env, len(osd_masks), osd_masks)
 
     # Hot-reload for OSD masks (mirrors the zone hot-reload). The preview UI
     # bumps the mask version on save; the pipeline picks it up next iteration.

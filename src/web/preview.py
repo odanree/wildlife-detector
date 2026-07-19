@@ -221,9 +221,27 @@ class Stats:
         self._alerts: int = 0
         self._start_ts = time.time()
         self._backend = "unknown"
-        self._camera = "unknown"
+        self._camera = "unknown"                          # display name (RTSP URL etc.)
+        self._camera_id = os.getenv("CAMERA_ID", "yard")  # short identifier for the alerts table
+        self._zone_key = os.getenv("ZONE_KEY", "yard_zone")  # which polygon this detector uses
         self._detection_size = (0, 0)
         self._last_alert: dict | None = None
+        # Self-monitoring — the detector reports its OWN process CPU/RSS so the
+        # UI can chart resource spikes against motion-event bursts. psutil is a
+        # soft dep; the strip degrades to N/A when unavailable.
+        try:
+            import psutil  # noqa: F401
+            self._psutil = psutil
+            self._proc = psutil.Process()
+            # Prime the CPU counter — the first call always returns 0.0.
+            self._proc.cpu_percent(interval=None)
+            self._n_cpu = psutil.cpu_count(logical=True) or 1
+        except ImportError:
+            self._psutil = None
+            self._proc = None
+            self._n_cpu = 1
+        self._cpu_peak = 0.0
+        self._rss_peak_mb = 0.0
         # Gate funnel counters — process-local, reset on restart.
         # Answers "is the VLM silent because there's no motion, or because the
         # baseline pre-filter is eating everything?" — read them via /status.
@@ -272,10 +290,13 @@ class Stats:
                 "description": description,
                 "ts":          time.time(),
                 "snapshot":    snapshot,
+                "camera_id":   self._camera_id,
             }
+            camera_id = self._camera_id
         # Also push into the durable ring buffer for /alerts.
         _alerts.append(species, confidence, description,
-                       snapshot=snapshot, track_id=track_id, yolo_conf=yolo_conf)
+                       snapshot=snapshot, track_id=track_id, yolo_conf=yolo_conf,
+                       camera_id=camera_id)
 
     def set_backend(self, backend: str) -> None:
         with self._lock:
@@ -309,18 +330,42 @@ class Stats:
                     total, "yes" if latest else "no")
 
     def snapshot(self) -> dict:
+        # Sample psutil OUTSIDE the lock — cpu_percent(interval=None) is fast
+        # but non-blocking calls can still race; better to keep the lock scope
+        # tight around field reads.
+        cpu_pct = 0.0
+        rss_mb = 0.0
+        threads = 0
+        if self._proc is not None:
+            try:
+                # cpu_percent() returns % of ONE core (0..N*100). Normalize by
+                # cpu_count so 100% == "one full core saturated" in operator terms.
+                # Peak tracking uses the raw multi-core value for interview parity
+                # with `docker stats` (which reports N*100 too).
+                _raw = self._proc.cpu_percent(interval=None)
+                cpu_pct = _raw
+                rss_mb = self._proc.memory_info().rss / (1024 * 1024)
+                threads = self._proc.num_threads()
+            except Exception:
+                pass
         with self._lock:
             fps = 0.0
             if len(self._frame_ts) >= 2:
                 span = self._frame_ts[-1] - self._frame_ts[0]
                 if span > 0:
                     fps = (len(self._frame_ts) - 1) / span
+            if cpu_pct > self._cpu_peak:
+                self._cpu_peak = cpu_pct
+            if rss_mb > self._rss_peak_mb:
+                self._rss_peak_mb = rss_mb
             return {
                 "fps":            round(fps, 1),
                 "alerts_total":   self._alerts,
                 "uptime_seconds": int(time.time() - self._start_ts),
                 "backend":        self._backend,
                 "camera":         self._camera,
+                "camera_id":      self._camera_id,
+                "zone_key":       self._zone_key,
                 "detection_size": self._detection_size,
                 "last_alert":     self._last_alert,
                 # Gate funnel — reset on restart. Ratios tell you which stage
@@ -332,6 +377,17 @@ class Stats:
                     "vlm_calls":         self._vlm_calls,
                     "vlm_rejected":      self._vlm_rejected,
                     "vlm_confirmed":     self._vlm_confirmed_session,
+                },
+                # Detector self-monitoring. cpu_pct is multi-core (0..N*100)
+                # matching `docker stats`; num_cpus lets the UI show "X% of N cores".
+                "resources": {
+                    "cpu_pct":      round(cpu_pct, 1),
+                    "cpu_peak_pct": round(self._cpu_peak, 1),
+                    "num_cpus":     self._n_cpu,
+                    "rss_mb":       round(rss_mb, 1),
+                    "rss_peak_mb":  round(self._rss_peak_mb, 1),
+                    "threads":      threads,
+                    "available":    self._proc is not None,
                 },
             }
 
@@ -367,7 +423,8 @@ class AlertLog:
     def append(self, species: str, confidence: float, description: str,
                snapshot: str | None = None,
                track_id: int | None = None,
-               yolo_conf: float | None = None) -> None:
+               yolo_conf: float | None = None,
+               camera_id: str = "yard") -> None:
         if self._state is None:
             return   # AlertLog wasn't init'd; no-op like before
         self._state.append_alert(
@@ -379,12 +436,14 @@ class AlertLog:
             yolo_conf=yolo_conf,
             is_rodent=species in ("rat", "mouse"),
             historical=False,
+            camera_id=camera_id,
         )
 
-    def list(self, limit: int = 200, species: str | None = None) -> list[dict]:
+    def list(self, limit: int = 200, species: str | None = None,
+             camera_id: str | None = None) -> list[dict]:
         if self._state is None:
             return []
-        return self._state.list_alerts(limit=limit, species=species)
+        return self._state.list_alerts(limit=limit, species=species, camera_id=camera_id)
 
     def total(self) -> int:
         return 0 if self._state is None else self._state.total_alerts()
@@ -570,6 +629,11 @@ class MaskHolder:
         self._config_path = Path(config_path)
         self._det_w = det_w
         self._det_h = det_h
+        # Camera-scoped mask storage: yaml supports either a flat legacy list
+        # under `osd_masks:` (single-camera deploys) or a dict keyed by
+        # camera_id (multi-camera). CAMERA_ID env selects the sub-key when
+        # the dict form is present.
+        self._camera_id = os.getenv("CAMERA_ID", "yard")
         self._masks: list[tuple[int, int, int, int]] = []
         self._version = 0
         self._reload_from_disk()
@@ -578,7 +642,12 @@ class MaskHolder:
         try:
             with self._config_path.open(encoding="utf-8") as fh:
                 cfg = yaml.safe_load(fh) or {}
-            raw = cfg.get("osd_masks", []) or []
+            osd = cfg.get("osd_masks", []) or []
+            # Backwards compat: flat list → yard's masks. Dict → per-camera.
+            if isinstance(osd, dict):
+                raw = osd.get(self._camera_id, []) or []
+            else:
+                raw = osd if self._camera_id == "yard" else []
             out: list[tuple[int, int, int, int]] = []
             for m in raw:
                 if len(m) != 4:
@@ -628,7 +697,14 @@ class MaskHolder:
                 ]
             else:
                 to_write = [[int(x1), int(y1), int(x2), int(y2)] for x1, y1, x2, y2 in masks]
-            cfg["osd_masks"] = to_write
+            # Migrate flat legacy `osd_masks: [...]` to dict form on first write
+            # so the other camera's writes never clobber this one.
+            existing = cfg.get("osd_masks", {})
+            if isinstance(existing, list):
+                # Legacy: existing masks belonged to the yard (default single-camera).
+                existing = {"yard": existing}
+            existing[self._camera_id] = to_write
+            cfg["osd_masks"] = existing
             tmp = self._config_path.with_suffix(self._config_path.suffix + ".tmp")
             with tmp.open("w", encoding="utf-8") as fh:
                 yaml.safe_dump(cfg, fh, sort_keys=False, default_flow_style=None)
@@ -711,6 +787,11 @@ _INDEX_HTML = r"""<!doctype html>
 <body>
   <header>
     <span class="title">wildlife-detector</span>
+    <span class="stat">camera
+      <select id="s-cam-select" style="background:#26262c;color:#eef;border:1px solid #444;border-radius:3px;padding:2px 6px;margin-left:4px;font:inherit">
+        <option>loading…</option>
+      </select>
+    </span>
     <span class="stat">FPS <b id="s-fps">–</b></span>
     <span class="stat">backend <b class="backend" id="s-backend">–</b></span>
     <span class="stat">alerts <b id="s-alerts">–</b></span>
@@ -740,7 +821,7 @@ _INDEX_HTML = r"""<!doctype html>
   </header>
   <div id="main">
     <div id="wrap">
-      <img id="stream-img" src="/stream" alt="live stream" />
+      <img id="stream-img" src="/stream" alt="live stream" data-original-src="/stream" />
       <!-- viewBox is set at runtime from /status detection_size so the SVG
            coordinate space always matches whatever INPUT_WIDTH/HEIGHT the
            pipeline is running at. Otherwise clicking to draw a polygon would
@@ -755,12 +836,64 @@ _INDEX_HTML = r"""<!doctype html>
   </footer>
 <script>
 (function() {
+  // ── Camera selection (multi-camera routing) ───────────────────────────
+  // The active camera_id gets appended as ?camera=<id> to every backend
+  // request (/status, /stream, /api/zone, /api/masks, /api/baseline*).
+  // Persisted in localStorage so a browser refresh keeps your selection.
+  let activeCamera = localStorage.getItem('activeCamera') || '';
+  function camParam() { return activeCamera ? '?camera=' + encodeURIComponent(activeCamera) : ''; }
+  function camAppend(url) {
+    if (!activeCamera) return url;
+    return url + (url.includes('?') ? '&' : '?') + 'camera=' + encodeURIComponent(activeCamera);
+  }
+  async function loadCameras() {
+    try {
+      const r = await fetch('/api/cameras');
+      if (!r.ok) return;
+      const j = await r.json();
+      const sel = document.getElementById('s-cam-select');
+      sel.innerHTML = '';
+      j.cameras.forEach(id => {
+        const opt = document.createElement('option');
+        opt.value = id; opt.textContent = id;
+        sel.appendChild(opt);
+      });
+      // Restore saved selection if valid, else use server default.
+      if (!j.cameras.includes(activeCamera)) activeCamera = j.default || j.cameras[0] || '';
+      sel.value = activeCamera;
+      sel.addEventListener('change', () => {
+        activeCamera = sel.value;
+        localStorage.setItem('activeCamera', activeCamera);
+        // Load the zoom preference saved for this specific camera.
+        if (window.__reloadZoomForCamera) window.__reloadZoomForCamera();
+        // Force stream reload with new camera param — MJPEG connection is sticky.
+        const img = document.getElementById('stream-img');
+        if (img) img.src = camAppend('/stream') + '&t=' + Date.now();
+        // Immediately refetch camera-scoped state so old polygon/masks don't
+        // linger visually. loadZone/loadMasks are defined further down but
+        // hoisted-referenced here via the module scope.
+        if (typeof loadZone   === 'function') loadZone();
+        if (typeof loadMasks  === 'function') loadMasks();
+      });
+    } catch (e) { console.warn('loadCameras failed', e); }
+  }
   // ── Status polling ────────────────────────────────────────────────────
   // Detection resolution — set at first /status poll so the zone editor SVG
   // maps clicks to the right pixel space when INPUT_WIDTH/HEIGHT change.
   let detW = 1280, detH = 720;
-  // Display zoom — display size = detW × zoom. localStorage-persisted.
-  let previewZoom = parseFloat(localStorage.getItem('previewZoom') || '1.0');
+  // Display zoom — per-camera because yard and rooftop have different aspect
+  // ratios and typical viewing distances (2K rooftop wants smaller factor to
+  // fit; 1088x612 yard often wants 1.5x). localStorage keyed by camera_id;
+  // a global 'previewZoom' key migrates in as the 'default' fallback on
+  // first load so existing users don't lose their preference.
+  function zoomKey(camId) { return 'previewZoom:' + (camId || 'default'); }
+  function loadZoomFor(camId) {
+    const scoped = localStorage.getItem(zoomKey(camId));
+    if (scoped !== null) return parseFloat(scoped);
+    // Legacy migration: single 'previewZoom' key from before multi-camera.
+    return parseFloat(localStorage.getItem('previewZoom') || '1.0');
+  }
+  let previewZoom = loadZoomFor(activeCamera);
   function applyZoom() {
     const dw = Math.round(detW * previewZoom);
     const dh = Math.round(detH * previewZoom);
@@ -773,12 +906,17 @@ _INDEX_HTML = r"""<!doctype html>
   }
   window.setZoom = function(delta) {
     previewZoom = Math.max(0.5, Math.min(3.0, previewZoom + delta));
-    localStorage.setItem('previewZoom', String(previewZoom));
+    localStorage.setItem(zoomKey(activeCamera), String(previewZoom));
+    applyZoom();
+  };
+  // Called when camera dropdown changes — reload zoom for the new camera.
+  window.__reloadZoomForCamera = function() {
+    previewZoom = loadZoomFor(activeCamera);
     applyZoom();
   };
   async function pollStatus() {
     try {
-      const r = await fetch('/status');
+      const r = await fetch(camAppend('/status'));
       if (!r.ok) return;
       const s = await r.json();
       if (s.detection_size && s.detection_size[0] && s.detection_size[1]) {
@@ -811,7 +949,13 @@ _INDEX_HTML = r"""<!doctype html>
     return `${s}s`;
   }
   setInterval(pollStatus, 1000);
-  pollStatus();
+  // Load camera roster FIRST so the stream URL below has the ?camera= tag baked in
+  // before the browser subscribes to the sticky MJPEG connection.
+  loadCameras().then(() => {
+    const img = document.getElementById('stream-img');
+    if (img && activeCamera) img.src = camAppend('/stream');
+    pollStatus();
+  });
 
   // ── Zone editor ───────────────────────────────────────────────────────
   const svg = document.getElementById('zone-svg');
@@ -827,7 +971,7 @@ _INDEX_HTML = r"""<!doctype html>
   let editEntry = null;   // 'draw' | 'tweak' | null
 
   async function loadZone() {
-    const r = await fetch('/api/zone');
+    const r = await fetch(camAppend('/api/zone'));
     if (!r.ok) return;
     const j = await r.json();
     polygon = j.polygon || [];
@@ -892,7 +1036,7 @@ _INDEX_HTML = r"""<!doctype html>
 
   async function saveZone() {
     try {
-      const r = await fetch('/api/zone', {
+      const r = await fetch(camAppend('/api/zone'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ polygon }),
@@ -993,7 +1137,7 @@ _INDEX_HTML = r"""<!doctype html>
 
   async function loadMasks() {
     try {
-      const r = await fetch('/api/masks');
+      const r = await fetch(camAppend('/api/masks'));
       if (!r.ok) return;
       const j = await r.json();
       masks = (j.masks || []).map(m => ({x1: m[0], y1: m[1], x2: m[2], y2: m[3]}));
@@ -1086,7 +1230,7 @@ _INDEX_HTML = r"""<!doctype html>
         Math.min(m.x1, m.x2), Math.min(m.y1, m.y2),
         Math.max(m.x1, m.x2), Math.max(m.y1, m.y2),
       ]);
-      const r = await fetch('/api/masks', {
+      const r = await fetch(camAppend('/api/masks'), {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({masks: payload}),
       });
@@ -1142,7 +1286,7 @@ _INDEX_HTML = r"""<!doctype html>
 
   async function refreshBaseline() {
     try {
-      const r = await fetch('/api/baseline');
+      const r = await fetch(camAppend('/api/baseline'));
       if (!r.ok) return;
       const j = await r.json();
       const day = j.day || {};
@@ -1177,7 +1321,7 @@ _INDEX_HTML = r"""<!doctype html>
     if (!confirm('Capture the current frame as the clean baseline?\nDo this when NOTHING you care about is in the scene — otherwise the reference will hide real detections.')) return;
     btnBaseline.disabled = true;
     try {
-      const r = await fetch('/api/baseline/capture', { method: 'POST' });
+      const r = await fetch(camAppend('/api/baseline/capture'), { method: 'POST' });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) alert('Baseline capture failed: ' + (j.error || r.status));
       else refreshBaseline();
@@ -1190,7 +1334,7 @@ _INDEX_HTML = r"""<!doctype html>
   });
   btnClearBaseline.addEventListener('click', async () => {
     if (!confirm('Delete the baseline? The pipeline will fall back to single-frame classification (more false positives).')) return;
-    await fetch('/api/baseline/clear', { method: 'POST' });
+    await fetch(camAppend('/api/baseline/clear'), { method: 'POST' });
     refreshBaseline();
   });
   setInterval(refreshBaseline, 5000);

@@ -5,8 +5,11 @@ motion_detector: {edge_margin: 20, history: 400, max_area: 4000, min_area: 80, s
 stationary_mask: {enabled: true, frames: 60, pixel_threshold: 8}
 zone_key: yard_zone
 osd_masks:
-- [0.705, 0.0147, 0.989, 0.0654]
-- [0.9375, 0.9134, 0.9825, 0.9608]
+  yard:
+  - [0.9375, 0.9134, 0.9825, 0.9608]
+  - [0.0055, 0.0098, 0.3134, 0.0703]
+  rooftop:
+  - [0.311, 0.0097, 0.5737, 0.0571]
 zones:
   yard_zone:
     polygon:
@@ -15,6 +18,17 @@ zones:
     - [0.2123, 0.9902]
     - [0.9954, 0.9984]
     - [0.9835, 0.085]
+  rooftop_zone:
+    polygon:
+    - [0.0933, 0.0744]
+    - [0.0161, 0.9828]
+    - [0.981, 0.9881]
+    - [0.855, 0.5539]
+    - [0.7202, 0.5226]
+    - [0.7412, 0.3922]
+    - [0.6895, 0.2769]
+    - [0.3794, 0.8448]
+    - [0.1274, 0.042]
 slew_presets:
 - name: default
   polygon:
