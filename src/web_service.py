@@ -468,7 +468,11 @@ def create_app(registry: DetectorRegistry) -> Flask:
     @app.post("/api/baseline/capture")
     def post_baseline_capture():
         detector = _pick(request)
-        result, status_code = detector.post_command("/internal/baseline/capture")
+        # Forward ?mode=day|night if supplied so the UI can override the
+        # brightness auto-picker (which misclassifies IR-lit foliage as day
+        # on overhead cameras).
+        params = {"mode": request.args.get("mode")} if request.args.get("mode") else None
+        result, status_code = detector.post_command("/internal/baseline/capture", params=params)
         return jsonify(result), status_code
 
     @app.post("/api/baseline/clear")
