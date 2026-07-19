@@ -1,24 +1,26 @@
 # wildlife-detector — three-plane architecture from ADR-002 mapped to docker-compose.
 #
 # services:
-#   detector  → RTSP ingest + MOG2/YOLO + cascade VLM; internal HTTP on 8101
-#   web       → Flask UI on 8100; reads state.db + snapshots directly, proxies frames via HTTP
+#   detector-yard    → RTSP 192.168.1.86; MOG2/YOLO + cascade VLM; internal HTTP 8101
+#   detector-rooftop → RTSP 192.168.1.145; larger-only detection (raccoon/cat); 8102
+#   web              → Flask UI on 8100; aggregates state + status across cameras
 #
-# Trust boundaries (unchanged from the process-split path):
+# Trust boundaries (unchanged from single-camera + process-split path):
 #   - Web → detector writes are bearer-token-gated (INTERNAL_API_TOKEN in .env)
-#   - Detector's internal HTTP is loopback-only inside the compose network
-#     (never published to the host)
+#   - Each detector's internal HTTP is loopback-only inside the compose network
 #   - Detector reaches Ollama on the host via host.docker.internal:11434
 #
-# Volumes (named, so a `docker compose down` doesn't nuke them):
-#   state       → SQLite state.db + WAL. Single writer (detector), single reader (web).
-#   snapshots   → JPEG alerts written by detector, served by web.
-#   logs        → rotating log files (both services write here).
-#   models      → YOLO auto-downloaded weights, cached across image rebuilds.
+# Shared state (both detectors write, web reads):
+#   - state.db      — camera_id column tags each alert row
+#   - snapshots/    — subdirs per camera-id under the alert filename
+#
+# Per-camera overrides live in each service's environment block (below), so
+# only INTERNAL_API_TOKEN, ANTHROPIC_API_KEY, and cascade backend config need
+# to be in .env. Everything camera-scoped is compose-owned.
 #
 # Bring up:
 #   docker compose up -d --build
-#   docker compose logs -f detector    # or web
+#   docker compose logs -f detector-yard    # or detector-rooftop, or web
 #
 # Bring down without losing state:
 #   docker compose down
@@ -26,38 +28,112 @@
 # Bring down and wipe state:
 #   docker compose down -v
 
+x-detector-common: &detector-common
+  build:
+    context: .
+    dockerfile: docker/detector/Dockerfile
+  restart: unless-stopped
+  env_file:
+    - .env
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  volumes:
+    - ./data:/app/data
+    - ./snapshots:/app/snapshots
+    - ./logs:/app/logs
+    - ./clips:/app/clips
+    - models:/app/models
+    - ./config:/app/config
+
 services:
-  detector:
-    build:
-      context: .
-      dockerfile: docker/detector/Dockerfile
-    container_name: wildlife-detector
-    restart: unless-stopped
-    env_file:
-      - .env
+  detector-yard:
+    <<: *detector-common
+    container_name: wildlife-detector-yard
     environment:
-      # Override the host addresses that .env can't sensibly express in-container.
+      # Camera identity — tags alert rows, drives baseline + snapshot paths.
+      CAMERA_ID: yard
+      # Explicit zone_key so the yaml default doesn't accidentally get shared
+      # if we later rename the default.
+      ZONE_KEY: yard_zone
+      # RTSP source. Override in .env if the primary camera moves.
+      RTSP_URL: rtsp://admin:123456@192.168.1.86:554/stream1
+      # Per-mode baseline files: derives baseline_day.jpg + baseline_night.jpg.
+      # Keeping the legacy path so existing baselines migrate for free.
+      BASELINE_PATH: data/baseline.jpg
+      # Yard is optimized for rodent detection — small bbox floor.
+      MIN_MOTION_BBOX_PX: "22"
+      BASELINE_DIFF_THRESHOLD: "0.06"
+      DAY_BASELINE_DIFF_THRESHOLD: "0.18"
+      # Host services (from base image or .env — repeated here so this file
+      # is self-documenting).
       OLLAMA_URL: http://host.docker.internal:11434
       DETECTOR_INTERNAL_HOST: 0.0.0.0
       DETECTOR_INTERNAL_PORT: 8101
-    extra_hosts:
-      # host.docker.internal is auto-mapped on Docker Desktop (Windows/macOS)
-      # but Linux hosts need it declared explicitly. The `host-gateway` sentinel
-      # resolves to the Docker bridge gateway → host.
-      - "host.docker.internal:host-gateway"
-    volumes:
-      # Bind-mount ./data (rather than named volume) so state.db + baseline
-      # JPEGs written by split-mode are visible to the container.
-      - ./data:/app/data
-      - ./snapshots:/app/snapshots
-      - ./logs:/app/logs
-      - models:/app/models
-      - ./config:/app/config:ro
-    # Do NOT publish 8101 — internal HTTP is bearer-gated but not intended for LAN.
     expose:
       - "8101"
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8101/internal/health', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  detector-rooftop:
+    <<: *detector-common
+    container_name: wildlife-detector-rooftop
+    environment:
+      CAMERA_ID: rooftop
+      # Per-camera zone polygon key — pipeline picks zones[rooftop_zone] out of
+      # config/detection.yaml. Placeholder covers bottom half of frame; draw
+      # the real polygon via the UI camera selector once wired.
+      ZONE_KEY: rooftop_zone
+      # Annke 4K camera has a 1200x536 H.264 substream at this path — decode is
+      # ~10x cheaper than the 4K HEVC main, and we downsample to 1088x612 anyway
+      # so main-stream detail is wasted. NVR-adopted, so creds come from the
+      # NVR admin, not the factory default.
+      RTSP_URL: rtsp://admin:windows98@192.168.1.145:554/Streaming/Channels/102
+      # Rooftop baselines live in the same data/ volume, keyed by CAMERA_ID.
+      BASELINE_PATH: data/baseline_rooftop.jpg
+      # Rooftop's 4K source needs higher pipeline resolution to preserve
+      # rat-scale detail. Yard's default 1088x612 works fine for the closer
+      # side-angle view; rooftop at 4K→1088x612 downsamples rat body to ~15x8
+      # px which drops below MOG2's discrimination floor. 2048-wide keeps
+      # small-target detail; ~2x CPU on ingest, still comfortable on 16-core.
+      INPUT_WIDTH: "2048"
+      INPUT_HEIGHT: "928"
+      # Rats at overhead angle project as ~15-25 px wide — the yard's 22 px
+      # floor is close to right for rooftop too. 60 was way too aggressive
+      # and was filtering the actual target.
+      MIN_MOTION_BBOX_PX: "15"
+      # Rooftop shadows drift more with the sun's arc than the yard.
+      BASELINE_DIFF_THRESHOLD: "0.08"
+      DAY_BASELINE_DIFF_THRESHOLD: "0.20"
+      # No PTZ tied to this camera.
+      SLEW_ENABLED: "false"
+      # Rooftop bypasses cascade — Ollama qwen2.5vl can't recognize overhead
+      # silhouettes, so cascade primary rejected every legitimate positive.
+      # Pure Claude single-stage keeps precision manageable.
+      #
+      # Model choice is a cost-vs-recall tradeoff:
+      #   - Opus-4-8: 3/3 recall on overhead rats but ~$0.015/call = high burn
+      #     under load. Use when budget allows or for critical eval periods.
+      #   - Haiku-4-5: partial recall (misses subtle overhead rats but catches
+      #     clear ones) at ~$0.001/call. Good baseline for 24/7 running.
+      # Currently on Haiku — flip to opus-4-8 when eval sessions need higher recall.
+      VLM_BACKEND: claude
+      CLAUDE_MODEL: claude-haiku-4-5-20251001
+      # Wider crop padding for the rooftop — Opus still benefits from more
+      # scene context to disambiguate rat silhouette from patio debris.
+      VLM_CROP_PAD_MULT: "5"
+      # Second detector needs its own internal HTTP port — 8102 keeps it
+      # outside the 8100/8101 range so port confusion is unlikely.
+      OLLAMA_URL: http://host.docker.internal:11434
+      DETECTOR_INTERNAL_HOST: 0.0.0.0
+      DETECTOR_INTERNAL_PORT: 8102
+    expose:
+      - "8102"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8102/internal/health', timeout=2)"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -72,22 +148,26 @@ services:
     env_file:
       - .env
     environment:
-      DETECTOR_INTERNAL_URL: http://detector:8101
+      # Comma-separated so the sidecar can fan-out /status + fan-in /api/alerts.
+      # Order defines display order in the UI.
+      DETECTOR_URLS: http://detector-yard:8101,http://detector-rooftop:8102
+      # Back-compat: legacy single-detector consumers read this one.
+      DETECTOR_INTERNAL_URL: http://detector-yard:8101
       PREVIEW_HOST: 0.0.0.0
       PREVIEW_PORT: 8100
       STATE_DB_PATH: /app/data/state.db
       SNAPSHOT_DIR: /app/snapshots
     volumes:
-      # Web only READS state.db and snapshots — mount read-only where possible.
-      # SQLite WAL requires write access to the WAL/SHM files; leave state RW.
       - ./data:/app/data
       - ./snapshots:/app/snapshots:ro
       - ./logs:/app/logs
-      - ./config:/app/config:ro
+      - ./config:/app/config
     ports:
       - "8100:8100"   # user-facing UI
     depends_on:
-      detector:
+      detector-yard:
+        condition: service_started
+      detector-rooftop:
         condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/status', timeout=2)"]
@@ -97,10 +177,7 @@ services:
       start_period: 15s
 
 volumes:
-  # `state`, `snapshots`, `logs` are now bind-mounts to ./data, ./snapshots,
-  # ./logs on the host — see the service volumes blocks above. This lets the
-  # containerized deployment share state with split-mode (state.db, baseline
-  # JPEGs) so migration is stateless.
+  # Bind-mounts on ./data, ./snapshots, ./logs live in the service blocks.
   # `models` stays a named volume — YOLO auto-downloaded weights don't need
-  # host visibility and named volume avoids polluting the repo.
+  # host visibility.
   models:
