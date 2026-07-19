@@ -840,6 +840,19 @@ _INDEX_HTML = r"""<!doctype html>
     <span class="stat">camera <b id="s-camera">–</b></span>
     <span class="last-alert" id="s-last-alert"></span>
     <span class="stat" id="s-baseline">baseline <b>–</b></span>
+    <!-- Detector process metrics from Stats.resources (psutil).
+         Peak values track since detector startup so the operator can spot
+         spikes even if the current reading has settled. Gate funnel counters
+         next to them show the pre-VLM filtering ratios. -->
+    <span class="stat" title="Detector CPU % / one full core = 100%">
+      cpu <b id="s-cpu">–</b><span style="color:#666"> / peak <b id="s-cpu-peak">–</b></span>
+    </span>
+    <span class="stat" title="Detector RSS memory (MB) — current / peak since start">
+      mem <b id="s-mem">–</b><span style="color:#666"> / peak <b id="s-mem-peak">–</b></span>
+    </span>
+    <span class="stat" title="Gate funnel — motion→zone→baseline-passed→vlm→confirmed. Ratios show which stage is filtering.">
+      gate <b id="s-gate" style="font-family:ui-monospace,monospace">– → – → – → – → –</b>
+    </span>
     <div class="toolbar">
       <button id="btn-draw-zone"  title="Clear the polygon and draw a new one from scratch">Draw zone</button>
       <button id="btn-tweak-zone" title="Keep the current polygon and edit its vertices">Tweak</button>
@@ -1131,6 +1144,26 @@ _INDEX_HTML = r"""<!doctype html>
         la.textContent = `⚠ ${s.last_alert.species} ${(s.last_alert.confidence*100).toFixed(0)}% (${ago}s ago)`;
       } else {
         la.textContent = '';
+      }
+      // Detector process metrics — cpu_pct is multi-core (0..N*100), same as
+      // `docker stats`. Show current + peak so a settled reading still lets
+      // the operator see prior spikes.
+      const res = s.resources || {};
+      if (res.available) {
+        document.getElementById('s-cpu').textContent      = (res.cpu_pct      || 0).toFixed(0) + '%';
+        document.getElementById('s-cpu-peak').textContent = (res.cpu_peak_pct || 0).toFixed(0) + '%';
+        document.getElementById('s-mem').textContent      = (res.rss_mb       || 0).toFixed(0) + 'MB';
+        document.getElementById('s-mem-peak').textContent = (res.rss_peak_mb  || 0).toFixed(0) + 'MB';
+      }
+      // Gate funnel — motion → zone → baseline-passed → vlm → confirmed.
+      // Session counters, reset on detector restart. Ratios show which stage
+      // is doing the filtering work.
+      const g = s.gate_funnel || {};
+      if (Object.keys(g).length) {
+        // baseline-passed = zone_events - baseline_filtered
+        const baselinePassed = Math.max(0, (g.zone_events || 0) - (g.baseline_filtered || 0));
+        document.getElementById('s-gate').textContent =
+          `${g.motion_events||0} → ${g.zone_events||0} → ${baselinePassed} → ${g.vlm_calls||0} → ${g.vlm_confirmed||0}`;
       }
     } catch (e) { /* ignore */ }
   }
