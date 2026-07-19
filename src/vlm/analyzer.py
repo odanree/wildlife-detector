@@ -134,11 +134,33 @@ _COMPARE_USER_PROMPT = (
     "     isn't fully visible. Describe the eyeshine specifically (position, spacing).\n"
     "\n"
     "     Rules that distinguish eyeshine from a false positive:\n"
-    "       - Two points, roughly symmetric, at approximately the same height.\n"
-    "       - Points sit ON or JUST ABOVE the ground/floor (not up on a shelf or wall).\n"
-    "       - Spacing is small — a rat's eyes are ~1.5 cm apart, a mouse's ~0.7 cm.\n"
-    "       - A single bright point is NOT eyeshine (probably a reflection on hardware).\n"
-    "       - Widely-spaced eyes are cat, raccoon, or opossum — species is those, NOT rat.\n"
+    "       - TWO points, roughly symmetric, at approximately the same height, WITH a\n"
+    "         visibly darker body outline around/behind them at ground level — that's a\n"
+    "         rodent facing forward. STRONG evidence, confidence 0.7-0.85.\n"
+    "       - ONE bright point ONLY qualifies if you can see a distinctly darker body\n"
+    "         mass surrounding it (visible dark torso outline, not just floor pixels\n"
+    "         darker than the bright spot). If the 'body' is just the surrounding floor\n"
+    "         and the bright point is essentially isolated — that's a FALSE positive:\n"
+    "         **most likely a moth in flight** (motion-blurred against the floor as\n"
+    "         backdrop) or reflective debris. Reject.\n"
+    "       - **A LONE BRIGHT BLOB — elongated, pill-shaped, streaky, or irregular — with\n"
+    "         NO surrounding dark rodent body outline is a MOTH in flight, not a rodent.**\n"
+    "         The bbox may overlap the patio floor in the 2D frame, but the moth is\n"
+    "         actually airborne between the camera and the floor. Rodents ALWAYS present\n"
+    "         as a dark dense mass with tiny bright dots inside it — never as a lone\n"
+    "         bright object. If you cannot clearly see a darker body around/behind the\n"
+    "         bright pixels, it is NOT a rodent. Return false, species='none'.\n"
+    "         This is the #1 night-time FP class in this yard — reject decisively.\n"
+    "       - Motion blur streaks (elongated white shapes with soft edges) are ALMOST\n"
+    "         ALWAYS flying insects. Rodents move too slowly to motion-blur at 15 fps.\n"
+    "       - WIDELY-SPACED eyeshine (~4-8 cm apart on frame) + LARGER dark body\n"
+    "         (bigger than a rat, distinct silhouette) = raccoon, opossum, or\n"
+    "         cat. STILL a valid wildlife detection — return wildlife_detected=true\n"
+    "         with species='raccoon', 'opossum', 'cat', or 'dog' as appropriate,\n"
+    "         is_rodent=false, confidence 0.7-0.85. Note the wide eye spacing and\n"
+    "         estimated body size in the description.\n"
+    "       - A bright point up on a shelf, wall, or hardware with no dark body around it\n"
+    "         is a reflection or LED — that's false.\n"
     "\n"
     "═══ HARD REJECTS (regardless of pattern) ═══\n"
     "\n"
@@ -153,24 +175,16 @@ _COMPARE_USER_PROMPT = (
     "  C. No vague pattern-matching. 'Consistent with rodent behavior' without a specific\n"
     "     Pattern 1 anatomy or Pattern 2 eyeshine description → false.\n"
     "\n"
-    "═══ COMMON FALSE POSITIVES to explicitly REJECT ═══\n"
+    "═══ COMMON FALSE POSITIVES — reject only when the fit is clear ═══\n"
     "\n"
-    "  - Plastic bags, tarps, sheets of cloth (flapping in wind, drooping edges).\n"
-    "  - Twigs, sticks, leaves — thin uniform-width dark shapes.\n"
-    "  - Bright reflective objects: paper scraps, tape, foil, tissue, packaging.\n"
-    "  - Storage container edges, tarp corners, bag corners (shadows changing).\n"
-    "  - IR auto-gain shifts making the whole frame brighter or dimmer.\n"
-    "  - Shadow drift (time of day moved on since baseline was captured).\n"
-    "  - Camera micro-vibration causing uniform scene shift.\n"
-    "  - A shoe, a hand tool head, a piece of hardware on the floor.\n"
-    "  - FLYING INSECTS (moths, flies, mosquitoes, gnats) — very common under IR:\n"
-    "      * Small bright blobs at ANY height, often mid-air (above ground level).\n"
-    "      * Erratic motion — sudden direction changes, appear/disappear frame to frame.\n"
-    "      * Chitin + wings reflect IR strongly, causing overexposed white spots.\n"
-    "      * No consistent body shape between adjacent frames.\n"
-    "      * Rodents ALWAYS move along the ground/floor and follow surfaces (walls, curbs,\n"
-    "        the edge of a piece of furniture). If the moving object is airborne, off the\n"
-    "        ground, or moves in an erratic curved path, it's an insect — return false.\n"
+    "  You are the confirmation stage — a motion detector and pixel-diff baseline filter\n"
+    "  have already agreed something meaningful changed in this crop. Assume the crop\n"
+    "  is worth looking at. Trust your own vision on debris/insect/lighting artifacts;\n"
+    "  the two overlay families below are the ones you MUST catch specifically:\n"
+    "\n"
+    "  - FLYING INSECT: a bright small blob clearly in mid-air (above ground line),\n"
+    "    or with wing-like white halos, or with erratic non-ground-following motion.\n"
+    "    A dark shape on the ground with any eyeshine is NOT this — it's a rodent.\n"
     "\n"
     "  - CAMERA OSD / WATERMARK / TIMESTAMP OVERLAY — extremely common FP:\n"
     "      * Cameras burn text into the video feed showing the current time, date, and\n"
@@ -203,27 +217,18 @@ _COMPARE_USER_PROMPT = (
     "        uniform pixel values, or accompanying UI text/icons, return false with\n"
     "        species: none, description: 'Camera-drawn AI overlay, not a wildlife event.'\n"
     "\n"
-    "═══ NEGATIVE EXAMPLES — DO NOT DO THIS ═══\n"
+    "═══ EXAMPLES ═══\n"
     "\n"
-    "  BAD:  'A mouse has appeared and is partially obscured by a piece of cloth.'\n"
-    "        (You cannot see the mouse. This is inference, not observation. → FALSE)\n"
-    "  BAD:  'A rat is visible in the lower right corner.' (with no anatomical detail)\n"
-    "        (No head/tail/legs described. → FALSE unless you actually see all four)\n"
-    "  BAD:  'The elongated shape is consistent with rodent behavior.'\n"
-    "        ('Consistent with' is hedging. → FALSE)\n"
-    "\n"
-    "  GOOD (positive, Pattern 1): 'A small brown rodent with visible ears, four legs,\n"
-    "                    and a long tail is walking left-to-right along the base of the\n"
-    "                    workbench.'\n"
-    "  GOOD (positive, Pattern 2): 'Two small bright reflective points about 1.5 cm apart\n"
-    "                    are visible at ground level near the concrete crack — consistent\n"
-    "                    with rat eyeshine. Body outline is dark but the eye spacing\n"
-    "                    matches a rat.' (Note: this description WOULD trigger the hedge\n"
-    "                    rail on 'consistent with' — so use plain language like 'shows'\n"
-    "                    or 'matches' instead. Say what you see, not what it resembles.)\n"
-    "  GOOD (negative): 'A rectangular piece of white paper has appeared on the floor;\n"
-    "                    it has no legs, head, or tail structure, and no bright reflective\n"
-    "                    points visible.'\n"
+    "  POSITIVE (Pattern 1): 'A small brown rodent with visible ears, four legs, and a\n"
+    "     long tail is walking left-to-right along the base of the workbench.'\n"
+    "  POSITIVE (Pattern 2, both eyes): 'Two small bright reflective points about 1.5 cm\n"
+    "     apart are visible at ground level near the concrete crack — rat eyeshine.\n"
+    "     The surrounding dark body outline matches a rat.'\n"
+    "  POSITIVE (Pattern 2, one eye, partial angle): 'A small dark ground-level shape with\n"
+    "     one bright reflective point is visible at center-floor — rodent turned slightly\n"
+    "     away, only one eye catching the IR. Body proportions match a rat.'\n"
+    "  NEGATIVE: 'A rectangular piece of white paper has appeared on the floor; no legs,\n"
+    "     head, or tail structure, and no reflective points inside a dark body.'\n"
     "\n"
     "OTHER WILDLIFE (cat, dog, raccoon, opossum, squirrel, bird, lizard): these are ALL\n"
     "acceptable detections. If you can clearly see the animal's body and identify the species,\n"
@@ -572,3 +577,106 @@ def _normalize(data: dict, is_daytime: bool | None = None) -> dict:
         "confidence":        conf_f,
         "description":       description,
     }
+
+
+class CascadeVLMAnalyzer:
+    """Two-stage VLM cascade — cheap primary, strict confirm.
+
+    Same shape as parking-enforcement-detector's Ollama-primary + Claude-confirm.
+    Primary catches the recall (all rats); confirm catches the precision
+    (rejects primary FPs like water reflections). Confirm only runs on primary
+    positives so cost is bounded by positive rate, not call rate.
+
+    Public interface matches VLMAnalyzer so pipeline can hold either polymorphically:
+    - analyze(frames, is_daytime) -> dict
+    - model_name property
+    - _backend attribute (used by stats)
+    """
+
+    def __init__(self, primary: "VLMAnalyzer", confirm: "VLMAnalyzer") -> None:
+        self._primary = primary
+        self._confirm = confirm
+        self._backend = "cascade"
+        logger.info(
+            "VLM backend: Cascade — primary=%s, confirm=%s",
+            primary.model_name, confirm.model_name,
+        )
+
+    @property
+    def model_name(self) -> str:
+        return f"cascade({self._primary.model_name} → {self._confirm.model_name})"
+
+    def analyze(self, image_bytes: bytes | list[bytes],
+                is_daytime: bool | None = None) -> dict:
+        # Stage 1: primary. Cheap, high recall.
+        primary_result = self._primary.analyze(image_bytes, is_daytime)
+        if not primary_result.get("wildlife_detected"):
+            # Primary rejected — done, no confirm call.
+            return primary_result
+
+        # Stage 2: confirm. Runs only on primary positives.
+        confirm_result = self._confirm.analyze(image_bytes, is_daytime)
+        primary_species = primary_result.get("species", "?")
+        confirm_species = confirm_result.get("species", "?")
+
+        if not confirm_result.get("wildlife_detected"):
+            # Silent FP suppression — primary said rat, confirm disagreed.
+            # Log the disagreement for later review; return negative verdict but
+            # keep confirm's description so operators can see WHY it was killed.
+            logger.info(
+                "CASCADE-REJECT: primary said %s (conf=%.2f), confirm said %s (conf=%.2f) — %s",
+                primary_species, primary_result.get("confidence", 0),
+                confirm_species, confirm_result.get("confidence", 0),
+                confirm_result.get("description", "")[:120],
+            )
+            fp = _FALLBACK.copy()
+            fp["description"] = (
+                f"[CASCADE-REJECT] primary '{primary_species}' rejected by "
+                f"confirm: {confirm_result.get('description', '')[:200]}"
+            )
+            return fp
+
+        # Both agreed — return confirm's authoritative verdict (usually stricter).
+        logger.info(
+            "CASCADE-CONFIRM: primary %s (conf=%.2f), confirm %s (conf=%.2f) — both positive",
+            primary_species, primary_result.get("confidence", 0),
+            confirm_species, confirm_result.get("confidence", 0),
+        )
+        return confirm_result
+
+
+def build_vlm_analyzer_from_env() -> "VLMAnalyzer | CascadeVLMAnalyzer":
+    """Env-driven factory. Returns a plain VLMAnalyzer for single-backend modes,
+    or a CascadeVLMAnalyzer when VLM_BACKEND=cascade.
+
+    Cascade env:
+      CASCADE_PRIMARY_BACKEND   (default: ollama)
+      CASCADE_PRIMARY_MODEL     (default: OLLAMA_MODEL)
+      CASCADE_CONFIRM_BACKEND   (default: claude)
+      CASCADE_CONFIRM_MODEL     (default: CLAUDE_MODEL)
+    """
+    backend = os.getenv("VLM_BACKEND", "claude")
+    claude_model = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+    ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+    ollama_model = os.getenv("OLLAMA_MODEL", "llava:7b-v1.6-mistral-q4_K_M")
+
+    if backend != "cascade":
+        return VLMAnalyzer(
+            backend=backend, claude_model=claude_model,
+            ollama_url=ollama_url, ollama_model=ollama_model,
+        )
+
+    primary_backend = os.getenv("CASCADE_PRIMARY_BACKEND", "ollama")
+    primary_model = os.getenv("CASCADE_PRIMARY_MODEL", ollama_model)
+    confirm_backend = os.getenv("CASCADE_CONFIRM_BACKEND", "claude")
+    confirm_model = os.getenv("CASCADE_CONFIRM_MODEL", claude_model)
+
+    primary = VLMAnalyzer(
+        backend=primary_backend, claude_model=confirm_model,
+        ollama_url=ollama_url, ollama_model=primary_model,
+    )
+    confirm = VLMAnalyzer(
+        backend=confirm_backend, claude_model=confirm_model,
+        ollama_url=ollama_url, ollama_model=primary_model,
+    )
+    return CascadeVLMAnalyzer(primary=primary, confirm=confirm)
