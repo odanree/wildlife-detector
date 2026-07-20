@@ -108,7 +108,11 @@ services:
       # ~10x cheaper than the 4K HEVC main, and we downsample to 1088x612 anyway
       # so main-stream detail is wasted. NVR-adopted, so creds come from the
       # NVR admin, not the factory default.
-      RTSP_URL: rtsp://admin:windows98@192.168.1.145:554/Streaming/Channels/102
+      # Main stream (Channels/101) = 4K HEVC. Sub-stream (Channels/102) was
+      # low-res + upscale-inflated OSD. Main stream costs ~5-10x decode CPU
+      # (fine on 16-core) but keeps OSD proportional and gives Ollama
+      # cleaner crops for small overhead animals.
+      RTSP_URL: rtsp://admin:windows98@192.168.1.145:554/Streaming/Channels/101
       # Rooftop baselines live in the same data/ volume, keyed by CAMERA_ID.
       BASELINE_PATH: data/baseline_rooftop.jpg
       # Rooftop's 4K source needs higher pipeline resolution to preserve

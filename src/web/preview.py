@@ -1103,6 +1103,41 @@ _INDEX_HTML = r"""<!doctype html>
     localStorage.setItem(zoomKey(secondaryCamera), String(secondaryZoom));
     applySecondaryZoom();
   };
+
+  // Scroll-wheel zoom on both preview panes, anchored at cursor position.
+  // Approach: capture where the cursor is IN IMAGE-SPACE FRACTIONS before
+  // resize (fracX, fracY in 0..1), apply the zoom (setter changes wrap
+  // width/height in-place), then adjust page/#main scroll so that same
+  // fraction of the new-sized image lands back under the cursor. No
+  // transform: scale, so downstream coord math (zone editor, mask editor)
+  // keeps working — the wrap is still the true rendered pixel size.
+  function attachWheelZoom(elId, setter) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    const mainEl = document.getElementById('main');
+    el.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const fracX = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0.5;
+      const fracY = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0.5;
+      const oldW = rect.width, oldH = rect.height;
+
+      setter(e.deltaY < 0 ? 0.1 : -0.1);
+
+      // Post-resize: measure new wrap size and shift scroll so the same
+      // image fraction stays pinned under the cursor. RAF ensures the
+      // browser has committed the new width/height before we read it.
+      requestAnimationFrame(() => {
+        const newRect = el.getBoundingClientRect();
+        const dW = newRect.width - oldW;
+        const dH = newRect.height - oldH;
+        if (mainEl) mainEl.scrollLeft += dW * fracX;
+        window.scrollBy(0, dH * fracY);
+      });
+    }, { passive: false });
+  }
+  attachWheelZoom('wrap', window.setZoom);
+  attachWheelZoom('secondary-wrap', window.setSecondaryZoom);
   window.promoteSecondary = function() {
     // Swap primary ↔ secondary. Same effect as picking the secondary camera
     // from the dropdown, wrapped in a single click for convenience.
