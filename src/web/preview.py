@@ -1697,6 +1697,14 @@ _ALERTS_HTML = r"""<!doctype html>
           <option value="other">other</option>
         </select>
       </label>
+      <label style="color:#9aa;font-size:12px;">camera
+        <!-- Populated at page load from /api/cameras so it stays in sync with the
+             detectors compose actually defines. 'all' returns rows from every
+             camera (unified view); pick one to scope to that detector. -->
+        <select id="filter-camera">
+          <option value="">all</option>
+        </select>
+      </label>
       <button id="btn-refresh" title="Refresh now (auto-refreshes every 5s)">Refresh</button>
       <label style="color:#9aa;font-size:12px;"><input type="checkbox" id="auto" checked /> auto</label>
       <label style="color:#9aa;font-size:12px;" title="Collapse consecutive same-track detections into one event row">
@@ -1726,6 +1734,26 @@ const RODENT = new Set(['rat', 'mouse']);
 const rowsEl = document.getElementById('rows');
 const emptyEl = document.getElementById('empty');
 const filterEl = document.getElementById('filter-species');
+const filterCamEl = document.getElementById('filter-camera');
+
+// Populate camera filter from /api/cameras so alerts UI stays in sync
+// with whatever detectors compose brought up. Persist selection in
+// localStorage under a distinct key from the live-preview dropdown.
+(async () => {
+  try {
+    const r = await fetch('/api/cameras');
+    if (!r.ok) return;
+    const j = await r.json();
+    (j.cameras || []).forEach(id => {
+      const opt = document.createElement('option');
+      opt.value = id; opt.textContent = id;
+      filterCamEl.appendChild(opt);
+    });
+    const saved = localStorage.getItem('alertsCameraFilter') || '';
+    if (saved && (j.cameras || []).includes(saved)) filterCamEl.value = saved;
+    refresh();  // reload with the persisted filter applied
+  } catch (e) { /* leave the dropdown as ('all' only) */ }
+})();
 const autoEl = document.getElementById('auto');
 const groupEl = document.getElementById('group');
 const countEl = document.getElementById('s-count');
@@ -1778,8 +1806,15 @@ function renderRow(a, extraCls = '', extraSpeciesBadge = '') {
   const yolo = a.yolo_conf != null
     ? `<div class="track">YOLO ${Math.round(a.yolo_conf * 100)}%</div>` : '';
   const trackCell = a.track_id != null ? `#${a.track_id}` : '—';
+  // Camera badge — only show when unified view is active (filter='all') so we
+  // don't repeat the same badge on every row when the operator has already
+  // scoped to one camera. Suppressed for legacy rows without camera_id too.
+  const camBadge = (a.camera_id && !filterCamEl.value)
+    ? `<span class="badge-hist" style="background:#26262c;color:#9cf;">${a.camera_id}</span>`
+    : '';
   const speciesText = (a.species || '?')
     + (isHist ? '<span class="badge-hist">from disk</span>' : '')
+    + camBadge
     + extraSpeciesBadge;
   const thumb = a.snapshot
     ? `<a href="/snapshots/${encodeURIComponent(a.snapshot)}" target="_blank"><img class="thumb" src="/snapshots/${encodeURIComponent(a.snapshot)}" alt="snapshot" loading="lazy" /></a>`
@@ -1797,7 +1832,12 @@ function renderRow(a, extraCls = '', extraSpeciesBadge = '') {
 async function refresh() {
   try {
     const filter = filterEl.value;
-    const url = filter ? `/api/alerts?species=${encodeURIComponent(filter)}&limit=200` : '/api/alerts?limit=200';
+    const camFilter = filterCamEl.value;
+    // Compose URL query params — both filters are optional and combine.
+    const qs = new URLSearchParams({limit: '200'});
+    if (filter) qs.set('species', filter);
+    if (camFilter) qs.set('camera', camFilter);
+    const url = `/api/alerts?${qs.toString()}`;
     const r = await fetch(url);
     if (!r.ok) return;
     const j = await r.json();
@@ -1851,6 +1891,10 @@ rowsEl.addEventListener('click', (evt) => {
 });
 groupEl.addEventListener('change', refresh);
 filterEl.addEventListener('change', refresh);
+filterCamEl.addEventListener('change', () => {
+  localStorage.setItem('alertsCameraFilter', filterCamEl.value);
+  refresh();
+});
 document.getElementById('btn-refresh').addEventListener('click', refresh);
 setInterval(() => { if (autoEl.checked) refresh(); }, 5000);
 // Esc → back to the live preview dashboard
