@@ -71,6 +71,15 @@ services:
       MOTION_MIN_AREA: "80"
       BASELINE_DIFF_THRESHOLD: "0.06"
       DAY_BASELINE_DIFF_THRESHOLD: "0.18"
+      # Yard cascade = Ollama primary + Claude confirm. Confirm-model
+      # default was Haiku, which hallucinated Pattern 2 eyeshine on moth
+      # wing-flash ("bright reflective point + small dark body outline
+      # consistent with rat facing away"). Same failure mode we hit on
+      # rooftop with cats-from-moths — Sonnet correctly rejects the same
+      # crops. Cost delta trivial now that prompt caching holds (see
+      # perf(vlm) commit). Yard also gets VLM_SKIP_DAYTIME=1 elsewhere
+      # so volume stays ~50 calls/night → ~$3-5/mo on Sonnet.
+      CLAUDE_MODEL: claude-sonnet-5
       # Host services (from base image or .env — repeated here so this file
       # is self-documenting).
       OLLAMA_URL: http://host.docker.internal:11434
@@ -130,6 +139,13 @@ services:
       # Rooftop shadows drift more with the sun's arc than the yard.
       BASELINE_DIFF_THRESHOLD: "0.03"
       DAY_BASELINE_DIFF_THRESHOLD: "0.05"
+      # Yard's 0.95 daytime-rodent gate rejects nearly all overhead rat
+      # detections (grainy IR + small target = 0.4-0.6 conf typical).
+      # Rooftop's baseline auto-picker also misclassifies IR-lit night as
+      # "day" here, compounding the false-reject. Loosen to 0.40 so real
+      # rat calls survive; false-positives are already killed by the
+      # 30 px size floor + Pattern 3 insect hard-rejects.
+      DAYTIME_RODENT_MIN_CONF: "0.40"
       # No PTZ tied to this camera.
       SLEW_ENABLED: "false"
       # Rooftop is overhead — much less shadow motion than the yard's side
