@@ -421,10 +421,17 @@ class VLMAnalyzer:
         # override so concurrent workers don't race on self._user_prompt.
         base_prompt = _COMPARE_USER_PROMPT if len(frames) == 2 else self._user_prompt
         # Prepend day/night context so the model knows when Pattern 2 is invalid.
-        user_prompt = self._mode_prefix(is_daytime) + base_prompt
+        mode_prefix = self._mode_prefix(is_daytime)
+        user_prompt = mode_prefix + base_prompt
         try:
             if self._backend == "claude":
-                raw = self._analyze_claude(frames, user_prompt=user_prompt)
+                # Split static-bulk (base_prompt) from per-call-dynamic (mode_prefix)
+                # so the static bulk can join the cached system prompt — otherwise
+                # Anthropic prompt caching silently ignores our tiny system prompt
+                # (below 1024-token threshold) and every call pays full input rate.
+                raw = self._analyze_claude(
+                    frames, user_prompt=mode_prefix, cacheable_bulk=base_prompt,
+                )
             else:
                 raw = self._analyze_ollama(frames, user_prompt=user_prompt)
             return _normalize(raw, is_daytime=is_daytime)
@@ -472,7 +479,23 @@ class VLMAnalyzer:
             return "image/webp"
         return "image/jpeg"
 
-    def _analyze_claude(self, frames: list[bytes], user_prompt: str | None = None) -> dict:
+    def _analyze_claude(
+        self,
+        frames: list[bytes],
+        user_prompt: str | None = None,
+        cacheable_bulk: str | None = None,
+    ) -> dict:
+        """Send frames + prompts to Claude.
+
+        user_prompt: per-call dynamic text (mode prefix, day/night context).
+            Stays in the user content block since it changes across calls.
+        cacheable_bulk: static rules text (Pattern 1/2/3, hard-rejects, species
+            rules) that would otherwise be sent per-call as user content. Moved
+            into the system prompt block so Anthropic prompt caching can hold
+            it — our _SYSTEM_PROMPT alone is only ~290 tokens, well below the
+            1024-token cache floor. Combined with the bulk (~3300 tokens),
+            the system prompt clears the threshold and cache_read hits fire.
+        """
         prompt_text = user_prompt or self._user_prompt
         content: list[dict] = []
         for fb in frames:
@@ -485,6 +508,14 @@ class VLMAnalyzer:
                 },
             })
         content.append({"type": "text", "text": prompt_text})
+
+        # Build cacheable system: base + static rules bulk. Cache_control on
+        # the LAST block only — Anthropic caches everything up to that marker.
+        system_blocks: list[dict] = [{"type": "text", "text": self._system_prompt}]
+        if cacheable_bulk:
+            system_blocks.append({"type": "text", "text": cacheable_bulk})
+        system_blocks[-1]["cache_control"] = {"type": "ephemeral"}
+
         # Extended thinking (default on for Sonnet-5+) adds ~3x cost for no
         # observable quality gain on this visual-classification task — the
         # prompt is a decision tree, not a reasoning problem. Disable
@@ -493,11 +524,22 @@ class VLMAnalyzer:
             model=self._claude_model,
             max_tokens=512,
             thinking={"type": "disabled"},
-            system=[
-                {"type": "text", "text": self._system_prompt, "cache_control": {"type": "ephemeral"}},
-            ],
+            system=system_blocks,
             messages=[{"role": "user", "content": content}],
         )
+        # Verify prompt caching is actually working — cache_read_input_tokens
+        # should be >0 on the 2nd+ call within the ephemeral cache TTL (5 min).
+        # If it's stuck at 0, the system prompt isn't being cached and we're
+        # paying full input rates on every call.
+        _u = getattr(response, "usage", None)
+        if _u is not None:
+            logger.info(
+                "VLM tokens: input=%d cache_read=%d cache_create=%d output=%d",
+                getattr(_u, "input_tokens", 0),
+                getattr(_u, "cache_read_input_tokens", 0) or 0,
+                getattr(_u, "cache_creation_input_tokens", 0) or 0,
+                getattr(_u, "output_tokens", 0),
+            )
         # Sonnet-5+ / Opus with extended thinking may return ThinkingBlock
         # entries before the TextBlock — filter to text blocks only so we
         # don't AttributeError on the thinking preamble.
