@@ -108,10 +108,13 @@ services:
       # small-target detail; ~2x CPU on ingest, still comfortable on 16-core.
       INPUT_WIDTH: "2048"
       INPUT_HEIGHT: "928"
-      # Rats at overhead angle project as ~15-25 px wide — the yard's 22 px
-      # floor is close to right for rooftop too. 60 was way too aggressive
-      # and was filtering the actual target.
-      MIN_MOTION_BBOX_PX: "15"
+      # Rats at overhead angle project as ~15-25 px wide — but a 15 px floor
+      # let moths/flying insects (5-50 px in-motion streaks) flood into VLM,
+      # where Haiku hallucinates them as cats at ~72%. Raccoons/possums
+      # project as 60+ px; a 45 px floor cuts the moth stream without
+      # losing the wildlife targets we actually care about at overhead.
+      # Ground rats will get missed by rooftop — that's yard's job anyway.
+      MIN_MOTION_BBOX_PX: "30"
       # Rooftop scene has wind-blown foliage that MOG2's variance model
       # learns as background — a slow raccoon crossing brush gets absorbed.
       # KNN stores raw samples instead of averaging variance; keeps
@@ -122,11 +125,11 @@ services:
       MOTION_BACKEND: knn
       MOTION_HISTORY: "1500"
       MOTION_VAR_THRESHOLD: "5"
-      MOTION_MIN_AREA: "20"
+      MOTION_MIN_AREA: "40"
       KNN_DIST2_THRESHOLD: "400"
       # Rooftop shadows drift more with the sun's arc than the yard.
       BASELINE_DIFF_THRESHOLD: "0.03"
-      DAY_BASELINE_DIFF_THRESHOLD: "0.20"
+      DAY_BASELINE_DIFF_THRESHOLD: "0.05"
       # No PTZ tied to this camera.
       SLEW_ENABLED: "false"
       # Rooftop is overhead — much less shadow motion than the yard's side
@@ -146,7 +149,19 @@ services:
       #     clear ones) at ~$0.001/call. Good baseline for 24/7 running.
       # Currently on Haiku — flip to opus-4-8 when eval sessions need higher recall.
       VLM_BACKEND: claude
-      CLAUDE_MODEL: claude-haiku-4-5-20251001
+      # Model-tier eval on raccoon-in-brush clip after all guards in place
+      # (30 px size floor + Pattern 3 flying-insect hard-rejects + 'other'
+      # species alertable + baseline diff 0.05 day / 0.03 night):
+      #   - Haiku:   1 hit but it was a MOTH hallucinated as "cat" — Haiku
+      #              still confabulates species on ambiguous crops even
+      #              with the Pattern 3 insect rail. Cost: $0.003/call.
+      #   - Opus:    1 real hit at $0.07/call, over-strict elsewhere.
+      #   - Sonnet:  1 real hit, 0 FPs at ~$0.009/call (thinking disabled).
+      #              Correctly separated the real raccoon from moth crops
+      #              where Haiku conflated them.
+      # Sonnet is the shipping pick — Haiku's confabulation on moths isn't
+      # fixable at the guard layer without also losing real raccoon frames.
+      CLAUDE_MODEL: claude-sonnet-5
       # Wider crop padding for the rooftop — Opus still benefits from more
       # scene context to disambiguate rat silhouette from patio debris.
       VLM_CROP_PAD_MULT: "5"
