@@ -429,8 +429,14 @@ class VLMAnalyzer:
                 # so the static bulk can join the cached system prompt — otherwise
                 # Anthropic prompt caching silently ignores our tiny system prompt
                 # (below 1024-token threshold) and every call pays full input rate.
+                # For 1-frame calls, _user_prompt alone is only ~700 tokens; even
+                # combined with _system_prompt (~290) that's below the 1024 floor,
+                # so cache silently no-ops. Always ship _COMPARE_USER_PROMPT as the
+                # cacheable bulk — it's a superset of the rules Sonnet uses in
+                # either mode, and clears the cache floor unconditionally.
+                cacheable = _COMPARE_USER_PROMPT
                 raw = self._analyze_claude(
-                    frames, user_prompt=mode_prefix, cacheable_bulk=base_prompt,
+                    frames, user_prompt=mode_prefix, cacheable_bulk=cacheable,
                 )
             else:
                 raw = self._analyze_ollama(frames, user_prompt=user_prompt)

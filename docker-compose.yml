@@ -79,7 +79,13 @@ services:
       # crops. Cost delta trivial now that prompt caching holds (see
       # perf(vlm) commit). Yard also gets VLM_SKIP_DAYTIME=1 elsewhere
       # so volume stays ~50 calls/night → ~$3-5/mo on Sonnet.
+      #
+      # Both CLAUDE_MODEL and CASCADE_CONFIRM_MODEL set — cascade path
+      # reads CASCADE_CONFIRM_MODEL first (see build_vlm_analyzer_from_env),
+      # which was set to Haiku in .env. Explicit override here ensures the
+      # confirm actually uses Sonnet regardless of .env drift.
       CLAUDE_MODEL: claude-sonnet-5
+      CASCADE_CONFIRM_MODEL: claude-sonnet-5
       # Host services (from base image or .env — repeated here so this file
       # is self-documenting).
       OLLAMA_URL: http://host.docker.internal:11434
