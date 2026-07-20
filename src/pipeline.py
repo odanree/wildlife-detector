@@ -112,6 +112,30 @@ def _crop_wide_from_ndarray(frame: np.ndarray, bbox: tuple[int, int, int, int]) 
     return _crop_wide_bytes(frame, bbox)
 
 
+def _crop_wide_bytes_with_motion_overlay(
+    frame: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    contour,
+) -> bytes:
+    """Same geometry as _crop_wide_bytes, but draws the motion contour on a
+    frame copy before cropping so the VLM sees an explicit outline of what
+    moved. Encodes the temporal signal (which frames alone can't convey)
+    into the spatial signal the model actually consumes.
+
+    Fallback: if contour is None, degrades to _crop_wide_bytes."""
+    if contour is None:
+        return _crop_wide_bytes(frame, bbox)
+    annotated = frame.copy()
+    # Bright green outline — high contrast against both IR-grey nighttime
+    # and daytime scenes. Filled at low alpha to hint the interior region
+    # without occluding animal texture the model needs to classify species.
+    overlay = annotated.copy()
+    cv2.drawContours(overlay, [contour], -1, (0, 255, 0), thickness=cv2.FILLED)
+    cv2.addWeighted(overlay, 0.25, annotated, 0.75, 0, annotated)
+    cv2.drawContours(annotated, [contour], -1, (0, 255, 0), thickness=2)
+    return _crop_wide_bytes(annotated, bbox)
+
+
 def _decode_baseline(jpeg: bytes, expected_w: int, expected_h: int) -> "np.ndarray | None":
     """Decode the persisted baseline JPEG and normalize to the detection
     resolution so bbox coords line up 1:1 with the current frame."""
@@ -463,6 +487,10 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     _save_rejected_crops = os.getenv("SAVE_REJECTED_CROPS", "0") == "1"
     if _save_rejected_crops:
         logger.info("SAVE_REJECTED_CROPS=1 — rejected VLM crops will be dumped to snapshots/rejected/")
+    _motion_overlay_enabled = os.getenv("VLM_MOTION_OVERLAY", "0") == "1"
+    if _motion_overlay_enabled:
+        logger.info("VLM_MOTION_OVERLAY=1 — VLM crops will get motion-contour outline "
+                    "(escalation for camouflaged targets in high-texture backgrounds)")
 
     # Track IDs that fired a positive alert this frame — drawn red on the preview.
     # Cleared each iteration; brief flash is fine, cooldown suppresses re-fires anyway.
@@ -704,12 +732,22 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         continue
 
                 last_vlm_ts[det.track_id] = now
-                crop = _crop_wide_bytes(frame, det.bbox)
+                # For camouflaged targets (raccoon in brush, rodent behind
+                # foliage) the raw frame carries no spatial signal — the
+                # animal is only visible via inter-frame motion. Overlay the
+                # motion contour on the crop so the temporal signal enters
+                # the VLM's spatial input. Opt-in via VLM_MOTION_OVERLAY=1.
+                if _motion_overlay_enabled and getattr(det, "contour", None) is not None:
+                    crop = _crop_wide_bytes_with_motion_overlay(frame, det.bbox, det.contour)
+                else:
+                    crop = _crop_wide_bytes(frame, det.bbox)
                 if not crop:
                     continue
                 # If we have a baseline, also crop the SAME region from it and pass
                 # both frames to the VLM. Prompt in analyzer.py detects two-image
                 # mode and instructs the model to identify what changed.
+                # Baseline crop is NEVER annotated — it's the reference for "what
+                # was here before"; overlay would create a spurious diff.
                 _vlm_input = [crop]
                 if _baseline_np is not None:
                     _baseline_crop = _crop_wide_from_ndarray(_baseline_np, det.bbox)
