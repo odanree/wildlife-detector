@@ -1151,8 +1151,8 @@ _INDEX_HTML = r"""<!doctype html>
       document.getElementById('s-camera').textContent = s.camera;
       const la = document.getElementById('s-last-alert');
       if (s.last_alert) {
-        const ago = Math.max(0, Math.floor(Date.now()/1000 - s.last_alert.ts));
-        la.textContent = `⚠ ${s.last_alert.species} ${(s.last_alert.confidence*100).toFixed(0)}% (${ago}s ago)`;
+        const agoSec = Math.max(0, Math.floor(Date.now()/1000 - s.last_alert.ts));
+        la.textContent = `⚠ ${s.last_alert.species} ${(s.last_alert.confidence*100).toFixed(0)}% (${fmtAgo(agoSec)} ago)`;
       } else {
         la.textContent = '';
       }
@@ -1187,6 +1187,19 @@ _INDEX_HTML = r"""<!doctype html>
     if (h) return `${h}h${m}m`;
     if (m) return `${m}m${s}s`;
     return `${s}s`;
+  }
+  // Compact "N ago" formatter. Seconds < 60, then minutes, then hours, then days.
+  // Ceils to the next larger unit as soon as it applies so the string never shows
+  // an awkward '11743s' — that becomes '3h15m'.
+  function fmtAgo(sec) {
+    if (sec < 60)     return `${sec}s`;
+    if (sec < 3600)   return `${Math.floor(sec/60)}m`;
+    if (sec < 86400)  {
+      const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60);
+      return m ? `${h}h${m}m` : `${h}h`;
+    }
+    const d = Math.floor(sec/86400), h = Math.floor((sec%86400)/3600);
+    return h ? `${d}d${h}h` : `${d}d`;
   }
   setInterval(pollStatus, 1000);
   // Load camera roster FIRST so the stream URL below has the ?camera= tag baked in
