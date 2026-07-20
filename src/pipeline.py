@@ -750,6 +750,17 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     continue
                 if det.track_id < 1000:
                     last_vlm_ts[det.track_id] = now
+                    # YOLO fast-path fires for ANY COCO class it detected — but
+                    # only some are wildlife. Person / vehicle / furniture classes
+                    # are always false-alert territory (property owner walking
+                    # through, parked car). Hard-drop those before they become
+                    # alerts; only pass known-wildlife classes through.
+                    _WILDLIFE_COCO = {"cat", "dog", "bird", "horse", "sheep",
+                                       "cow", "elephant", "bear", "zebra", "giraffe"}
+                    if det.class_name not in _WILDLIFE_COCO:
+                        logger.debug("YOLO drop: non-wildlife class '%s' track=%d",
+                                     det.class_name, det.track_id)
+                        continue
                     _yolo_result = {
                         "wildlife_detected": True,
                         "species":           det.class_name,
