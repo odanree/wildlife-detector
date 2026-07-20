@@ -218,6 +218,20 @@ def init_baseline(path: str) -> Baseline:
     return _baseline
 
 
+# ── Anthropic price sheet (USD per 1M tokens) ──────────────────────────────
+# Keep near Stats.record_vlm_tokens where it's actually consumed. Update
+# whenever Anthropic changes rate card. Sonnet 4.5 shares Sonnet-5 pricing;
+# _default is the "no model matched" fallback and uses Sonnet rates so we
+# never under-report a config mistake.
+_MODEL_PRICING = {
+    "claude-haiku-4-5-20251001": {"input": 1.0,  "cache_read": 0.10, "cache_write": 1.25,  "output": 5.0},
+    "claude-sonnet-5":           {"input": 3.0,  "cache_read": 0.30, "cache_write": 3.75,  "output": 15.0},
+    "claude-sonnet-4-5":         {"input": 3.0,  "cache_read": 0.30, "cache_write": 3.75,  "output": 15.0},
+    "claude-opus-4-8":           {"input": 15.0, "cache_read": 1.50, "cache_write": 18.75, "output": 75.0},
+    "_default":                  {"input": 3.0,  "cache_read": 0.30, "cache_write": 3.75,  "output": 15.0},
+}
+
+
 # ── Stats holder ────────────────────────────────────────────────────────────
 
 class Stats:
@@ -260,6 +274,17 @@ class Stats:
         self._vlm_rejected = 0         # VLM returned wildlife_detected=False
         self._vlm_confirmed_session = 0  # VLM confirmed a wildlife event THIS session
                                         # (distinct from self._alerts which is DB-seeded lifetime total)
+        # ── Token + cost tracking ─────────────────────────────────────────
+        # Accumulates across the process lifetime (resets on restart). Cost
+        # estimate is per-model rate-carded, updated on every claude call
+        # via record_vlm_tokens(). Cache-hit rate is the observability
+        # signal for "is prompt caching actually working" — should stay
+        # near 1.0 after the first call in a 5-min cache TTL window.
+        self._vlm_tokens_input = 0
+        self._vlm_tokens_cache_read = 0
+        self._vlm_tokens_cache_create = 0
+        self._vlm_tokens_output = 0
+        self._vlm_cost_usd = 0.0
 
     def record_frame(self) -> None:
         with self._lock:
@@ -284,6 +309,31 @@ class Stats:
     def record_vlm_rejected(self) -> None:
         with self._lock:
             self._vlm_rejected += 1
+
+    def record_vlm_tokens(self, model: str, input_tok: int, cache_read: int,
+                          cache_create: int, output_tok: int) -> None:
+        """Accumulate token counts and estimated cost for a completed VLM call.
+
+        Pricing (USD per 1M tokens, Anthropic rate card):
+          Sonnet-5:  input $3    / cache-read $0.30 / cache-write $3.75 / output $15
+          Haiku-4.5: input $1    / cache-read $0.10 / cache-write $1.25 / output $5
+          Opus-4.8:  input $15   / cache-read $1.50 / cache-write $18.75 / output $75
+        Unknown model → assume Sonnet rates (conservative — most likely to be
+        chosen by operator, avoids under-reporting).
+        """
+        rates_per_m = _MODEL_PRICING.get(model, _MODEL_PRICING["_default"])
+        cost = (
+            input_tok    * rates_per_m["input"]      +
+            cache_read   * rates_per_m["cache_read"] +
+            cache_create * rates_per_m["cache_write"] +
+            output_tok   * rates_per_m["output"]
+        ) / 1_000_000
+        with self._lock:
+            self._vlm_tokens_input        += input_tok
+            self._vlm_tokens_cache_read   += cache_read
+            self._vlm_tokens_cache_create += cache_create
+            self._vlm_tokens_output       += output_tok
+            self._vlm_cost_usd            += cost
 
     def record_alert(self, species: str, confidence: float, description: str,
                      snapshot: str | None = None,
@@ -385,6 +435,23 @@ class Stats:
                     "vlm_calls":         self._vlm_calls,
                     "vlm_rejected":      self._vlm_rejected,
                     "vlm_confirmed":     self._vlm_confirmed_session,
+                },
+                # Session-lifetime VLM token + cost tracking. cache_hit_rate
+                # is the observability signal for "prompt caching is holding"
+                # — should stay near 1.0 after the first call in a 5-min TTL
+                # window. Cost is computed via _MODEL_PRICING; unknown models
+                # fall back to Sonnet rates.
+                "vlm_cost": {
+                    "tokens_input":        self._vlm_tokens_input,
+                    "tokens_cache_read":   self._vlm_tokens_cache_read,
+                    "tokens_cache_create": self._vlm_tokens_cache_create,
+                    "tokens_output":       self._vlm_tokens_output,
+                    "cost_usd":            round(self._vlm_cost_usd, 4),
+                    "cache_hit_rate": round(
+                        self._vlm_tokens_cache_read /
+                        max(1, self._vlm_tokens_cache_read + self._vlm_tokens_cache_create + self._vlm_tokens_input),
+                        3,
+                    ),
                 },
                 # Detector self-monitoring. cpu_pct is multi-core (0..N*100)
                 # matching `docker stats`; num_cpus lets the UI show "X% of N cores".
@@ -865,6 +932,9 @@ _INDEX_HTML = r"""<!doctype html>
         <span style="color:#4d9" title="VLM confirmed a real wildlife event">hit <b id="s-g-hit">–</b></span>
       </span>
     </span>
+    <span class="stat" title="Session-lifetime VLM cost (USD) + prompt-cache hit rate. Cache should stay near 1.0 after warmup.">
+      vlm $<b id="s-vlm-cost">–</b><span style="color:#666"> · cache <b id="s-vlm-cache">–</b></span>
+    </span>
     <div class="toolbar">
       <button id="btn-draw-zone"  title="Clear the polygon and draw a new one from scratch">Draw zone</button>
       <button id="btn-tweak-zone" title="Keep the current polygon and edit its vertices">Tweak</button>
@@ -1180,6 +1250,12 @@ _INDEX_HTML = r"""<!doctype html>
         document.getElementById('s-g-base').textContent = baselinePassed;
         document.getElementById('s-g-vlm').textContent  = g.vlm_calls       || 0;
         document.getElementById('s-g-hit').textContent  = g.vlm_confirmed   || 0;
+      }
+      const vc = s.vlm_cost || {};
+      if (Object.keys(vc).length) {
+        // 4 decimals so sub-cent runs still read as something; hit rate as %.
+        document.getElementById('s-vlm-cost').textContent  = (vc.cost_usd || 0).toFixed(4);
+        document.getElementById('s-vlm-cache').textContent = ((vc.cache_hit_rate || 0) * 100).toFixed(0) + '%';
       }
     } catch (e) { /* ignore */ }
   }
