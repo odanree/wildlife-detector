@@ -1680,6 +1680,39 @@ _ALERTS_HTML = r"""<!doctype html>
     .track { color: #667; font-size: 11px; font-variant-numeric: tabular-nums; }
     #empty { padding: 40px; text-align: center; color: #667; font-size: 14px; }
     footer { padding: 8px 16px; font-size: 12px; color: #667; border-top: 1px solid #2a2a30; text-align: center; }
+    /* Lightbox overlay — click a thumbnail to open, arrow keys / on-screen
+       chevrons to move through visible alerts, Esc to close. Snapshots that
+       don't fire (no-snapshot rows) are skipped in the navigation list. */
+    /* Simple layout: image + meta stacked, natural flow. Side chevrons
+       + arrow keys handle nav — no bottom Prev/Next button strip.
+       Position counter stays as a small text under the meta. */
+    #lb { display: none; position: fixed; inset: 0; z-index: 9999;
+          background: rgba(0,0,0,0.92); overflow-y: auto; }
+    #lb.open { display: flex; align-items: flex-start; justify-content: center;
+               padding: 24px 80px; }
+    #lb-inner { display: flex; flex-direction: column; align-items: center;
+                gap: 12px; max-width: 100%; }
+    #lb-img { display: block; max-width: 100%;
+              max-height: calc(100vh - 200px);
+              object-fit: contain; border-radius: 4px; background: #000; }
+    #lb-meta { color: #ddd; font-size: 13px; text-align: center; line-height: 1.4;
+               max-width: 900px; }
+    #lb-meta .species { font-weight: 600; }
+    #lb-meta .desc { color: #aab; margin-top: 4px; font-size: 12px; }
+    #lb-pos { color: #667; font-size: 12px; font-variant-numeric: tabular-nums; }
+    #lb-close { position: absolute; top: 16px; right: 20px; color: #ddd;
+                font-size: 32px; background: transparent; border: none; cursor: pointer;
+                width: 40px; height: 40px; line-height: 1; }
+    #lb-close:hover { color: #fff; }
+    #lb-chev-left, #lb-chev-right {
+      position: absolute; top: 50%; transform: translateY(-50%);
+      background: rgba(38, 38, 44, 0.7); color: #ddd; border: 1px solid #3a3a40;
+      width: 48px; height: 64px; font-size: 24px; cursor: pointer; border-radius: 4px;
+    }
+    #lb-chev-left { left: 20px; }
+    #lb-chev-right { right: 20px; }
+    #lb-chev-left:hover, #lb-chev-right:hover { background: rgba(60, 60, 70, 0.9); }
+    .thumb { cursor: zoom-in; }
   </style>
 </head>
 <body>
@@ -1734,6 +1767,16 @@ _ALERTS_HTML = r"""<!doctype html>
   </table>
   <div id="empty" style="display:none;">No alerts. When one fires, or when the <code>snapshots/</code> folder has JPEGs from a prior session, they'll show up here.</div>
   <footer>Ring buffer capacity 500 · rolls oldest first · JPEGs on disk backfilled at startup (marked <span class="badge-hist">from disk</span> — confidence + description not persisted)</footer>
+  <div id="lb" role="dialog" aria-modal="true" aria-label="alert snapshot viewer">
+    <button id="lb-close" aria-label="close">×</button>
+    <button id="lb-chev-left" aria-label="previous">‹</button>
+    <button id="lb-chev-right" aria-label="next">›</button>
+    <div id="lb-inner">
+      <img id="lb-img" alt="alert snapshot" />
+      <div id="lb-meta"></div>
+      <div id="lb-pos">— / —</div>
+    </div>
+  </div>
 <script>
 const RODENT = new Set(['rat', 'mouse']);
 const rowsEl = document.getElementById('rows');
@@ -1822,7 +1865,7 @@ function renderRow(a, extraCls = '', extraSpeciesBadge = '') {
     + camBadge
     + extraSpeciesBadge;
   const thumb = a.snapshot
-    ? `<a href="/snapshots/${encodeURIComponent(a.snapshot)}" target="_blank"><img class="thumb" src="/snapshots/${encodeURIComponent(a.snapshot)}" alt="snapshot" loading="lazy" /></a>`
+    ? `<img class="thumb" src="/snapshots/${encodeURIComponent(a.snapshot)}" alt="snapshot" loading="lazy" data-lb="${a.id}" />`
     : `<div style="color:#667;font-size:11px;padding:12px;">no snapshot</div>`;
   return `<tr class="${rowCls.trim()}" data-id="${a.id}">
     <td class="thumb-cell">${thumb}</td>
@@ -1847,6 +1890,8 @@ async function refresh() {
     if (!r.ok) return;
     const j = await r.json();
     const items = j.items || [];
+    // Stash for lightbox lookup by alert id (renderLbAt uses window.__lastItems)
+    window.__lastItems = items;
     countEl.textContent = j.total || 0;
     shownEl.textContent = items.length;
     if (items.length === 0) {
@@ -1887,12 +1932,20 @@ async function refresh() {
 // Expand/collapse handler — event delegation on the tbody
 rowsEl.addEventListener('click', (evt) => {
   const btn = evt.target.closest('.expand-btn');
-  if (!btn) return;
-  evt.preventDefault();
-  const gid = parseInt(btn.dataset.group, 10);
-  if (expanded.has(gid)) expanded.delete(gid);
-  else expanded.add(gid);
-  refresh();
+  if (btn) {
+    evt.preventDefault();
+    const gid = parseInt(btn.dataset.group, 10);
+    if (expanded.has(gid)) expanded.delete(gid);
+    else expanded.add(gid);
+    refresh();
+    return;
+  }
+  // Thumbnail click → open lightbox at that alert
+  const img = evt.target.closest('img.thumb[data-lb]');
+  if (img) {
+    evt.preventDefault();
+    openLightbox(parseInt(img.dataset.lb, 10));
+  }
 });
 groupEl.addEventListener('change', refresh);
 filterEl.addEventListener('change', refresh);
@@ -1902,9 +1955,69 @@ filterCamEl.addEventListener('change', () => {
 });
 document.getElementById('btn-refresh').addEventListener('click', refresh);
 setInterval(() => { if (autoEl.checked) refresh(); }, 5000);
-// Esc → back to the live preview dashboard
+
+// ── Lightbox: prev/next through visible alerts with snapshots ────────────
+// Navigation list rebuilds from the DOM on open, so it always reflects the
+// currently-visible rows (respects grouping, filters, camera scope).
+const lbEl = document.getElementById('lb');
+const lbImg = document.getElementById('lb-img');
+const lbMeta = document.getElementById('lb-meta');
+const lbPos = document.getElementById('lb-pos');
+let lbList = [];   // array of alert-id ints, in display order
+let lbIdx = 0;
+
+function collectVisibleAlertIds() {
+  return [...document.querySelectorAll('img.thumb[data-lb]')]
+    .map(el => parseInt(el.dataset.lb, 10));
+}
+function findAlertById(id) {
+  // walk lastItems (captured in refresh) — flat lookup
+  return (window.__lastItems || []).find(a => a.id === id);
+}
+function renderLbAt(idx) {
+  if (idx < 0 || idx >= lbList.length) return;
+  lbIdx = idx;
+  const a = findAlertById(lbList[idx]);
+  if (!a) return;
+  lbImg.src = `/snapshots/${encodeURIComponent(a.snapshot)}`;
+  const speciesCls = RODENT.has(a.species) ? 'rodent' : 'other';
+  const camBadge = a.camera_id ? `<span class="badge-hist" style="background:#26262c;color:#9cf;">${a.camera_id}</span>` : '';
+  const confPct = a.confidence != null ? `${Math.round(a.confidence * 100)}%` : '—';
+  lbMeta.innerHTML = `
+    <div><span class="species ${speciesCls}">${a.species || '?'}</span> ${camBadge}
+         · ${fmtTs(a.ts)} · conf ${confPct} · track #${a.track_id ?? '—'}</div>
+    <div class="desc">${(a.description || '').replace(/</g, '&lt;')}</div>`;
+  lbPos.textContent = `${idx + 1} / ${lbList.length}`;
+}
+function openLightbox(alertId) {
+  lbList = collectVisibleAlertIds();
+  const idx = lbList.indexOf(alertId);
+  if (idx === -1) return;
+  lbEl.classList.add('open');
+  document.body.style.overflow = 'hidden';
+  renderLbAt(idx);
+}
+function closeLightbox() {
+  lbEl.classList.remove('open');
+  document.body.style.overflow = '';
+  lbImg.src = '';
+}
+document.getElementById('lb-chev-left').addEventListener('click', () => renderLbAt(lbIdx - 1));
+document.getElementById('lb-chev-right').addEventListener('click', () => renderLbAt(lbIdx + 1));
+document.getElementById('lb-close').addEventListener('click', closeLightbox);
+// Click backdrop to close (but not clicks on the img itself)
+lbEl.addEventListener('click', (e) => { if (e.target === lbEl) closeLightbox(); });
+
+// Esc → close lightbox if open, else back to live preview
+// Arrow keys → prev/next when lightbox is open
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') window.location.href = '/';
+  if (lbEl.classList.contains('open')) {
+    if (e.key === 'Escape') closeLightbox();
+    else if (e.key === 'ArrowLeft') renderLbAt(lbIdx - 1);
+    else if (e.key === 'ArrowRight') renderLbAt(lbIdx + 1);
+  } else if (e.key === 'Escape') {
+    window.location.href = '/';
+  }
 });
 refresh();
 </script>
