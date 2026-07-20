@@ -85,14 +85,33 @@ def _load_yaml(path: str) -> dict:
         return yaml.safe_load(fh)
 
 
-def _crop_wide_bytes(frame: np.ndarray, bbox: tuple[int, int, int, int]) -> bytes:
+def _crop_wide_bytes(
+    frame: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    osd_masks: list[tuple[int, int, int, int]] | None = None,
+) -> bytes:
     """Close-up crop around the detection — VLM input.
 
     Padding = max(bbox_dim * MULT, MIN_PAD_PX) per axis. Bumping either dial
     gives the VLM more scene context — helpful for small bboxes where the
     model needs surroundings to reason about scale ("is this on the floor or
     on a wall?"). Env: VLM_CROP_PAD_MULT (default 3), VLM_CROP_MIN_PAD (default 160).
+
+    osd_masks: OSD/timestamp regions (in frame coords) blanked to black on the
+    frame copy BEFORE cropping. Without this, mismatched timestamps between
+    baseline and current frame become the dominant visual diff — Sonnet
+    correctly identifies "only the timestamp changed" and rejects real
+    detections. Was already applied to baseline pixel-diff calc; needs to
+    apply to the VLM crop too or the model is misled.
     """
+    if osd_masks:
+        frame = frame.copy()
+        fh, fw = frame.shape[:2]
+        for mx1, my1, mx2, my2 in osd_masks:
+            mx1 = max(0, min(fw, mx1)); mx2 = max(0, min(fw, mx2))
+            my1 = max(0, min(fh, my1)); my2 = max(0, min(fh, my2))
+            if mx2 > mx1 and my2 > my1:
+                frame[my1:my2, mx1:mx2] = 0
     h, w = frame.shape[:2]
     x1, y1, x2, y2 = bbox
     bw, bh = max(1, x2 - x1), max(1, y2 - y1)
@@ -106,10 +125,14 @@ def _crop_wide_bytes(frame: np.ndarray, bbox: tuple[int, int, int, int]) -> byte
     return buf.tobytes() if ok else b""
 
 
-def _crop_wide_from_ndarray(frame: np.ndarray, bbox: tuple[int, int, int, int]) -> bytes:
+def _crop_wide_from_ndarray(
+    frame: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    osd_masks: list[tuple[int, int, int, int]] | None = None,
+) -> bytes:
     """Same crop geometry as _crop_wide_bytes — separated so the baseline
     (already an ndarray in memory) can be sliced without a round-trip to bytes."""
-    return _crop_wide_bytes(frame, bbox)
+    return _crop_wide_bytes(frame, bbox, osd_masks=osd_masks)
 
 
 def _crop_wide_bytes_with_motion_overlay(
@@ -484,6 +507,19 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     vlm_jobs: dict[int, tuple[Future, np.ndarray, tuple, float, bytes]] = {}
     last_vlm_ts: dict[int, float] = {}
     VLM_INTERVAL_S = float(os.getenv("VLM_INTERVAL_S", "2.0"))
+    # Stationary-FP suppression: blinking indicator lights (LEDs, chargers,
+    # camera IR emitters) turn on/off at the same pixel spot repeatedly.
+    # MOG2/KNN sees each transition as fresh foreground and creates a new
+    # track per blink, so per-track debouncers don't help — each track is a
+    # unique ID at the same location. Keep a rolling window of recently
+    # VLM-rejected bbox centers; if a new candidate falls within
+    # STATIONARY_FP_RADIUS_PX of any recent reject, skip VLM (and the
+    # baseline-diff work leading up to it).
+    _stationary_fp_radius = int(os.getenv("STATIONARY_FP_RADIUS_PX", "15"))
+    _stationary_fp_ttl_s = float(os.getenv("STATIONARY_FP_TTL_S", "120"))
+    _stationary_fp_min_hits = int(os.getenv("STATIONARY_FP_MIN_HITS", "3"))
+    # list of (cx, cy, first_ts, count)
+    _recent_fp_centers: list[list] = []
     _save_rejected_crops = os.getenv("SAVE_REJECTED_CROPS", "0") == "1"
     if _save_rejected_crops:
         logger.info("SAVE_REJECTED_CROPS=1 — rejected VLM crops will be dumped to snapshots/rejected/")
@@ -569,6 +605,32 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             # timestamp/watermark region is never wildlife.
             if osd_masks:
                 zone_dets = [d for d in zone_dets if not _in_any_mask(d.center, osd_masks)]
+
+            # Stationary-FP suppression — drop detections whose center is
+            # within N pixels of a spot that VLM has already rejected M+ times
+            # recently. Blinking indicator lights (LED, IR emitter, reflective
+            # tape) fire hundreds of MOG2 events at the same pixel with fresh
+            # track_ids each blink; without this filter, real detections at
+            # other frame regions get drowned out by the debounce/rate-limit
+            # budget being spent on a known-bad spot.
+            _now_expire = time.time() - _stationary_fp_ttl_s
+            _recent_fp_centers[:] = [e for e in _recent_fp_centers if e[2] >= _now_expire]
+            if _recent_fp_centers:
+                _suppress_cells = [(e[0], e[1]) for e in _recent_fp_centers
+                                   if e[3] >= _stationary_fp_min_hits]
+                if _suppress_cells:
+                    _kept = []
+                    for d in zone_dets:
+                        cx, cy = d.center
+                        if any(abs(cx - sx) <= _stationary_fp_radius
+                               and abs(cy - sy) <= _stationary_fp_radius
+                               for sx, sy in _suppress_cells):
+                            continue
+                        _kept.append(d)
+                    _dropped = len(zone_dets) - len(_kept)
+                    if _dropped > 0:
+                        logger.debug("Stationary-FP suppression: dropped %d dets", _dropped)
+                    zone_dets = _kept
             active_ids = {d.track_id for d in zone_dets}
             if zone_dets:
                 _preview_stats.record_zone_motion(len(zone_dets))
@@ -592,6 +654,23 @@ def run(stream_url: str | None = None, video_path: str | None = None,
 
                 if not result.get("wildlife_detected", False):
                     _preview_stats.record_vlm_rejected()
+                    # Record this bbox center for stationary-FP suppression —
+                    # if new motion keeps firing at this same spot (blinking
+                    # LED, camera IR emitter), we'll skip VLM entirely rather
+                    # than burn cycles rejecting it 100x.
+                    _cx = (bbox[0] + bbox[2]) // 2
+                    _cy = (bbox[1] + bbox[3]) // 2
+                    _now = time.time()
+                    _matched = False
+                    for entry in _recent_fp_centers:
+                        if abs(entry[0] - _cx) <= _stationary_fp_radius \
+                           and abs(entry[1] - _cy) <= _stationary_fp_radius:
+                            entry[3] += 1
+                            entry[2] = _now  # refresh TTL on re-hit
+                            _matched = True
+                            break
+                    if not _matched:
+                        _recent_fp_centers.append([_cx, _cy, _now, 1])
                     # Diagnostic: dump the crop the VLM actually looked at so
                     # we can eyeball model-blindness vs bad-crop-framing.
                     # Enable with SAVE_REJECTED_CROPS=1 in .env.
@@ -740,7 +819,7 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 if _motion_overlay_enabled and getattr(det, "contour", None) is not None:
                     crop = _crop_wide_bytes_with_motion_overlay(frame, det.bbox, det.contour)
                 else:
-                    crop = _crop_wide_bytes(frame, det.bbox)
+                    crop = _crop_wide_bytes(frame, det.bbox, osd_masks=osd_masks)
                 if not crop:
                     continue
                 # If we have a baseline, also crop the SAME region from it and pass
@@ -748,9 +827,11 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 # mode and instructs the model to identify what changed.
                 # Baseline crop is NEVER annotated — it's the reference for "what
                 # was here before"; overlay would create a spurious diff.
+                # Both frames get the same OSD blackout so timestamp burn-in
+                # doesn't become the dominant "what changed" signal for VLM.
                 _vlm_input = [crop]
                 if _baseline_np is not None:
-                    _baseline_crop = _crop_wide_from_ndarray(_baseline_np, det.bbox)
+                    _baseline_crop = _crop_wide_from_ndarray(_baseline_np, det.bbox, osd_masks=osd_masks)
                     if _baseline_crop:
                         _vlm_input = [_baseline_crop, crop]   # order: baseline first, current second
                 # Pass day/night context so analyzer can apply time-of-day rules
