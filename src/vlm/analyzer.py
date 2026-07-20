@@ -192,6 +192,26 @@ _COMPARE_USER_PROMPT = (
     "     overhead crop for missing those features; they're geometrically\n"
     "     impossible from above.\n"
     "\n"
+    "     **HARD REJECT — FLYING INSECT AT OVERHEAD**: The #1 daytime FP at\n"
+    "     rooftop is a moth, wasp, or flying insect passing through the frame.\n"
+    "     Insects have DISTINCTIVE visual traits that mammals never share —\n"
+    "     reject ONLY when ALL THREE of these apply, in combination:\n"
+    "       1. Shape is BRIGHT or PALE (white/tan/light-grey), not a dark\n"
+    "          silhouette. Real mammals from overhead are consistently dark\n"
+    "          against lighter ground; moths reflect IR strongly.\n"
+    "       2. Shape is streaked, elongated, blurry, wing-shaped, or has\n"
+    "          soft/fuzzy edges from wing motion blur. Compact mammal bodies\n"
+    "          have crisp edges even in motion.\n"
+    "       3. Shape has NO visible cast shadow on the ground beneath it —\n"
+    "          it looks like it's floating on top of the surface rather than\n"
+    "          sitting on it. Real mammals cast a small shadow directly under\n"
+    "          them in overhead IR.\n"
+    "     ALL THREE must be present to reject as insect. A dark compact\n"
+    "     shape with crisp edges — even if small and lacking visible legs —\n"
+    "     is a mammal (raccoon/cat/possum) at overhead, NOT a moth. Overhead\n"
+    "     mammals routinely appear as 40-100 px dark blobs without countable\n"
+    "     legs; that is expected and MUST NOT be rejected as insect.\n"
+    "\n"
     "     At overhead angle in IR footage, a real rat / mouse commonly appears as\n"
     "     one of the following legitimate silhouettes — treat ALL of these as\n"
     "     positive evidence:\n"
@@ -465,15 +485,29 @@ class VLMAnalyzer:
                 },
             })
         content.append({"type": "text", "text": prompt_text})
+        # Extended thinking (default on for Sonnet-5+) adds ~3x cost for no
+        # observable quality gain on this visual-classification task — the
+        # prompt is a decision tree, not a reasoning problem. Disable
+        # explicitly so we get a plain TextBlock response.
         response = self._claude.messages.create(
             model=self._claude_model,
             max_tokens=512,
+            thinking={"type": "disabled"},
             system=[
                 {"type": "text", "text": self._system_prompt, "cache_control": {"type": "ephemeral"}},
             ],
             messages=[{"role": "user", "content": content}],
         )
-        return _parse_json(response.content[0].text)
+        # Sonnet-5+ / Opus with extended thinking may return ThinkingBlock
+        # entries before the TextBlock — filter to text blocks only so we
+        # don't AttributeError on the thinking preamble.
+        text = next(
+            (b.text for b in response.content if getattr(b, "type", None) == "text"),
+            None,
+        )
+        if text is None:
+            raise RuntimeError(f"No text block in Claude response (blocks={[type(b).__name__ for b in response.content]})")
+        return _parse_json(text)
 
     def _analyze_ollama(self, frames: list[bytes], user_prompt: str | None = None) -> dict:
         payload = {
@@ -518,7 +552,7 @@ _RODENT_SPECIES = {"rat", "mouse"}
 # Species that CAN trigger a wildlife_detected: true alert. "other" and "none"
 # never trigger; "cat/dog/bird/squirrel/lizard/etc." are acceptable when
 # clearly identified — the operator sees the species in the alerts UI.
-_ALERTABLE_SPECIES = {"rat", "mouse", "raccoon", "opossum", "cat", "dog", "squirrel", "bird", "lizard"}
+_ALERTABLE_SPECIES = {"rat", "mouse", "raccoon", "opossum", "cat", "dog", "squirrel", "bird", "lizard", "other"}
 
 # Hedge-word hard rail: if the VLM's own description contains any of these
 # tokens, we override wildlife_detected to False regardless of what the model
@@ -613,11 +647,14 @@ def _normalize(data: dict, is_daytime: bool | None = None) -> dict:
         conf_f = 0.0
     description = str(data.get("description", ""))[:500]
 
-    # Species-based hard rail — 'other' and 'none' can NEVER fire an alert,
-    # regardless of what the VLM claims (those species labels mean the VLM
-    # couldn't identify a specific animal, which we treat as no detection).
-    # Everything in _ALERTABLE_SPECIES (rat, mouse, cat, dog, squirrel, bird,
-    # lizard, opossum, raccoon) is allowed to fire.
+    # Species-based hard rail — only 'none' (nothing there) can NEVER fire.
+    # 'other' (VLM saw an animal but couldn't confidently ID species) IS
+    # alertable — the core detector job is "wildlife present or not",
+    # species is nice-to-have. Camouflaged raccoons in brush frequently
+    # come back as 'other' when Sonnet/Opus refuses to guess a species
+    # they can't discriminate; those detections are still valuable.
+    # Everything else in _ALERTABLE_SPECIES (rat, mouse, cat, dog, squirrel,
+    # bird, lizard, opossum, raccoon, other) is allowed to fire.
     if detected and species not in _ALERTABLE_SPECIES:
         logger.info("VLM species override: '%s' is not alertable → forcing wildlife_detected=false",
                     species)

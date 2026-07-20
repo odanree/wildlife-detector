@@ -133,6 +133,7 @@ class MotionDetector:
                 confidence=_SYNTHETIC_CONF,
                 bbox=(x, y, x + w, y + h),
                 area_fraction=area / frame_area,
+                contour=cnt,
             ))
 
         # Evict tracks that disappeared this frame

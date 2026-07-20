@@ -87,6 +87,11 @@ def main() -> None:
         )
     except KeyboardInterrupt:
         log.info("KeyboardInterrupt — clean exit")
+    except Exception:
+        # os._exit(0) below suppresses Python's default unhandled-exception
+        # traceback (it skips interpreter shutdown). Log it here so silent
+        # pipeline crashes are actually diagnosable.
+        log.exception("Pipeline crashed with unhandled exception")
     finally:
         log.info("Detector service exiting — force-exit to release daemon threads")
         os._exit(0)

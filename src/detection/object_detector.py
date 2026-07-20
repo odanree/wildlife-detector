@@ -27,6 +27,11 @@ class Detection:
     bbox: tuple[int, int, int, int]   # x1, y1, x2, y2
     center: tuple[int, int] = field(init=False)
     area_fraction: float = 0.0
+    # Raw MOG2/KNN contour (Nx1x2 int32 in frame pixel space). Present for
+    # motion-detector detections; None for YOLO detections. Used by the VLM
+    # crop path to overlay a motion outline when the target is camouflaged
+    # and only visible via the motion signature.
+    contour: object = None
 
     def __post_init__(self) -> None:
         x1, y1, x2, y2 = self.bbox
