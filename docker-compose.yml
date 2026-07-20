@@ -71,19 +71,14 @@ services:
       MOTION_MIN_AREA: "80"
       BASELINE_DIFF_THRESHOLD: "0.06"
       DAY_BASELINE_DIFF_THRESHOLD: "0.18"
-      # Yard cascade = Ollama primary + Claude confirm. Confirm-model
-      # default was Haiku, which hallucinated Pattern 2 eyeshine on moth
-      # wing-flash ("bright reflective point + small dark body outline
-      # consistent with rat facing away"). Same failure mode we hit on
-      # rooftop with cats-from-moths — Sonnet correctly rejects the same
-      # crops. Cost delta trivial now that prompt caching holds (see
-      # perf(vlm) commit). Yard also gets VLM_SKIP_DAYTIME=1 elsewhere
-      # so volume stays ~50 calls/night → ~$3-5/mo on Sonnet.
-      #
-      # Both CLAUDE_MODEL and CASCADE_CONFIRM_MODEL set — cascade path
-      # reads CASCADE_CONFIRM_MODEL first (see build_vlm_analyzer_from_env),
-      # which was set to Haiku in .env. Explicit override here ensures the
-      # confirm actually uses Sonnet regardless of .env drift.
+      # Cost-cutover: moved yard from cascade to pure Ollama after prod-
+      # scale burn showed $2/night. qwen2.5vl:7b handles yard's side-angle
+      # rat crops (was working fine as the cascade primary). Loses
+      # Sonnet's precision on moth-eyeshine — expect more Pattern 2 FPs
+      # to leak through. Zero API cost.
+      VLM_BACKEND: ollama
+      OLLAMA_MODEL: qwen2.5vl:7b
+      # Kept for reference — flip back if Ollama FPs get untenable.
       CLAUDE_MODEL: claude-sonnet-5
       CASCADE_CONFIRM_MODEL: claude-sonnet-5
       # Host services (from base image or .env — repeated here so this file
@@ -154,11 +149,11 @@ services:
       DAYTIME_RODENT_MIN_CONF: "0.40"
       # No PTZ tied to this camera.
       SLEW_ENABLED: "false"
-      # Rooftop is overhead — much less shadow motion than the yard's side
-      # angle, so daytime VLM burn is manageable and worth paying for the
-      # daytime raccoon/opossum/cat coverage. Yard keeps VLM_SKIP_DAYTIME=1
-      # (set in .env) because its umbrella + tree shadows generate ~500
-      # daytime motion events/hour that would otherwise all hit Haiku.
+      # VLM_SKIP_DAYTIME was flipped to 1 to cut Sonnet cost, but since
+      # we moved to local Ollama (free) the skip just blocks all
+      # detection — baseline auto-picker misclassifies IR-lit night as
+      # "day" here, so every event silently gets dropped. Back to 0 now
+      # that VLM is free.
       VLM_SKIP_DAYTIME: "0"
       # Rooftop bypasses cascade — Ollama qwen2.5vl can't recognize overhead
       # silhouettes, so cascade primary rejected every legitimate positive.
@@ -170,23 +165,24 @@ services:
       #   - Haiku-4-5: partial recall (misses subtle overhead rats but catches
       #     clear ones) at ~$0.001/call. Good baseline for 24/7 running.
       # Currently on Haiku — flip to opus-4-8 when eval sessions need higher recall.
-      VLM_BACKEND: claude
-      # Model-tier eval on raccoon-in-brush clip after all guards in place
-      # (30 px size floor + Pattern 3 flying-insect hard-rejects + 'other'
-      # species alertable + baseline diff 0.05 day / 0.03 night):
-      #   - Haiku:   1 hit but it was a MOTH hallucinated as "cat" — Haiku
-      #              still confabulates species on ambiguous crops even
-      #              with the Pattern 3 insect rail. Cost: $0.003/call.
-      #   - Opus:    1 real hit at $0.07/call, over-strict elsewhere.
-      #   - Sonnet:  1 real hit, 0 FPs at ~$0.009/call (thinking disabled).
-      #              Correctly separated the real raccoon from moth crops
-      #              where Haiku conflated them.
-      # Sonnet is the shipping pick — Haiku's confabulation on moths isn't
-      # fixable at the guard layer without also losing real raccoon frames.
+      # Rooftop VLM stack after cost cutover:
+      #   1. Sonnet worked but $6.70/night was too high
+      #   2. Ollama 32b times out at 180s/call (needs GPU + 24GB VRAM)
+      #   3. Ollama 7b failed on overhead silhouettes in earlier eval
+      # Landed on 7b anyway — accept near-zero rooftop confirms rather
+      # than 32b timeouts blocking the whole VLM path. Bumps a real GPU
+      # or a Sonnet re-enable with strict caps as needed.
+      VLM_BACKEND: ollama
+      OLLAMA_MODEL: qwen2.5vl:7b
+      # Kept as historical fallback.
       CLAUDE_MODEL: claude-sonnet-5
-      # Wider crop padding for the rooftop — Opus still benefits from more
-      # scene context to disambiguate rat silhouette from patio debris.
-      VLM_CROP_PAD_MULT: "5"
+      # Was 5x for Sonnet/Opus context — but on Ollama 7b, a 40 px rat
+      # inside a 400 px crop becomes ~10% of the frame → model can't see
+      # it. Dropped to 1.5x so the animal fills a meaningful portion of
+      # the crop. Still keeps a bit of surrounding context for the
+      # "ground contact" and "moving vs static" cues.
+      VLM_CROP_PAD_MULT: "1.5"
+      VLM_CROP_MIN_PAD: "40"
       # Second detector needs its own internal HTTP port — 8102 keeps it
       # outside the 8100/8101 range so port confusion is unlikely.
       OLLAMA_URL: http://host.docker.internal:11434
