@@ -353,10 +353,10 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     )
 
     motion = MotionDetector(
-        history=mot_cfg.get("history", 400),
-        var_threshold=float(mot_cfg.get("var_threshold", 18)),
-        min_area=int(mot_cfg.get("min_area", 80)),
-        max_area=int(mot_cfg.get("max_area", 4000)),
+        history=int(os.getenv("MOTION_HISTORY", mot_cfg.get("history", 400))),
+        var_threshold=float(os.getenv("MOTION_VAR_THRESHOLD", mot_cfg.get("var_threshold", 18))),
+        min_area=int(os.getenv("MOTION_MIN_AREA", mot_cfg.get("min_area", 80))),
+        max_area=int(os.getenv("MOTION_MAX_AREA", mot_cfg.get("max_area", 4000))),
         edge_margin=int(mot_cfg.get("edge_margin", 20)),
         seam_x=int(mot_cfg.get("seam_x", 0)),
         seam_margin=int(mot_cfg.get("seam_margin", 0)),
