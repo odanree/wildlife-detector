@@ -1603,7 +1603,10 @@ _INDEX_HTML = r"""<!doctype html>
     }
   });
   btnViewBaseline.addEventListener('click', () => {
-    window.open('/api/baseline.jpg?t=' + Date.now(), '_blank');
+    // Opens the gallery of ALL camera × mode baselines (yard day/night,
+    // rooftop day/night, …). Auto-refreshes every 5s inside the new tab
+    // so a fresh capture shows immediately without a manual reload.
+    window.open('/baselines', '_blank');
   });
   btnClearBaseline.addEventListener('click', async () => {
     if (!confirm('Delete the baseline? The pipeline will fall back to single-frame classification (more false positives).')) return;
@@ -1908,6 +1911,86 @@ refresh();
 """
 
 
+# Baseline gallery — grid of all camera × mode pairs so the operator can
+# eyeball whether each baseline is a clean scene (no wildlife, no wind
+# artifacts). Auto-refreshes so a fresh capture shows immediately.
+_BASELINES_HTML = r"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>wildlife-detector — baselines</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #0f0f13; color: #eef; font: 14px -apple-system, "Segoe UI", sans-serif; }
+    header { display: flex; gap: 24px; padding: 8px 16px; font-size: 13px; border-bottom: 1px solid #2a2a30; background: #16161a; align-items: center; }
+    header a { color: #9cf; }
+    .grid { padding: 16px; display: grid; gap: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .cell { background: #1a1a20; border: 1px solid #26262c; border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; }
+    .cell-header { padding: 8px 12px; font-size: 12px; color: #9aa; background: #14141a; border-bottom: 1px solid #26262c; display: flex; justify-content: space-between; align-items: center; }
+    .cell-header b { color: #eef; text-transform: capitalize; }
+    .cell-header .missing { color: #f66; }
+    .cell-header .fresh { color: #6f6; }
+    .cell img { display: block; width: 100%; height: auto; background: #000; }
+    .cell .placeholder { padding: 60px 16px; text-align: center; color: #667; font-size: 12px; background: #0a0a10; }
+    .cell .meta { padding: 6px 12px; font-size: 11px; color: #667; background: #14141a; border-top: 1px solid #26262c; }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/" style="text-decoration:none;color:inherit;font-weight:600;">wildlife-detector — baselines</a>
+    <span style="color:#9aa;font-size:12px;">Auto-refreshes every 5s. Empty slots need a Capture in the main UI.</span>
+  </header>
+  <div class="grid" id="grid"></div>
+<script>
+async function loadGrid() {
+  const camerasR = await fetch('/api/cameras');
+  if (!camerasR.ok) return;
+  const { cameras = [] } = await camerasR.json();
+  const grid = document.getElementById('grid');
+  const cells = [];
+  for (const cam of cameras) {
+    for (const mode of ['day', 'night']) {
+      cells.push({ cam, mode });
+    }
+  }
+  // Fetch each cell's baseline metadata + jpeg availability in parallel.
+  const bust = Date.now();  // cache-bust so refresh always sees latest capture
+  const meta = await Promise.all(cameras.map(async c => {
+    try {
+      const r = await fetch(`/api/baseline?camera=${encodeURIComponent(c)}`);
+      return r.ok ? { c, m: await r.json() } : { c, m: null };
+    } catch { return { c, m: null }; }
+  }));
+  const byCam = Object.fromEntries(meta.map(x => [x.c, x.m]));
+  grid.innerHTML = cells.map(({cam, mode}) => {
+    const m = byCam[cam] || {};
+    const slot = m[mode] || {};
+    const exists = !!slot.exists;
+    const ts = slot.ts ? new Date(slot.ts * 1000).toLocaleString() : '—';
+    const sizeMB = slot.bytes ? (slot.bytes / 1024).toFixed(0) + ' KB' : '';
+    const src = `/api/baseline.jpg?camera=${encodeURIComponent(cam)}&mode=${mode}&t=${bust}`;
+    const img = exists
+      ? `<img src="${src}" alt="${cam} ${mode}" />`
+      : `<div class="placeholder">no ${mode} baseline captured yet<br/><small>use "Cap ${mode}" on the ${cam} pane</small></div>`;
+    return `<div class="cell">
+      <div class="cell-header">
+        <span><b>${cam}</b> · ${mode}</span>
+        <span class="${exists ? 'fresh' : 'missing'}">${exists ? '✓' : '—'}</span>
+      </div>
+      ${img}
+      <div class="meta">${exists ? `${ts} · ${sizeMB}` : 'missing'}</div>
+    </div>`;
+  }).join('');
+}
+loadGrid();
+setInterval(loadGrid, 5000);
+</script>
+</body>
+</html>
+"""
+
+
 # ── Flask app ───────────────────────────────────────────────────────────────
 
 def create_app() -> Flask:
@@ -1972,6 +2055,10 @@ def create_app() -> Flask:
     @app.get("/alerts")
     def alerts_page():
         return Response(_ALERTS_HTML, mimetype="text/html")
+
+    @app.get("/baselines")
+    def baselines_page():
+        return Response(_BASELINES_HTML, mimetype="text/html")
 
     @app.get("/api/alerts")
     def api_alerts():

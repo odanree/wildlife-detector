@@ -304,6 +304,10 @@ def create_app(registry: DetectorRegistry) -> Flask:
     def alerts_page():
         return Response(preview._ALERTS_HTML, mimetype="text/html")
 
+    @app.get("/baselines")
+    def baselines_page():
+        return Response(preview._BASELINES_HTML, mimetype="text/html")
+
     # ── Cameras roster (for UI dropdown) ────────────────────────────────────
 
     @app.get("/api/cameras")
