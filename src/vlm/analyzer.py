@@ -548,13 +548,28 @@ class VLMAnalyzer:
         # paying full input rates on every call.
         _u = getattr(response, "usage", None)
         if _u is not None:
+            _tin  = getattr(_u, "input_tokens", 0)
+            _tcr  = getattr(_u, "cache_read_input_tokens", 0) or 0
+            _tcc  = getattr(_u, "cache_creation_input_tokens", 0) or 0
+            _tout = getattr(_u, "output_tokens", 0)
             logger.info(
                 "VLM tokens: input=%d cache_read=%d cache_create=%d output=%d",
-                getattr(_u, "input_tokens", 0),
-                getattr(_u, "cache_read_input_tokens", 0) or 0,
-                getattr(_u, "cache_creation_input_tokens", 0) or 0,
-                getattr(_u, "output_tokens", 0),
+                _tin, _tcr, _tcc, _tout,
             )
+            # Feed the aggregate cost tracker on Stats. Lazy import to avoid
+            # a circular dependency (preview → pipeline → vlm → preview).
+            # Missing/broken preview shouldn't crash a VLM call — swallow.
+            try:
+                from src.web.preview import stats as _preview_stats
+                _preview_stats.record_vlm_tokens(
+                    model=self._claude_model,
+                    input_tok=_tin,
+                    cache_read=_tcr,
+                    cache_create=_tcc,
+                    output_tok=_tout,
+                )
+            except Exception:
+                pass
         # Sonnet-5+ / Opus with extended thinking may return ThinkingBlock
         # entries before the TextBlock — filter to text blocks only so we
         # don't AttributeError on the thinking preamble.
