@@ -62,6 +62,13 @@ services:
       BASELINE_PATH: data/baseline.jpg
       # Yard is optimized for rodent detection — small bbox floor.
       MIN_MOTION_BBOX_PX: "22"
+      # Yard's side-angle view has stable non-foliage background — MOG2
+      # defaults (variance-based) work well; conservative threshold keeps
+      # shadow-jitter FPs down.
+      MOTION_BACKEND: mog2
+      MOTION_HISTORY: "400"
+      MOTION_VAR_THRESHOLD: "18"
+      MOTION_MIN_AREA: "80"
       BASELINE_DIFF_THRESHOLD: "0.06"
       DAY_BASELINE_DIFF_THRESHOLD: "0.18"
       # Host services (from base image or .env — repeated here so this file
@@ -105,11 +112,29 @@ services:
       # floor is close to right for rooftop too. 60 was way too aggressive
       # and was filtering the actual target.
       MIN_MOTION_BBOX_PX: "15"
+      # Rooftop scene has wind-blown foliage that MOG2's variance model
+      # learns as background — a slow raccoon crossing brush gets absorbed.
+      # KNN stores raw samples instead of averaging variance; keeps
+      # foreground signal when background is textured. Aggressive tune:
+      # 2-min learning window, near-noise-floor sensitivity, small
+      # blob-area floor for partial-visibility (raccoon peeking through
+      # leaves).
+      MOTION_BACKEND: knn
+      MOTION_HISTORY: "1500"
+      MOTION_VAR_THRESHOLD: "5"
+      MOTION_MIN_AREA: "20"
+      KNN_DIST2_THRESHOLD: "400"
       # Rooftop shadows drift more with the sun's arc than the yard.
-      BASELINE_DIFF_THRESHOLD: "0.08"
+      BASELINE_DIFF_THRESHOLD: "0.03"
       DAY_BASELINE_DIFF_THRESHOLD: "0.20"
       # No PTZ tied to this camera.
       SLEW_ENABLED: "false"
+      # Rooftop is overhead — much less shadow motion than the yard's side
+      # angle, so daytime VLM burn is manageable and worth paying for the
+      # daytime raccoon/opossum/cat coverage. Yard keeps VLM_SKIP_DAYTIME=1
+      # (set in .env) because its umbrella + tree shadows generate ~500
+      # daytime motion events/hour that would otherwise all hit Haiku.
+      VLM_SKIP_DAYTIME: "0"
       # Rooftop bypasses cascade — Ollama qwen2.5vl can't recognize overhead
       # silhouettes, so cascade primary rejected every legitimate positive.
       # Pure Claude single-stage keeps precision manageable.

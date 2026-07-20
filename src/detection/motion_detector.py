@@ -14,6 +14,7 @@ Track IDs start at 1000 to avoid colliding with YOLO ByteTrack IDs.
 from __future__ import annotations
 
 import logging
+import os
 
 import cv2
 import numpy as np
@@ -37,11 +38,25 @@ class MotionDetector:
         seam_x: int = 0,
         seam_margin: int = 0,
     ) -> None:
-        self._bg = cv2.createBackgroundSubtractorMOG2(
-            history=history,
-            varThreshold=var_threshold,
-            detectShadows=True,
-        )
+        # Env override lets us swap MOG2 → KNN per-camera without a config-schema
+        # rewrite. KNN handles textured/foliage backgrounds better because it
+        # stores raw samples instead of averaging variance — a slow-moving
+        # target through wind-blown brush gets absorbed by MOG2's variance model
+        # but stays foreground under KNN.
+        _use_knn = os.getenv("MOTION_BACKEND", "mog2").lower() == "knn"
+        if _use_knn:
+            self._bg = cv2.createBackgroundSubtractorKNN(
+                history=history,
+                dist2Threshold=float(os.getenv("KNN_DIST2_THRESHOLD", "400")),
+                detectShadows=False,
+            )
+        else:
+            self._bg = cv2.createBackgroundSubtractorMOG2(
+                history=history,
+                varThreshold=var_threshold,
+                detectShadows=False,
+            )
+        self._backend = "KNN" if _use_knn else "MOG2"
         self._min_area = min_area
         self._max_area = max_area
         self._edge_margin = edge_margin
@@ -51,8 +66,8 @@ class MotionDetector:
         self._next_id = 1000
         self._kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         logger.info(
-            "Motion detector ready — MOG2 history=%d threshold=%.0f area=%d–%d px² edge_margin=%d",
-            history, var_threshold, min_area, max_area, edge_margin,
+            "Motion detector ready — %s history=%d threshold=%.0f area=%d–%d px² edge_margin=%d",
+            self._backend, history, var_threshold, min_area, max_area, edge_margin,
         )
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
@@ -65,9 +80,6 @@ class MotionDetector:
             frame[:, x1:x2] = 0
 
         fg = self._bg.apply(frame)
-
-        # Strip shadows (MOG2 marks them 127; keep only definite foreground 255)
-        _, fg = cv2.threshold(fg, 200, 255, cv2.THRESH_BINARY)
 
         # Open removes isolated noise pixels; dilate merges nearby fragments
         fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, self._kernel)
