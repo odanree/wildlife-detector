@@ -753,6 +753,7 @@ _INDEX_HTML = r"""<!doctype html>
 <html>
 <head>
   <title>wildlife-detector — live preview</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <style>
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
@@ -1628,6 +1629,7 @@ _ALERTS_HTML = r"""<!doctype html>
 <html>
 <head>
   <title>wildlife-detector — alerts</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <style>
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
@@ -1920,6 +1922,7 @@ _BASELINES_HTML = r"""<!doctype html>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>wildlife-detector — baselines</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <style>
     :root { color-scheme: dark; }
     body { margin: 0; background: #0f0f13; color: #eef; font: 14px -apple-system, "Segoe UI", sans-serif; }
@@ -1991,6 +1994,26 @@ setInterval(loadGrid, 5000);
 """
 
 
+# Inline SVG favicon — overhead rodent silhouette on a night-vision-green
+# disc with two tiny bright eyeshine dots. Encapsulates the app's identity:
+# overhead camera view + wildlife detection + IR-mode aesthetic. Scales
+# cleanly to any browser-tab size without pixelation.
+_FAVICON_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    # Dark night-mode disc background
+    b'<circle cx="16" cy="16" r="16" fill="#0d1a15"/>'
+    # Rodent body from above — tilted ellipse, IR-green fill
+    b'<ellipse cx="14" cy="15" rx="5.5" ry="8" fill="#4d9" transform="rotate(-18 14 15)"/>'
+    # Curving tail trailing to bottom-right
+    b'<path d="M17.5 21.5 Q22 25 25 29" stroke="#4d9" stroke-width="1.8" '
+    b'fill="none" stroke-linecap="round"/>'
+    # Two bright eyeshine dots at the head end
+    b'<circle cx="11.5" cy="9" r="1.4" fill="#fff"/>'
+    b'<circle cx="14.5" cy="9" r="1.4" fill="#fff"/>'
+    b'</svg>'
+)
+
+
 # ── Flask app ───────────────────────────────────────────────────────────────
 
 def create_app() -> Flask:
@@ -2059,6 +2082,14 @@ def create_app() -> Flask:
     @app.get("/baselines")
     def baselines_page():
         return Response(_BASELINES_HTML, mimetype="text/html")
+
+    @app.get("/favicon.ico")
+    @app.get("/favicon.svg")
+    def favicon():
+        # Same SVG serves both — browsers accept SVG for /favicon.ico when the
+        # content-type is set correctly. One route → one file to update.
+        return Response(_FAVICON_SVG, mimetype="image/svg+xml",
+                        headers={"Cache-Control": "public, max-age=86400"})
 
     @app.get("/api/alerts")
     def api_alerts():

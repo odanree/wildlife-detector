@@ -308,6 +308,12 @@ def create_app(registry: DetectorRegistry) -> Flask:
     def baselines_page():
         return Response(preview._BASELINES_HTML, mimetype="text/html")
 
+    @app.get("/favicon.ico")
+    @app.get("/favicon.svg")
+    def favicon():
+        return Response(preview._FAVICON_SVG, mimetype="image/svg+xml",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
     # ── Cameras roster (for UI dropdown) ────────────────────────────────────
 
     @app.get("/api/cameras")
