@@ -26,6 +26,19 @@ logger = logging.getLogger(__name__)
 _MATCH_DIST_PX = 60     # max centroid displacement between frames for same track
 _SYNTHETIC_CONF = 0.50  # confidence value assigned to motion-detected persons
 
+# Kinematic gate: reject motion detections whose per-frame centroid
+# displacement exceeds this threshold. Targets flying/near-lens bugs
+# — parallax on close-to-lens objects inflates pixel velocity even at
+# modest physical speed, and moths / gnats zooming past the camera
+# routinely register at 40-60 px/frame while wildlife at ground scale
+# moves at 5-25 px/frame. Set to 0 to disable the gate (default 40).
+#
+# The check runs AFTER track association: a blob that moves too fast
+# to match an existing track (>_MATCH_DIST_PX) becomes a fresh track
+# with velocity=0 and is not caught by this gate — those single-frame
+# ghosts are the persistence-gate's job, deferred by design choice.
+_MAX_VELOCITY_PX = int(os.getenv("MOTION_MAX_VELOCITY_PX_PER_FRAME", "40"))
+
 
 class MotionDetector:
     def __init__(
@@ -66,8 +79,9 @@ class MotionDetector:
         self._next_id = 1000
         self._kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         logger.info(
-            "Motion detector ready — %s history=%d threshold=%.0f area=%d–%d px² edge_margin=%d",
+            "Motion detector ready — %s history=%d threshold=%.0f area=%d–%d px² edge_margin=%d velocity_gate=%s",
             self._backend, history, var_threshold, min_area, max_area, edge_margin,
+            f"{_MAX_VELOCITY_PX}px/frame" if _MAX_VELOCITY_PX > 0 else "off",
         )
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
@@ -122,10 +136,25 @@ class MotionDetector:
                 logger.debug("blob rejected solidity=%.2f area=%.0f cx=%d cy=%d", solidity, area, cx, cy)
                 continue
 
-            logger.debug("blob accepted area=%.0f aspect=%.2f solidity=%.2f cx=%d cy=%d", area, aspect, solidity, cx, cy)
-
-            tid = self._match_or_create(cx, cy, matched)
+            tid, velocity = self._match_or_create(cx, cy, matched)
             matched.add(tid)
+
+            # Kinematic gate — reject fast movers (near-lens bugs).
+            # Keep the track (add to `matched` above) so subsequent frames
+            # keep measuring against the same id; evicting would let the
+            # bug re-appear as a fresh velocity=0 track and pass on every
+            # other frame.
+            if _MAX_VELOCITY_PX > 0 and velocity > _MAX_VELOCITY_PX:
+                logger.debug(
+                    "blob rejected velocity=%.1f > %d px/frame cx=%d cy=%d tid=%d (bug?)",
+                    velocity, _MAX_VELOCITY_PX, cx, cy, tid,
+                )
+                continue
+
+            logger.debug(
+                "blob accepted area=%.0f aspect=%.2f solidity=%.2f v=%.1fpx/f cx=%d cy=%d",
+                area, aspect, solidity, velocity, cx, cy,
+            )
 
             detections.append(Detection(
                 track_id=tid,
@@ -142,7 +171,11 @@ class MotionDetector:
 
         return detections
 
-    def _match_or_create(self, cx: int, cy: int, already_matched: set[int]) -> int:
+    def _match_or_create(self, cx: int, cy: int, already_matched: set[int]) -> tuple[int, float]:
+        """Return (track_id, velocity_px_per_frame). Velocity is 0 for a
+        newly-created track (no previous centroid to diff against) and
+        best_dist for a matched track — where best_dist is exactly the
+        pixel displacement from the last centroid seen for this id."""
         best_id, best_dist = None, float("inf")
         for tid, (tx, ty) in self._tracks.items():
             if tid in already_matched:
@@ -153,9 +186,9 @@ class MotionDetector:
 
         if best_id is not None and best_dist < _MATCH_DIST_PX:
             self._tracks[best_id] = (cx, cy)
-            return best_id
+            return best_id, best_dist
 
         new_id = self._next_id
         self._next_id += 1
         self._tracks[new_id] = (cx, cy)
-        return new_id
+        return new_id, 0.0
