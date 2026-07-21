@@ -1,9 +1,67 @@
+/**
+ * Global tokens + resets. Component-scoped styles live in *.module.css
+ * files next to their component. Kept small on purpose — anything
+ * shared across 2+ components should be a token here; anything used by
+ * 1 component stays in that component's module file.
+ */
+
 :root {
   color-scheme: dark;
+
+  /* Surface / background hierarchy — dark → less dark */
+  --bg-0: #0e0e10; /* page background */
+  --bg-1: #131318; /* card / grouped section */
+  --bg-2: #1a1a20; /* raised element (chip, cell) */
+  --bg-3: #16161a; /* header strip */
+  --bg-4: #14141a; /* cell header inside a card */
+
+  /* Border variants */
+  --border-1: #26262c;
+  --border-2: #2a2a30;
+  --border-3: #3a3a40;
+
+  /* Text — decreasing emphasis */
+  --text-hi: #ddd;
+  --text-md: #9aa;
+  --text-lo: #667;
+  --text-dim: #555;
+  --text-header: #eef;
+
+  /* Accents */
+  --accent-blue: #6bd;
+  --accent-camera: #9cf; /* camera badge blue */
+  --accent-green: #4d9; /* confirmed / hit */
+  --accent-fresh: #6f6; /* fresh baseline */
+  --accent-rodent: #f66; /* rodent species / warning */
+  --accent-other: #9c6; /* non-rodent wildlife */
+  --accent-err: #f88;
+
+  /* Radii + spacing scale (tight — this is a dense operator UI) */
+  --r-sm: 3px;
+  --r-md: 4px;
+  --r-lg: 6px;
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  /* Type stacks */
+  --font-sans: -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, monospace;
 }
+
 * {
   box-sizing: border-box;
 }
+
 body {
   margin: 0;
+  background: var(--bg-0);
+  color: var(--text-hi);
+  font-family: var(--font-sans);
 }
+
+/* Small utility every page uses — nav "×" close button in the header. */

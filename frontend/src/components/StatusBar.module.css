@@ -1,0 +1,7 @@
+.wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: center;
+  padding: var(--sp-2) 0;
+}

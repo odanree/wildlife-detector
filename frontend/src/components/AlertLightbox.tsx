@@ -1,6 +1,7 @@
 import { useCallback, useEffect } from "react";
 import type { AlertRow } from "../api/alerts";
 import { fmtTs } from "../util/time";
+import styles from "./AlertLightbox.module.css";
 
 const RODENT_SPECIES = new Set(["rat", "mouse"]);
 
@@ -49,8 +50,6 @@ export function AlertLightbox({ items, openId, setOpenId }: AlertLightboxProps) 
     [currentIdx, navList, setOpenId],
   );
 
-  // Keyboard handler + body scroll lock. Both scoped to "lightbox is
-  // open" so background page keeps its own keybindings when closed.
   useEffect(() => {
     if (!current) return;
     const originalOverflow = document.body.style.overflow;
@@ -78,7 +77,7 @@ export function AlertLightbox({ items, openId, setOpenId }: AlertLightboxProps) 
   if (!current || !current.snapshot) return null;
 
   const isRodent = RODENT_SPECIES.has(current.species);
-  const speciesColor = isRodent ? "#f66" : "#9c6";
+  const speciesCls = `${styles.species} ${isRodent ? styles.speciesRodent : styles.speciesOther}`;
   const confPct = current.confidence != null ? `${Math.round(current.confidence * 100)}%` : "—";
   const canPrev = currentIdx > 0;
   const canNext = currentIdx < navList.length - 1;
@@ -92,21 +91,20 @@ export function AlertLightbox({ items, openId, setOpenId }: AlertLightboxProps) 
     // accessible and covered by the useEffect above.
     // biome-ignore lint/a11y/useKeyWithClickEvents: primary close paths (× button, Esc) are keyboard-accessible; backdrop-click is a bonus
     <div
-      style={styles.backdrop}
+      className={styles.backdrop}
       // biome-ignore lint/a11y/useSemanticElements: native <dialog> fights React's declarative model; see comment above
       role="dialog"
       aria-modal="true"
       aria-label="alert snapshot viewer"
       onClick={(e) => {
-        // Click backdrop (not children) to close.
         if (e.target === e.currentTarget) close();
       }}
     >
-      <button style={styles.closeBtn} onClick={close} aria-label="close" type="button">
+      <button className={styles.closeBtn} onClick={close} aria-label="close" type="button">
         ×
       </button>
       <button
-        style={{ ...styles.chev, ...styles.chevLeft, opacity: canPrev ? 1 : 0.3 }}
+        className={`${styles.chev} ${styles.chevLeft}`}
         onClick={() => go(-1)}
         disabled={!canPrev}
         aria-label="previous"
@@ -115,7 +113,7 @@ export function AlertLightbox({ items, openId, setOpenId }: AlertLightboxProps) 
         ‹
       </button>
       <button
-        style={{ ...styles.chev, ...styles.chevRight, opacity: canNext ? 1 : 0.3 }}
+        className={`${styles.chev} ${styles.chevRight}`}
         onClick={() => go(1)}
         disabled={!canNext}
         aria-label="next"
@@ -123,110 +121,24 @@ export function AlertLightbox({ items, openId, setOpenId }: AlertLightboxProps) 
       >
         ›
       </button>
-      <div style={styles.inner}>
+      <div className={styles.inner}>
         <img
-          style={styles.img}
+          className={styles.img}
           src={`/snapshots/${encodeURIComponent(current.snapshot)}`}
           alt="alert snapshot"
         />
-        <div style={styles.meta}>
+        <div className={styles.meta}>
           <div>
-            <span style={{ ...styles.species, color: speciesColor }}>{current.species || "?"}</span>{" "}
-            {current.camera_id && <span style={styles.badgeCam}>{current.camera_id}</span>} ·{" "}
+            <span className={speciesCls}>{current.species || "?"}</span>{" "}
+            {current.camera_id && <span className={styles.badgeCam}>{current.camera_id}</span>} ·{" "}
             {fmtTs(current.ts)} · conf {confPct} · track #{current.track_id ?? "—"}
           </div>
-          <div style={styles.desc}>{current.description ?? ""}</div>
+          <div className={styles.desc}>{current.description ?? ""}</div>
         </div>
-        <div style={styles.pos}>
+        <div className={styles.pos}>
           {currentIdx + 1} / {navList.length}
         </div>
       </div>
     </div>
   );
 }
-
-const styles = {
-  backdrop: {
-    position: "fixed" as const,
-    inset: 0,
-    zIndex: 9999,
-    background: "rgba(0,0,0,0.92)",
-    display: "flex",
-    alignItems: "flex-start",
-    justifyContent: "center",
-    padding: "24px 80px",
-    overflowY: "auto" as const,
-  },
-  inner: {
-    display: "flex",
-    flexDirection: "column" as const,
-    alignItems: "center",
-    gap: 12,
-    maxWidth: "100%",
-  },
-  img: {
-    display: "block",
-    maxWidth: "100%",
-    maxHeight: "calc(100vh - 200px)",
-    objectFit: "contain" as const,
-    borderRadius: 4,
-    background: "#000",
-  },
-  meta: {
-    color: "#ddd",
-    fontSize: 13,
-    textAlign: "center" as const,
-    lineHeight: 1.4,
-    maxWidth: 900,
-  },
-  species: { fontWeight: 600 },
-  desc: {
-    color: "#aab",
-    marginTop: 4,
-    fontSize: 12,
-    display: "-webkit-box" as const,
-    WebkitLineClamp: 2 as const,
-    WebkitBoxOrient: "vertical" as const,
-    overflow: "hidden" as const,
-    textOverflow: "ellipsis" as const,
-  },
-  pos: { color: "#667", fontSize: 12, fontVariantNumeric: "tabular-nums" as const },
-  closeBtn: {
-    position: "absolute" as const,
-    top: 16,
-    right: 20,
-    color: "#ddd",
-    fontSize: 32,
-    background: "transparent",
-    border: "none",
-    cursor: "pointer",
-    width: 40,
-    height: 40,
-    lineHeight: 1,
-  },
-  chev: {
-    position: "absolute" as const,
-    top: "50%",
-    transform: "translateY(-50%)",
-    background: "rgba(38, 38, 44, 0.7)",
-    color: "#ddd",
-    border: "1px solid #3a3a40",
-    width: 48,
-    height: 64,
-    fontSize: 24,
-    cursor: "pointer",
-    borderRadius: 4,
-  },
-  chevLeft: { left: 20 },
-  chevRight: { right: 20 },
-  badgeCam: {
-    display: "inline-block",
-    background: "#26262c",
-    color: "#9cf",
-    fontSize: 10,
-    padding: "1px 5px",
-    borderRadius: 3,
-    marginLeft: 6,
-    verticalAlign: "middle" as const,
-  },
-} as const;

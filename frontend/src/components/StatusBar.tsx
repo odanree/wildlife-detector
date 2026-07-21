@@ -3,6 +3,7 @@ import { CameraBadge } from "./CameraBadge";
 import { CostChip } from "./CostChip";
 import { GateFunnelChip } from "./GateFunnelChip";
 import { ResourceChip } from "./ResourceChip";
+import styles from "./StatusBar.module.css";
 
 interface StatusBarProps {
   camera: string;
@@ -21,7 +22,7 @@ interface StatusBarProps {
 export function StatusBar({ camera }: StatusBarProps) {
   const { data } = useStatus(camera);
   return (
-    <div style={styles.wrap}>
+    <div className={styles.wrap}>
       <CameraBadge cameraId={camera} backend={data?.backend} />
       <ResourceChip camera={camera} />
       <GateFunnelChip camera={camera} />
@@ -29,13 +30,3 @@ export function StatusBar({ camera }: StatusBarProps) {
     </div>
   );
 }
-
-const styles = {
-  wrap: {
-    display: "flex",
-    flexWrap: "wrap" as const,
-    gap: 8,
-    alignItems: "center",
-    padding: "8px 0",
-  },
-} as const;
