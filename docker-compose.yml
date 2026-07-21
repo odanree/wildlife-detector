@@ -69,6 +69,11 @@ services:
       MOTION_HISTORY: "400"
       MOTION_VAR_THRESHOLD: "18"
       MOTION_MIN_AREA: "80"
+      # detectShadows=1: MOG2 marks shadows gray, motion_detector
+      # thresholds them out before contour finding. Cuts single-frame
+      # ghosts from shadow flicker at the source, reducing motion
+      # events → VLM calls → memory churn. Same knob as rooftop.
+      MOTION_DETECT_SHADOWS: "1"
       BASELINE_DIFF_THRESHOLD: "0.06"
       DAY_BASELINE_DIFF_THRESHOLD: "0.18"
       # Cost-cutover: moved yard from cascade to pure Ollama after prod-
