@@ -94,12 +94,16 @@ Open `http://localhost:8100/react/` to see the shell after a rebuild.
 | 3 | Alerts page interactivity (lightbox, nav) | ✅ merged |
 | 4 | Alerts cutover — delete `_ALERTS_HTML`, `/alerts` → `/react/alerts` | ✅ merged |
 | 5 | Baselines page (parallel) | ✅ merged |
-| 6 | **Baselines cutover** — delete `_BASELINES_HTML`, `/baselines` → `/react/baselines` | **this PR** |
-| 7 | Shared header chips (funnel/cost/resources) | pending |
-| 8+ | Live preview, zone/mask editors | pending |
+| 6 | Baselines cutover — delete `_BASELINES_HTML`, `/baselines` → `/react/baselines` | ✅ merged |
+| 7 | **Shared header chips** — `<CameraBadge/>`, `<ResourceChip/>`, `<GateFunnelChip/>`, `<CostChip/>` + `<StatusBar/>` + `/status` ops dashboard | **this PR** |
+| 8+ | Live preview, zone/mask canvas editors | pending |
 
-After this PR: `/alerts` and `/baselines` both 302-redirect to their
+After PRs 4+6: `/alerts` and `/baselines` both 302-redirect to their
 React equivalents. Vanilla templates for both are deleted.
-`/` (live preview) still on vanilla — the hard one, migrates next
-via shared header chips first (PR 7), then the streaming preview +
-zone/mask canvas editors.
+
+PR 7 (this) extracts the header-chip visual primitives that the live
+preview page will reuse, and ships them on a real consumer page
+(`/status`) so they're not dead code awaiting PR 8+.
+
+`/` (live preview vanilla-JS) migrates next via the streaming preview
++ zone/mask canvas editors — the hard one, likely 2-3 PRs to do well.
