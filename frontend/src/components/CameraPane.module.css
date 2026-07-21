@@ -149,7 +149,11 @@
   padding: var(--sp-3);
   background: var(--bg-1);
   display: flex;
-  align-items: center;
+  /* Top-align vertically so the canvas hugs the pane toolbar instead
+     of floating in the middle when the container is taller than the
+     image aspect needs. Horizontal centering keeps side gutters
+     symmetric when the container is wider than the aspect fit. */
+  align-items: flex-start;
   justify-content: center;
 }
 
