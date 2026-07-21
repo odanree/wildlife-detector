@@ -333,7 +333,7 @@ def create_app(registry: DetectorRegistry) -> Flask:
         # assets are matched by the more specific /react/assets route
         # below and won't fall through here.
         idx = _os_mod.path.join(_REACT_DIST, "index.html")
-        if not _os_mod.exists(idx):
+        if not _os_mod.path.exists(idx):
             return Response(
                 "React bundle not built. Run `docker compose build web` "
                 "or `cd frontend && npm run build`.",
