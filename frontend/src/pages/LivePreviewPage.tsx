@@ -11,6 +11,7 @@ import { useDetectionSize } from "../hooks/useDetectionSize";
 import { useMasks } from "../hooks/useMasks";
 import { useStatus } from "../hooks/useStatus";
 import { useZone } from "../hooks/useZone";
+import { polygonIsSimple } from "../util/polygon";
 import styles from "./LivePreviewPage.module.css";
 
 const SECONDARY_STORAGE_KEY = "livePreview.secondaryCamera";
@@ -129,6 +130,17 @@ export function LivePreviewPage() {
   }
   async function doZoneSave() {
     if (workingPolygon.length < 3 || zoneSaving) return;
+    // Guard against self-intersecting polygons: SVG strokes vertex order,
+    // so the closing edge V(n-1)→V0 can slice through the interior when
+    // a vertex is placed inside the outline, and the shape reads as "two
+    // zones" in the editor. Cheaper to block the save than to teach every
+    // user to think about winding order.
+    if (!polygonIsSimple(workingPolygon)) {
+      setZoneErr(
+        "self-intersecting — one edge crosses another. Move vertices so the outline doesn't cross itself.",
+      );
+      return;
+    }
     setZoneSaving(true);
     setZoneErr(null);
     try {
@@ -234,6 +246,7 @@ export function LivePreviewPage() {
           <ZoneEditorButtons
             mode={zoneMode}
             vertexCount={workingPolygon.length}
+            isSimple={polygonIsSimple(workingPolygon)}
             saving={zoneSaving}
             saveErr={zoneErr}
             onDraw={enterZoneDraw}
@@ -319,6 +332,7 @@ export function LivePreviewPage() {
 function ZoneEditorButtons({
   mode,
   vertexCount,
+  isSimple,
   saving,
   saveErr,
   onDraw,
@@ -328,6 +342,7 @@ function ZoneEditorButtons({
 }: {
   mode: EditMode;
   vertexCount: number;
+  isSimple: boolean;
   saving: boolean;
   saveErr: string | null;
   onDraw: () => void;
@@ -359,7 +374,12 @@ function ZoneEditorButtons({
       </div>
     );
   }
-  const canSave = vertexCount >= 3 && !saving;
+  const canSave = vertexCount >= 3 && !saving && isSimple;
+  const saveTitle = !isSimple
+    ? "Polygon self-intersects — one edge crosses another. Adjust vertices before saving."
+    : vertexCount < 3
+      ? "Need at least 3 vertices"
+      : "Save polygon to config";
   return (
     <div className={styles.editorGroup}>
       <span className={styles.editorLabel}>
@@ -370,7 +390,7 @@ function ZoneEditorButtons({
         className={`${styles.editorBtn} ${styles.editorBtnSave}`}
         onClick={onSave}
         disabled={!canSave}
-        title={vertexCount < 3 ? "Need at least 3 vertices" : "Save polygon to config"}
+        title={saveTitle}
       >
         {saving ? "Saving…" : "Save"}
       </button>
@@ -382,6 +402,7 @@ function ZoneEditorButtons({
       >
         Cancel
       </button>
+      {!isSimple && vertexCount >= 4 && <span className={styles.editorErr}>self-intersecting</span>}
       {saveErr && <span className={styles.editorErr}>err: {saveErr}</span>}
     </div>
   );
