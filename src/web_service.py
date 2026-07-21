@@ -302,7 +302,13 @@ def create_app(registry: DetectorRegistry) -> Flask:
 
     @app.get("/alerts")
     def alerts_page():
-        return Response(preview._ALERTS_HTML, mimetype="text/html")
+        # Cutover: /alerts is now served by the React app at /react/alerts.
+        # 302 (temporary) rather than 301 (permanent) so we can reroute later
+        # without stale-cache surprises in operator browsers. Existing
+        # bookmarks continue to work; the address bar just updates. See
+        # docs/prototype-to-production-blueprint.md phase 7 for context.
+        from flask import redirect
+        return redirect("/react/alerts", code=302)
 
     @app.get("/baselines")
     def baselines_page():

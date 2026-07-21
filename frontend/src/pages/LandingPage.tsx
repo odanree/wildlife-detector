@@ -20,9 +20,10 @@ export function LandingPage() {
       </header>
       <main style={styles.main}>
         <p style={styles.blurb}>
-          React shell. Migration in progress — see{" "}
-          <code>docs/prototype-to-production-blueprint.md</code> Phase 7 for the plan. Each page
-          migrated in its own PR.
+          React shell. <code>/alerts</code> now served here (cutover complete). Live preview and
+          baselines still on the vanilla-JS templates — migrating in subsequent PRs. See{" "}
+          <code>docs/prototype-to-production-blueprint.md</code> Phase 7 + the migration status
+          table in <code>frontend/README.md</code>.
         </p>
         <section style={styles.section}>
           <h2 style={styles.h2}>Cost widget (rooftop)</h2>
