@@ -1,0 +1,126 @@
+.wrap {
+  min-height: 100vh;
+  background: var(--bg-0);
+  color: var(--text-hi);
+  font-family: var(--font-sans);
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  display: flex;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: 13px;
+  border-bottom: 1px solid var(--border-2);
+  background: var(--bg-3);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.title {
+  color: var(--text-hi);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.select {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 4px 10px;
+  border-radius: var(--r-md);
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.linkBtn {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 4px 10px;
+  border-radius: var(--r-md);
+  font-size: 12px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.linkBtn:hover {
+  border-color: var(--accent-blue);
+}
+
+/* Toolbar row under the header — camera-scoped controls */
+.toolbar {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--border-1);
+  background: var(--bg-1);
+  font-size: 12px;
+  color: var(--text-md);
+}
+
+.zoomBtns {
+  display: inline-flex;
+  gap: var(--sp-1);
+  align-items: center;
+  padding-left: var(--sp-2);
+  margin-left: var(--sp-2);
+  border-left: 1px solid var(--border-1);
+}
+
+.zoomBtns button {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 2px 8px;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+.zoomBtns button:hover {
+  border-color: var(--accent-blue);
+}
+
+.zoomVal {
+  min-width: 44px;
+  text-align: center;
+  color: var(--text-md);
+  font-family: var(--font-mono);
+}
+
+/* Scroll host contains the stream image; horizontal scroll only.
+   Vertical scroll happens on the window (matches the vanilla-JS
+   preview page's behavior so zone-editor coord math will map
+   the same way in the next PR). */
+.scrollHost {
+  overflow-x: auto;
+  overflow-y: visible;
+  padding: var(--sp-3);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.stream {
+  display: block;
+  border-radius: var(--r-md);
+  background: #000;
+  line-height: 0;
+  cursor: grab;
+}
+
+.streamDim {
+  filter: brightness(0.4);
+}
+
+.empty {
+  padding: 60px;
+  text-align: center;
+  color: var(--text-lo);
+}
