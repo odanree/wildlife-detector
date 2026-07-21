@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AlertsPage } from "./pages/AlertsPage";
 import { BaselinesPage } from "./pages/BaselinesPage";
 import { LandingPage } from "./pages/LandingPage";
+import { LivePreviewPage } from "./pages/LivePreviewPage";
 import { StatusDashboard } from "./pages/StatusDashboard";
 
 /**
@@ -19,6 +20,7 @@ export function App() {
     <BrowserRouter basename="/react">
       <Routes>
         <Route path="/" element={<LandingPage />} />
+        <Route path="/preview" element={<LivePreviewPage />} />
         <Route path="/status" element={<StatusDashboard />} />
         <Route path="/alerts" element={<AlertsPage />} />
         <Route path="/baselines" element={<BaselinesPage />} />
