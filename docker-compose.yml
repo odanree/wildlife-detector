@@ -132,12 +132,18 @@ services:
       # Rooftop scene has wind-blown foliage that MOG2's variance model
       # learns as background — a slow raccoon crossing brush gets absorbed.
       # KNN stores raw samples instead of averaging variance; keeps
-      # foreground signal when background is textured. Aggressive tune:
-      # 2-min learning window, near-noise-floor sensitivity, small
-      # blob-area floor for partial-visibility (raccoon peeking through
-      # leaves).
+      # foreground signal when background is textured.
+      #
+      # History reduced 1500 → 500 to cut KNN model memory: at 2048×928
+      # the per-pixel sample buffer scales linearly with history, so
+      # 1500 → 500 drops the model from ~8GB to ~2.6GB (~5GB saved on
+      # this container). Learning window shortens 100s → 33s at 15fps,
+      # so the background rebuilds faster after camera pan / lighting
+      # change; foreground detection becomes marginally more sensitive
+      # to slow drift, which we already handle downstream with the
+      # persistence gate + baseline-diff pre-filter.
       MOTION_BACKEND: knn
-      MOTION_HISTORY: "1500"
+      MOTION_HISTORY: "500"
       MOTION_VAR_THRESHOLD: "5"
       MOTION_MIN_AREA: "40"
       KNN_DIST2_THRESHOLD: "400"
