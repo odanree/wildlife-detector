@@ -89,14 +89,20 @@ Open `http://localhost:8100/react/` to see the shell after a rebuild.
 
 | PR | Scope | Status |
 |----|-------|--------|
-| 1 | Scaffold + `<CostChip />` proof-of-pipeline | **this PR** |
-| 2 | Alerts page skeleton (feature parity) | pending |
-| 3 | Alerts page interactivity (lightbox, nav) | pending |
-| 4 | Shared header chips (funnel/cost/resources) | pending |
-| 5+ | Baselines, live preview, zone/mask editors | pending |
+| 1 | Scaffold + `<CostChip />` proof-of-pipeline | ✅ merged |
+| 2 | Alerts page skeleton (feature parity) | ✅ merged |
+| 3 | Alerts page interactivity (lightbox, nav) | ✅ merged |
+| 4 | **Alerts cutover** — delete `_ALERTS_HTML`, redirect `/alerts` → `/react/alerts` | **this PR** |
+| 5 | Shared header chips (funnel/cost/resources) | pending |
+| 6 | Baselines page | pending |
+| 7+ | Live preview, zone/mask editors | pending |
 
-The old vanilla-JS `_INDEX_HTML` / `_ALERTS_HTML` / `_BASELINES_HTML`
-templates stay in `src/web/preview.py` until each is replaced.
-`/`, `/alerts`, `/baselines` continue to serve them — the React shell
-lives at `/react/` in parallel so the migration can happen without
-breaking the working detector UI.
+`/alerts` now 302-redirects to `/react/alerts`. Old bookmarks continue
+to work; nav links point directly at `/react/alerts` to skip the
+redirect hop. `_ALERTS_HTML` (~400 lines of vanilla JS) removed from
+`preview.py`.
+
+`/` (live preview) and `/baselines` still serve vanilla templates and
+migrate in future PRs following the same strangler-fig pattern:
+build React version in parallel → prove parity + interactivity in
+staged PRs → redirect the old route + delete the template.
