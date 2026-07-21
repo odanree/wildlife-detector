@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { BaselineControls } from "../components/BaselineControls";
 import { StatusBar } from "../components/StatusBar";
 import { useCameras } from "../hooks/useCameras";
 import { useStatus } from "../hooks/useStatus";
@@ -99,6 +100,7 @@ export function LivePreviewPage() {
       {camera && (
         <div className={styles.toolbar}>
           <StatusBar camera={camera} />
+          <BaselineControls camera={camera} />
           <div className={styles.zoomBtns}>
             <button type="button" onClick={() => adjustBy(-0.1)} title="Zoom out">
               −
