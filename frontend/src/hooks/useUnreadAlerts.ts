@@ -2,6 +2,20 @@ import { useEffect, useState } from "react";
 import { fetchAlerts } from "../api/alerts";
 
 const SEEN_KEY = "alertsLastSeenTotal";
+export const SEEN_ID_KEY = "alertsLastSeenId";
+
+/** Read the last-seen alert id from localStorage. Returns null if never
+ *  written (cold-start), a number otherwise. Exported so AlertsPage can
+ *  snapshot it on mount for per-row highlighting BEFORE the write side
+ *  of markAlertsSeen() rolls the watermark forward. */
+export function readLastSeenId(): number | null {
+  try {
+    const raw = localStorage.getItem(SEEN_ID_KEY);
+    return raw === null ? null : Number.parseInt(raw, 10) || 0;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Poll cross-camera alert total and compute unread count relative to
@@ -83,14 +97,27 @@ export function useUnreadAlerts(intervalMs = 5000): { unread: number; total: num
 }
 
 /**
- * Mark the current alert total as seen. Call from AlertsPage when it
- * mounts and when new alerts arrive while the page is open, so a live
- * new alert on the alerts page doesn't grow the badge for a viewer
- * who's already looking at it.
+ * Mark alerts as seen. Two watermarks are written:
+ *   - SEEN_KEY: the monotonic total, used by the header badge to compute
+ *     count.
+ *   - SEEN_ID_KEY: the highest alert id currently rendered, used by
+ *     AlertsPage row-highlighting to distinguish unread rows.
+ *
+ * Call from AlertsPage when data arrives so a live new alert on the
+ * alerts page doesn't grow the badge for a viewer who's already
+ * looking at it, and so revisiting doesn't re-highlight everything.
+ *
+ * `highestId` is optional — when omitted, only the total watermark
+ * moves. That's the correct behavior for pages that don't render row
+ * detail (e.g. a hypothetical "clear all unread" button in the
+ * header).
  */
-export function markAlertsSeen(total: number): void {
+export function markAlertsSeen(total: number, highestId?: number): void {
   try {
     localStorage.setItem(SEEN_KEY, String(total));
+    if (highestId != null) {
+      localStorage.setItem(SEEN_ID_KEY, String(highestId));
+    }
   } catch {
     // localStorage unavailable — badge won't zero-out, minor cosmetic.
   }

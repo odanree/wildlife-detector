@@ -4,7 +4,7 @@ import type { AlertRow } from "../api/alerts";
 import { AlertLightbox } from "../components/AlertLightbox";
 import { useAlerts } from "../hooks/useAlerts";
 import { useCameras } from "../hooks/useCameras";
-import { markAlertsSeen } from "../hooks/useUnreadAlerts";
+import { markAlertsSeen, readLastSeenId } from "../hooks/useUnreadAlerts";
 import { fmtRelative, fmtTs } from "../util/time";
 import styles from "./AlertsPage.module.css";
 
@@ -44,12 +44,26 @@ export function AlertsPage() {
     [items, grouped],
   );
 
-  // Being on this page IS the "seen" event — stamp the current total as
-  // seen so the header badge on other pages zeros out. In an effect (not
-  // during render) so we don't repeatedly write on unrelated re-renders.
+  // Snapshot the last-seen-id watermark at mount BEFORE markAlertsSeen
+  // rolls it forward on the first data-arrival effect. Frozen for the
+  // page's lifetime so rows highlighted as "unread" stay highlighted
+  // even as new data arrives — otherwise the highlight would flicker
+  // away the moment the polling tick writes the new watermark.
+  //
+  // Cold-start (never visited): initialSeenId stays null → adopted as
+  // max(current ids) on first data (see effect below) so we don't
+  // highlight all historical alerts as unread on the first-ever load.
+  const [initialSeenId, setInitialSeenId] = useState<number | null>(readLastSeenId);
+
+  // Being on this page IS the "seen" event — stamp total + highest-id
+  // seen so the header badge zeros out and revisits don't re-highlight.
+  // Also adopts the initial highlight-baseline on cold-start.
   useEffect(() => {
-    if (data) markAlertsSeen(data.total);
-  }, [data]);
+    if (!data) return;
+    const maxId = items.reduce((m, a) => Math.max(m, a.id), 0);
+    if (initialSeenId === null) setInitialSeenId(maxId);
+    markAlertsSeen(data.total, maxId);
+  }, [data, items, initialSeenId]);
 
   return (
     <div className={styles.wrap}>
@@ -144,7 +158,11 @@ export function AlertsPage() {
               <th className={styles.th}>Track</th>
             </tr>
           </thead>
-          <tbody>{groups.flatMap((g) => renderGroup(g, camera === "", setOpenId))}</tbody>
+          <tbody>
+            {groups.flatMap((g) =>
+              renderGroup(g, camera === "", setOpenId, initialSeenId ?? Number.POSITIVE_INFINITY),
+            )}
+          </tbody>
         </table>
       )}
       <footer className={styles.footer}>
@@ -161,6 +179,7 @@ function renderGroup(
   g: GroupedAlerts,
   showCameraBadge: boolean,
   onOpen: (id: number) => void,
+  unreadThreshold: number,
 ): JSX.Element[] {
   return [
     <Row
@@ -169,6 +188,7 @@ function renderGroup(
       showCameraBadge={showCameraBadge}
       groupSize={g.children.length + 1}
       onOpen={onOpen}
+      isUnread={g.head.id > unreadThreshold}
     />,
   ];
 }
@@ -178,11 +198,13 @@ function Row({
   showCameraBadge,
   groupSize,
   onOpen,
+  isUnread,
 }: {
   alert: AlertRow;
   showCameraBadge: boolean;
   groupSize: number;
   onOpen: (id: number) => void;
+  isUnread: boolean;
 }): JSX.Element {
   const isRodent = RODENT_SPECIES.has(alert.species);
   const isHist = alert.historical;
@@ -193,7 +215,7 @@ function Row({
       : `${styles.species} ${styles.speciesOther}`;
   const confPct = alert.confidence != null ? `${Math.round(alert.confidence * 100)}%` : "—";
   return (
-    <tr className={styles.row}>
+    <tr className={`${styles.row} ${isUnread ? styles.rowUnread : ""}`}>
       <td className={styles.thumbCell}>
         {alert.snapshot ? (
           <button
