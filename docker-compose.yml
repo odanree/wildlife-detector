@@ -129,22 +129,25 @@ services:
       # losing the wildlife targets we actually care about at overhead.
       # Ground rats will get missed by rooftop — that's yard's job anyway.
       MIN_MOTION_BBOX_PX: "30"
-      # Rooftop scene has wind-blown foliage that MOG2's variance model
-      # learns as background — a slow raccoon crossing brush gets absorbed.
-      # KNN stores raw samples instead of averaging variance; keeps
-      # foreground signal when background is textured.
+      # Rooftop was on KNN because MOG2's variance model absorbed slow
+      # raccoons crossing wind-blown brush. Retesting MOG2 now that the
+      # persistence gate + baseline-diff pre-filter catch downstream
+      # FPs — if MOG2 works here, we save ~2.5GB vs KNN=500 (KNN buffer
+      # at 2048×928 dominates memory on this container).
       #
-      # History reduced 1500 → 500 to cut KNN model memory: at 2048×928
-      # the per-pixel sample buffer scales linearly with history, so
-      # 1500 → 500 drops the model from ~8GB to ~2.6GB (~5GB saved on
-      # this container). Learning window shortens 100s → 33s at 15fps,
-      # so the background rebuilds faster after camera pan / lighting
-      # change; foreground detection becomes marginally more sensitive
-      # to slow drift, which we already handle downstream with the
-      # persistence gate + baseline-diff pre-filter.
-      MOTION_BACKEND: knn
-      MOTION_HISTORY: "500"
-      MOTION_VAR_THRESHOLD: "5"
+      # Aggressive tune:
+      # - history=200 → short 13s learning window; foliage variance
+      #   gets learned as background quickly, but a slow raccoon that
+      #   pauses > 13s could be absorbed. Bump to 400+ if that hits.
+      # - var_threshold=8 (vs OpenCV default 16) → picks up subtle
+      #   IR-mode intensity changes that a raccoon's fur creates
+      #   against brush.
+      # - min_area=40 kept for partial-visibility raccoon-peeking.
+      #
+      # Rollback: MOTION_BACKEND=knn + MOTION_HISTORY=500 restores prior.
+      MOTION_BACKEND: mog2
+      MOTION_HISTORY: "200"
+      MOTION_VAR_THRESHOLD: "8"
       MOTION_MIN_AREA: "40"
       KNN_DIST2_THRESHOLD: "400"
       # Rooftop shadows drift more with the sun's arc than the yard.
