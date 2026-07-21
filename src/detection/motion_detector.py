@@ -39,6 +39,18 @@ _SYNTHETIC_CONF = 0.50  # confidence value assigned to motion-detected persons
 # ghosts are the persistence-gate's job, deferred by design choice.
 _MAX_VELOCITY_PX = int(os.getenv("MOTION_MAX_VELOCITY_PX_PER_FRAME", "40"))
 
+# Persistence gate: require a track to appear in at least this many
+# consecutive frames before emitting a detection. Kills the single-
+# frame ghost case the velocity gate can't touch — bugs moving faster
+# than _MATCH_DIST_PX=60 per frame don't associate to an existing
+# track, form fresh velocity=0 tracks each frame, and pass the
+# velocity gate every time. Wildlife at ground scale persists for
+# many frames; a require-N-frames rule kills the ghosts.
+#
+# Cost: 1/fps latency added to first-emit for legitimate detections
+# (~66ms at 15fps). Set to 1 to disable, default 2.
+_MIN_TRACK_AGE = int(os.getenv("MOTION_MIN_TRACK_AGE_FRAMES", "2"))
+
 
 class MotionDetector:
     def __init__(
@@ -76,12 +88,20 @@ class MotionDetector:
         self._seam_x = seam_x
         self._seam_margin = seam_margin
         self._tracks: dict[int, tuple[int, int]] = {}   # id → last centroid
+        self._track_age: dict[int, int] = {}             # id → consecutive frames seen
         self._next_id = 1000
         self._kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        # Reject counters — read+reset by pipeline every frame via
+        # pop_reject_counts() so preview stats can surface them in the
+        # gate funnel. Not thread-safe (single detect() caller per pane).
+        self._velocity_rejected = 0
+        self._persistence_rejected = 0
         logger.info(
-            "Motion detector ready — %s history=%d threshold=%.0f area=%d–%d px² edge_margin=%d velocity_gate=%s",
+            "Motion detector ready — %s history=%d threshold=%.0f area=%d–%d px² "
+            "edge_margin=%d velocity_gate=%s persistence_gate=%s",
             self._backend, history, var_threshold, min_area, max_area, edge_margin,
             f"{_MAX_VELOCITY_PX}px/frame" if _MAX_VELOCITY_PX > 0 else "off",
+            f"{_MIN_TRACK_AGE}f" if _MIN_TRACK_AGE > 1 else "off",
         )
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
@@ -138,22 +158,36 @@ class MotionDetector:
 
             tid, velocity = self._match_or_create(cx, cy, matched)
             matched.add(tid)
+            self._track_age[tid] = self._track_age.get(tid, 0) + 1
+            age = self._track_age[tid]
 
-            # Kinematic gate — reject fast movers (near-lens bugs).
+            # Velocity gate — reject fast movers (near-lens bugs).
             # Keep the track (add to `matched` above) so subsequent frames
             # keep measuring against the same id; evicting would let the
             # bug re-appear as a fresh velocity=0 track and pass on every
             # other frame.
             if _MAX_VELOCITY_PX > 0 and velocity > _MAX_VELOCITY_PX:
+                self._velocity_rejected += 1
                 logger.debug(
                     "blob rejected velocity=%.1f > %d px/frame cx=%d cy=%d tid=%d (bug?)",
                     velocity, _MAX_VELOCITY_PX, cx, cy, tid,
                 )
                 continue
 
+            # Persistence gate — kill single-frame ghosts (bugs zooming
+            # past that don't associate to any existing track). Only
+            # emit when the track has been seen in N consecutive frames.
+            if _MIN_TRACK_AGE > 1 and age < _MIN_TRACK_AGE:
+                self._persistence_rejected += 1
+                logger.debug(
+                    "blob rejected persistence age=%d < %d cx=%d cy=%d tid=%d (ghost?)",
+                    age, _MIN_TRACK_AGE, cx, cy, tid,
+                )
+                continue
+
             logger.debug(
-                "blob accepted area=%.0f aspect=%.2f solidity=%.2f v=%.1fpx/f cx=%d cy=%d",
-                area, aspect, solidity, velocity, cx, cy,
+                "blob accepted area=%.0f aspect=%.2f solidity=%.2f v=%.1fpx/f age=%d cx=%d cy=%d",
+                area, aspect, solidity, velocity, age, cx, cy,
             )
 
             detections.append(Detection(
@@ -165,11 +199,22 @@ class MotionDetector:
                 contour=cnt,
             ))
 
-        # Evict tracks that disappeared this frame
+        # Evict tracks that disappeared this frame (and their age counters)
         for tid in [t for t in self._tracks if t not in matched]:
             del self._tracks[tid]
+            self._track_age.pop(tid, None)
 
         return detections
+
+    def pop_reject_counts(self) -> tuple[int, int]:
+        """Return (velocity_rejects, persistence_rejects) since the last
+        call and reset. Pipeline calls this after each detect() to
+        forward the deltas to preview stats for the gate-funnel display."""
+        v = self._velocity_rejected
+        p = self._persistence_rejected
+        self._velocity_rejected = 0
+        self._persistence_rejected = 0
+        return v, p
 
     def _match_or_create(self, cx: int, cy: int, already_matched: set[int]) -> tuple[int, float]:
         """Return (track_id, velocity_px_per_frame). Velocity is 0 for a
