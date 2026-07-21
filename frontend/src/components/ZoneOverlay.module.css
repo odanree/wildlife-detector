@@ -1,0 +1,58 @@
+.svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.svgInteractive {
+  pointer-events: auto;
+}
+
+.svgDraw {
+  cursor: crosshair;
+}
+
+.polygon {
+  fill: var(--accent-green);
+  fill-opacity: 0.1;
+  stroke: var(--accent-green);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.polygonEditing {
+  fill: var(--accent-camera);
+  fill-opacity: 0.08;
+  stroke: var(--accent-camera);
+  stroke-dasharray: 6 4;
+}
+
+.rubberband {
+  stroke: var(--accent-camera);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+  vector-effect: non-scaling-stroke;
+  fill: none;
+}
+
+.vertex {
+  fill: var(--accent-green);
+  stroke: #000;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  cursor: grab;
+}
+.vertexEditing {
+  fill: var(--accent-camera);
+}
+.vertexClosable {
+  fill: var(--accent-fresh);
+  stroke: #fff;
+  stroke-width: 2;
+}
+.vertexDragging {
+  cursor: grabbing;
+}
