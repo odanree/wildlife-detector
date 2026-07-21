@@ -1,4 +1,11 @@
-import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { baselineImageUrl } from "../api/baseline";
 import { useBaselineMeta } from "../hooks/useBaselineMeta";
 import { useDetectionSize } from "../hooks/useDetectionSize";
@@ -63,6 +70,40 @@ export function CameraPane({
   const [detW, detH] = useDetectionSize(camera, status?.detection_size);
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const scrollHostRef = useRef<HTMLDivElement | null>(null);
+  // Canvas dimensions computed in JS to guarantee an object-fit-contain
+  // fit within scrollHost regardless of container aspect. Pure-CSS
+  // aspect-ratio + max-w/max-h broke when max-width clamped: `height:
+  // 100%` remained explicit, so both dimensions were definite and
+  // aspect-ratio was ignored — visible aspect loss on single-pane
+  // when the pane was taller than the image aspect implied.
+  const [canvasBox, setCanvasBox] = useState<{ w: number; h: number } | null>(null);
+  useLayoutEffect(() => {
+    const el = scrollHostRef.current;
+    if (!el || !detW || !detH) return;
+    const imgAspect = detW / detH;
+    function measure() {
+      if (!el) return;
+      const cs = getComputedStyle(el);
+      const padX = Number.parseFloat(cs.paddingLeft) + Number.parseFloat(cs.paddingRight);
+      const padY = Number.parseFloat(cs.paddingTop) + Number.parseFloat(cs.paddingBottom);
+      const inW = el.clientWidth - padX;
+      const inH = el.clientHeight - padY;
+      if (inW <= 0 || inH <= 0) return;
+      const containerAspect = inW / inH;
+      const [w, h] =
+        containerAspect > imgAspect
+          ? [inH * imgAspect, inH] // container wider than image → fit by height
+          : [inW, inW / imgAspect]; // container taller than image → fit by width
+      setCanvasBox((prev) =>
+        prev && Math.abs(prev.w - w) < 0.5 && Math.abs(prev.h - h) < 0.5 ? prev : { w, h },
+      );
+    }
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [detW, detH]);
   // Zoom is keyed by camera (not by pane slot) so a camera's zoom
   // preference follows it across a promote-swap. useZoom appends
   // `:<cameraId>` to storageKey, so passing the same prefix from both
@@ -195,7 +236,7 @@ export function CameraPane({
         </div>
       </div>
 
-      <div className={styles.scrollHost}>
+      <div className={styles.scrollHost} ref={scrollHostRef}>
         {streamError && viewMode === "live" ? (
           <div className={styles.empty}>
             Stream unavailable. Detector may still be starting up — retry in a few seconds.
@@ -223,7 +264,12 @@ export function CameraPane({
             // Feed the image aspect ratio to CSS so the canvas sizes
             // itself to fit the container while preserving aspect.
             // Any change is picked up automatically by aspect-ratio.
-            style={{ "--img-aspect": `${detW} / ${detH}` } as CSSProperties}
+            style={
+              {
+                width: canvasBox ? `${canvasBox.w}px` : 0,
+                height: canvasBox ? `${canvasBox.h}px` : 0,
+              } as CSSProperties
+            }
           >
             <img
               key={streamKey}

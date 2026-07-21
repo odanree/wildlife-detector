@@ -157,20 +157,15 @@
   justify-content: center;
 }
 
+/* Canvas dimensions come from JS (useLayoutEffect + ResizeObserver in
+   CameraPane), set as inline width/height in CSS px. Pure-CSS aspect-
+   ratio + max-w/max-h wasn't reliable across container shapes: when
+   max-width clamped, an explicit `height: 100%` would remain fixed
+   and both dimensions became definite, so aspect-ratio was ignored
+   and the image visibly stretched. JS-measure guarantees the box is
+   exactly `object-fit: contain` regardless of container aspect. */
 .canvas {
   position: relative;
-  aspect-ratio: var(--img-aspect, 1280 / 720);
-  /* Anchor one dimension so aspect-ratio has something to derive from.
-     With both width and height as `auto`, the box would collapse to
-     intrinsic content size on first paint (before the <img> loads),
-     then grow as layout re-resolves — visible jitter. Fixing height
-     to fill the pane and letting width be aspect-derived breaks the
-     cycle. max-width clamps if the aspect-derived width would exceed
-     the pane; when clamping, browsers also shrink height proportionally
-     to preserve the ratio. */
-  height: 100%;
-  width: auto;
-  max-width: 100%;
   transform: translate(calc(-1 * var(--pan-x, 0px)), calc(-1 * var(--pan-y, 0px)))
     scale(var(--zoom, 1));
   /* Top-center origin: button zoom grows symmetrically left/right and
