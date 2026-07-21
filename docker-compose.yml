@@ -150,14 +150,28 @@ services:
       # Higher threshold means only stronger intensity deltas count as
       # foreground. Wildlife fur against brush still passes; wind-blown
       # shadow edges no longer do.
+      #
+      # detectShadows=1: MOG2's built-in shadow model marks shadow
+      # pixels gray (128); motion_detector thresholds those out before
+      # contour finding. Cuts shadow blobs at the source. Belt-and-
+      # suspenders with the baseline_diff bump downstream.
       MOTION_BACKEND: mog2
       MOTION_HISTORY: "200"
       MOTION_VAR_THRESHOLD: "15"
+      MOTION_DETECT_SHADOWS: "1"
       MOTION_MIN_AREA: "40"
       KNN_DIST2_THRESHOLD: "400"
-      # Rooftop shadows drift more with the sun's arc than the yard.
-      BASELINE_DIFF_THRESHOLD: "0.03"
-      DAY_BASELINE_DIFF_THRESHOLD: "0.05"
+      # Baseline-diff bumped 0.03 → 0.08 (night), 0.05 → 0.12 (day) to
+      # kill shadow flood: post-MOG2 tuning still showed 94% of zone
+      # events crossing the 0.03 baseline gate (25781 of 27304), with
+      # 100% of resulting VLM calls rejected (4757 → 0 hits). Shadow
+      # regions LOOK like the baseline (same still scene, just darker
+      # bulk-shift in luminance), so a stricter mean-diff threshold
+      # correctly rejects them. Trade: subtle raccoon-in-shadow whose
+      # fur brightness ≈ baseline might get dropped — acceptable given
+      # the current all-noise funnel.
+      BASELINE_DIFF_THRESHOLD: "0.08"
+      DAY_BASELINE_DIFF_THRESHOLD: "0.12"
       # Yard's 0.95 daytime-rodent gate rejects nearly all overhead rat
       # detections (grainy IR + small target = 0.4-0.6 conf typical).
       # Rooftop's baseline auto-picker also misclassifies IR-lit night as

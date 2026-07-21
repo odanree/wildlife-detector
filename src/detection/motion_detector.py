@@ -51,6 +51,14 @@ _MAX_VELOCITY_PX = int(os.getenv("MOTION_MAX_VELOCITY_PX_PER_FRAME", "40"))
 # (~66ms at 15fps). Set to 1 to disable, default 2.
 _MIN_TRACK_AGE = int(os.getenv("MOTION_MIN_TRACK_AGE_FRAMES", "2"))
 
+# MOG2/KNN shadow detection: when enabled, the FG mask marks shadow
+# pixels as gray (128) instead of foreground (255). We threshold to
+# keep only strong-FG (>200), dropping shadows before contour finding.
+# Cuts wind-blown-tree-shadow FPs at the source (before the baseline-
+# diff pre-filter even sees them). Set to 0 to disable. Off by default
+# for backwards compatibility with existing tuning.
+_DETECT_SHADOWS = os.getenv("MOTION_DETECT_SHADOWS", "0") == "1"
+
 
 class MotionDetector:
     def __init__(
@@ -73,13 +81,13 @@ class MotionDetector:
             self._bg = cv2.createBackgroundSubtractorKNN(
                 history=history,
                 dist2Threshold=float(os.getenv("KNN_DIST2_THRESHOLD", "400")),
-                detectShadows=False,
+                detectShadows=_DETECT_SHADOWS,
             )
         else:
             self._bg = cv2.createBackgroundSubtractorMOG2(
                 history=history,
                 varThreshold=var_threshold,
-                detectShadows=False,
+                detectShadows=_DETECT_SHADOWS,
             )
         self._backend = "KNN" if _use_knn else "MOG2"
         self._min_area = min_area
@@ -98,10 +106,11 @@ class MotionDetector:
         self._persistence_rejected = 0
         logger.info(
             "Motion detector ready — %s history=%d threshold=%.0f area=%d–%d px² "
-            "edge_margin=%d velocity_gate=%s persistence_gate=%s",
+            "edge_margin=%d velocity_gate=%s persistence_gate=%s shadow_filter=%s",
             self._backend, history, var_threshold, min_area, max_area, edge_margin,
             f"{_MAX_VELOCITY_PX}px/frame" if _MAX_VELOCITY_PX > 0 else "off",
             f"{_MIN_TRACK_AGE}f" if _MIN_TRACK_AGE > 1 else "off",
+            "on" if _DETECT_SHADOWS else "off",
         )
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
@@ -114,6 +123,12 @@ class MotionDetector:
             frame[:, x1:x2] = 0
 
         fg = self._bg.apply(frame)
+        # detectShadows mode marks shadows as gray (128) instead of
+        # foreground (255). Threshold to keep only strong-FG so
+        # contour finding never sees the shadow blobs — kills the
+        # wind-blown-tree-shadow flood before it becomes a motion event.
+        if _DETECT_SHADOWS:
+            _, fg = cv2.threshold(fg, 200, 255, cv2.THRESH_BINARY)
 
         # Open removes isolated noise pixels; dilate merges nearby fragments
         fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, self._kernel)
