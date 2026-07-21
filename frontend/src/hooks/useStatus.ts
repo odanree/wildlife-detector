@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchStatus, type StatusSnapshot } from "../api/status";
+import { type StatusSnapshot, fetchStatus } from "../api/status";
 
 interface UseStatusResult {
   data: StatusSnapshot | null;

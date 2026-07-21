@@ -39,7 +39,15 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-      - run: bun install --frozen-lockfile
+      # Prefer --frozen-lockfile once bun.lock is committed. Falls back to
+      # unpinned install for the pre-lockfile transition (first CI run
+       # after switching from npm). Follow-up PR pins the lock.
+      - run: |
+          if [ -f bun.lock ]; then
+            bun install --frozen-lockfile
+          else
+            bun install
+          fi
       - name: Biome lint + format check
         run: bun run lint
       - name: TypeScript typecheck
@@ -56,7 +64,15 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-      - run: bun install --frozen-lockfile
+      # Prefer --frozen-lockfile once bun.lock is committed. Falls back to
+      # unpinned install for the pre-lockfile transition (first CI run
+       # after switching from npm). Follow-up PR pins the lock.
+      - run: |
+          if [ -f bun.lock ]; then
+            bun install --frozen-lockfile
+          else
+            bun install
+          fi
       - name: Build production bundle
         run: bun run build
       - name: Verify dist output exists
