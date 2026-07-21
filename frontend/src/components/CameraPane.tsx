@@ -155,9 +155,18 @@ export function CameraPane({
   // the img's onLoad (first frame decoded) or by a 2500ms grace timer
   // in case the stream never yields a frame (detector down, etc.) so
   // the user isn't stuck on the skeleton indefinitely.
+  //
+  // useLayoutEffect (not useEffect) so the skeleton comes up in the
+  // SAME paint that resizes the canvas. Otherwise the sequence is:
+  //   commit #1: new canvas box (useLayoutEffect resize), frameReady=true
+  //     → paint: img shows previous camera's cached frame stretched
+  //              into the new-aspect box (visible flash)
+  //   commit #2 (after paint): frameReady=false (useEffect too late)
+  //     → paint: skeleton finally covers the img
+  // useLayoutEffect batches both state changes into one pre-paint commit.
   const [frameReady, setFrameReady] = useState(false);
   // biome-ignore lint/correctness/useExhaustiveDependencies: (camera, viewMode) ARE the fire triggers; body only calls setters/setTimeout
-  useEffect(() => {
+  useLayoutEffect(() => {
     setStreamError(false);
     setFrameReady(false);
     const t = window.setTimeout(() => setFrameReady(true), 2500);
