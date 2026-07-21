@@ -118,6 +118,19 @@
   background: #191921;
 }
 
+/* Unread rows — alerts that arrived after the last time the operator
+   visited this page. Left border in accent-err (red, same palette as
+   the header badge and the alert flash) so the marker reads as
+   "alerts I haven't looked at yet" at a glance. Subtle background
+   tint on top of the base row so it doesn't fight :hover. */
+.rowUnread {
+  background: rgba(255, 102, 102, 0.06);
+  box-shadow: inset 3px 0 0 var(--accent-err, #f66);
+}
+.rowUnread:hover {
+  background: rgba(255, 102, 102, 0.1);
+}
+
 .thumbCell {
   padding: var(--sp-2) var(--sp-3);
   width: 176px;
