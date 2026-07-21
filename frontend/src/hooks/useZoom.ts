@@ -87,27 +87,40 @@ export function useZoom(cameraId: string, options: UseZoomOptions) {
       const fracX = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0.5;
       const fracY = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0.5;
 
-      // Deterministic new size from base dims × new zoom. Avoids
-      // reading getBoundingClientRect() post-commit which races.
+      // Read the pre-zoom scroll baseline so we can compute the new
+      // absolute target (setting scrollLeft = ... instead of +=). The
+      // += form fights the browser's own scroll-preservation logic
+      // when content resizes; absolute assignment doesn't.
+      const scrollHost = document.getElementById("live-scroll-host");
+      const oldScrollLeft = scrollHost?.scrollLeft ?? 0;
+
+      // Deterministic new rendered size from base dims × new zoom.
+      // getBoundingClientRect() post-commit races React's paint
+      // pipeline; math from base dims doesn't.
       const oldRenderedW = baseW * oldZoom;
-      const oldRenderedH = baseH * oldZoom;
       const newRenderedW = baseW * newZoom;
       const newRenderedH = baseH * newZoom;
-      const dW = newRenderedW - oldRenderedW;
+      const oldRenderedH = baseH * oldZoom;
       const dH = newRenderedH - oldRenderedH;
+      // Target scroll: preserve the image-space X under the cursor.
+      // cursor_screen_x = image_left + fracX * imageW - scrollLeft
+      // Solve for new scrollLeft so cursor_screen_x is unchanged:
+      const targetScrollLeft = oldScrollLeft + fracX * (newRenderedW - oldRenderedW);
 
-      const scrollHost = document.getElementById("live-scroll-host");
-
-      // flushSync forces React to commit the zoom state change
-      // synchronously so the DOM has the new width/height BEFORE we
-      // adjust scroll. Without it, the scrollLeft change lands
-      // against the OLD content size and gets clamped to the old
-      // scroll range.
+      // flushSync commits React state synchronously so the img's
+      // width attribute lands in the DOM before we touch scroll.
       flushSync(() => {
         setZoomTo(newZoom);
       });
 
-      if (scrollHost) scrollHost.scrollLeft += dW * fracX;
+      if (scrollHost) {
+        // Force layout by reading a size property AFTER the width
+        // attribute lands but BEFORE we set scrollLeft. Without this
+        // the browser may not have expanded the scroll range yet and
+        // our scrollLeft assignment gets clamped to the pre-zoom max.
+        void scrollHost.scrollWidth;
+        scrollHost.scrollLeft = targetScrollLeft;
+      }
       window.scrollBy(0, dH * fracY);
     },
     [setZoomTo, min, max, step, baseW, baseH],
