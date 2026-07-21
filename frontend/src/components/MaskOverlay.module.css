@@ -26,23 +26,28 @@
 .maskEditing {
   fill-opacity: 0.08;
   stroke-dasharray: 6 4;
-  cursor: grab;
 }
 
-.maskDragging {
-  cursor: grabbing;
-}
-
-.handle {
-  fill: var(--accent-rodent);
+/* Vanilla-parity delete handle: red circle w/ white × at top-right of
+   each rectangle. r=12 in image-pixel units so it scales with zoom. */
+.delete {
+  fill: #f22;
   stroke: #000;
-  stroke-width: 1.5;
+  stroke-width: 1;
+  cursor: pointer;
   vector-effect: non-scaling-stroke;
-  cursor: nwse-resize;
 }
-.handleNE,
-.handleSW {
-  cursor: nesw-resize;
+.delete:hover {
+  fill: #fff;
+}
+
+.deleteX {
+  fill: #fff;
+  font-family: sans-serif;
+  font-size: 20px;
+  font-weight: bold;
+  pointer-events: none;
+  user-select: none;
 }
 
 .rubberband {

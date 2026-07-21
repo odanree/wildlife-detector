@@ -2,7 +2,7 @@ import { type MouseEvent as ReactMouseEvent, useRef, useState } from "react";
 import type { Rect } from "../api/masks";
 import styles from "./MaskOverlay.module.css";
 
-export type MaskMode = "idle" | "draw" | "tweak";
+export type MaskMode = "idle" | "edit";
 
 interface MaskOverlayProps {
   baseW: number;
@@ -12,36 +12,29 @@ interface MaskOverlayProps {
   onChange: (masks: Rect[]) => void;
 }
 
-type DragState =
-  | { kind: "draw"; startX: number; startY: number; curX: number; curY: number }
-  | { kind: "move"; idx: number; anchorX: number; anchorY: number; orig: Rect }
-  | { kind: "resize"; idx: number; corner: "nw" | "ne" | "sw" | "se"; orig: Rect }
-  | null;
-
 const MIN_MASK_PX = 8;
+const DELETE_RADIUS = 12;
 
 /**
  * SVG overlay for OSD-mask rectangle editing. Ports the vanilla-JS
- * mask editor. Same coordinate contract as ZoneOverlay: viewBox in
- * image-pixel coords so rectangles are stored/rendered in the space
- * the backend expects.
+ * mask editor as-is:
  *
- * Modes:
- *   - idle:  read-only; rectangles rendered with pointer-events: none
- *            so wheel zoom passes through
- *   - draw:  click-drag on empty space to create a new rectangle
- *   - tweak: drag rectangle body to move; drag any corner handle to
- *            resize; right-click rectangle body to delete
+ *   - Single edit mode (no separate "tweak" — masks are treated as
+ *     immutable-once-drawn; wrong ones are deleted and re-drawn)
+ *   - Draw: click-drag on empty space to create a new rectangle
+ *   - Delete: click the red × handle at each rectangle's top-right
+ *   - Idle: read-only; pointer-events pass through so wheel-zoom works
  *
- * Rectangles are stored as [x1, y1, x2, y2] with x1<x2, y1<y2
- * normalized. Drag-out during a resize/draw operation swaps corners
- * so the invariant holds on save.
+ * Coordinate contract identical to ZoneOverlay: viewBox in image-pixel
+ * space, so rects are stored/rendered in the space the backend
+ * expects. Delete-handle geometry (r=12, cx/cy) matches vanilla.
  */
 export function MaskOverlay({ baseW, baseH, masks, mode, onChange }: MaskOverlayProps) {
   const svgRef = useRef<SVGSVGElement>(null);
-  const [drag, setDrag] = useState<DragState>(null);
+  const [draft, setDraft] = useState<Rect | null>(null);
+  const draftStartRef = useRef<[number, number] | null>(null);
 
-  const isEditing = mode !== "idle";
+  const isEditing = mode === "edit";
 
   function eventToImagePoint(e: ReactMouseEvent): [number, number] | null {
     const svg = svgRef.current;
@@ -54,110 +47,57 @@ export function MaskOverlay({ baseW, baseH, masks, mode, onChange }: MaskOverlay
   }
 
   function onSvgMouseDown(e: ReactMouseEvent) {
-    if (mode !== "draw") return;
+    if (!isEditing) return;
+    // A click on a delete handle bubbles up to the svg, but the handle's
+    // own onMouseDown stops propagation, so we won't hit this path there.
     const pt = eventToImagePoint(e);
     if (!pt) return;
-    setDrag({ kind: "draw", startX: pt[0], startY: pt[1], curX: pt[0], curY: pt[1] });
+    draftStartRef.current = pt;
+    setDraft([pt[0], pt[1], pt[0], pt[1]]);
   }
 
   function onSvgMouseMove(e: ReactMouseEvent) {
-    if (!drag) return;
+    if (!isEditing || !draftStartRef.current) return;
     const pt = eventToImagePoint(e);
     if (!pt) return;
-    if (drag.kind === "draw") {
-      setDrag({ ...drag, curX: pt[0], curY: pt[1] });
-    } else if (drag.kind === "move") {
-      const dx = pt[0] - drag.anchorX;
-      const dy = pt[1] - drag.anchorY;
-      const [x1, y1, x2, y2] = drag.orig;
-      const next = masks.slice();
-      next[drag.idx] = [x1 + dx, y1 + dy, x2 + dx, y2 + dy];
-      onChange(next);
-    } else if (drag.kind === "resize") {
-      const [x1, y1, x2, y2] = drag.orig;
-      let nx1 = x1;
-      let ny1 = y1;
-      let nx2 = x2;
-      let ny2 = y2;
-      if (drag.corner === "nw") {
-        nx1 = pt[0];
-        ny1 = pt[1];
-      } else if (drag.corner === "ne") {
-        nx2 = pt[0];
-        ny1 = pt[1];
-      } else if (drag.corner === "sw") {
-        nx1 = pt[0];
-        ny2 = pt[1];
-      } else {
-        nx2 = pt[0];
-        ny2 = pt[1];
-      }
-      const next = masks.slice();
-      next[drag.idx] = normalizeRect([nx1, ny1, nx2, ny2]);
-      onChange(next);
-    }
+    const [sx, sy] = draftStartRef.current;
+    setDraft([sx, sy, pt[0], pt[1]]);
   }
 
   function onSvgMouseUp() {
-    if (!drag) return;
-    if (drag.kind === "draw") {
-      const r = normalizeRect([drag.startX, drag.startY, drag.curX, drag.curY]);
+    if (!isEditing) return;
+    if (draft) {
+      const r = normalizeRect(draft);
       if (r[2] - r[0] >= MIN_MASK_PX && r[3] - r[1] >= MIN_MASK_PX) {
         onChange([...masks, r]);
       }
     }
-    setDrag(null);
+    draftStartRef.current = null;
+    setDraft(null);
   }
 
   function onSvgMouseLeave() {
-    setDrag(null);
+    draftStartRef.current = null;
+    setDraft(null);
   }
 
-  function onMaskMouseDown(idx: number, e: ReactMouseEvent) {
-    if (mode !== "tweak") return;
-    e.stopPropagation();
-    const pt = eventToImagePoint(e);
-    if (!pt) return;
-    setDrag({
-      kind: "move",
-      idx,
-      anchorX: pt[0],
-      anchorY: pt[1],
-      orig: [...masks[idx]] as Rect,
-    });
-  }
-
-  function onMaskContextMenu(idx: number, e: ReactMouseEvent) {
-    if (mode !== "tweak") return;
-    e.preventDefault();
+  function onDeleteMouseDown(idx: number, e: ReactMouseEvent) {
+    if (!isEditing) return;
     e.stopPropagation();
     onChange(masks.filter((_, i) => i !== idx));
   }
 
-  function onHandleMouseDown(idx: number, corner: "nw" | "ne" | "sw" | "se", e: ReactMouseEvent) {
-    if (mode !== "tweak") return;
-    e.stopPropagation();
-    setDrag({ kind: "resize", idx, corner, orig: [...masks[idx]] as Rect });
-  }
-
-  const rubberBand =
-    drag?.kind === "draw" ? normalizeRect([drag.startX, drag.startY, drag.curX, drag.curY]) : null;
-
-  const handleSize = Math.max(6, baseW * 0.006);
+  const rubberBand = draft ? normalizeRect(draft) : null;
 
   const svgClass = [
     styles.svg,
     isEditing ? styles.svgInteractive : "",
-    mode === "draw" ? styles.svgDraw : "",
-    drag?.kind === "move" || drag?.kind === "resize" ? styles.maskDragging : "",
+    isEditing ? styles.svgDraw : "",
   ]
     .filter(Boolean)
     .join(" ");
 
   return (
-    // Same a11y stance as ZoneOverlay — mouse-only affordance for
-    // cursor-driven rectangle drawing.
-    // biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only affordance; no keyboard equivalent for cursor-driven rectangle drawing
     <svg
       ref={svgRef}
       className={svgClass}
@@ -173,54 +113,35 @@ export function MaskOverlay({ baseW, baseH, masks, mode, onChange }: MaskOverlay
       <title>OSD mask editor</title>
       {masks.map((r, i) => {
         const [x1, y1, x2, y2] = r;
-        const w = x2 - x1;
-        const h = y2 - y1;
         return (
-          // biome-ignore lint/suspicious/noArrayIndexKey: mask index IS the identity for edit ops
+          // biome-ignore lint/suspicious/noArrayIndexKey: mask index IS the identity for delete ops
           <g key={i}>
             <rect
               className={`${styles.mask} ${isEditing ? styles.maskEditing : ""}`}
               x={x1}
               y={y1}
-              width={w}
-              height={h}
-              onMouseDown={(e) => onMaskMouseDown(i, e)}
-              onContextMenu={(e) => onMaskContextMenu(i, e)}
+              width={x2 - x1}
+              height={y2 - y1}
             />
-            {mode === "tweak" && (
+            {isEditing && (
               <>
-                <rect
-                  className={styles.handle}
-                  x={x1 - handleSize / 2}
-                  y={y1 - handleSize / 2}
-                  width={handleSize}
-                  height={handleSize}
-                  onMouseDown={(e) => onHandleMouseDown(i, "nw", e)}
+                <circle
+                  className={styles.delete}
+                  cx={x2}
+                  cy={y1}
+                  r={DELETE_RADIUS}
+                  onMouseDown={(e) => onDeleteMouseDown(i, e)}
                 />
-                <rect
-                  className={`${styles.handle} ${styles.handleNE}`}
-                  x={x2 - handleSize / 2}
-                  y={y1 - handleSize / 2}
-                  width={handleSize}
-                  height={handleSize}
-                  onMouseDown={(e) => onHandleMouseDown(i, "ne", e)}
-                />
-                <rect
-                  className={`${styles.handle} ${styles.handleSW}`}
-                  x={x1 - handleSize / 2}
-                  y={y2 - handleSize / 2}
-                  width={handleSize}
-                  height={handleSize}
-                  onMouseDown={(e) => onHandleMouseDown(i, "sw", e)}
-                />
-                <rect
-                  className={styles.handle}
-                  x={x2 - handleSize / 2}
-                  y={y2 - handleSize / 2}
-                  width={handleSize}
-                  height={handleSize}
-                  onMouseDown={(e) => onHandleMouseDown(i, "se", e)}
-                />
+                <text
+                  className={styles.deleteX}
+                  x={x2}
+                  y={y1}
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  onMouseDown={(e) => onDeleteMouseDown(i, e)}
+                >
+                  ×
+                </text>
               </>
             )}
           </g>
