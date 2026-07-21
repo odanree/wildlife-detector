@@ -6,3 +6,4 @@ dist
 # reproducible installs. The binary bun.lockb is legacy — ignore it if it
 # ever appears (older Bun versions).
 bun.lockb
+tsconfig.tsbuildinfo
