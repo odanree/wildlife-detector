@@ -11,17 +11,20 @@
 # Kept in the web Dockerfile (rather than a separate compose service) so
 # the bundle is baked into the same image the Flask sidecar serves — one
 # `docker compose build web` produces a self-contained artifact. Local dev
-# doesn't need this stage; `cd frontend && npm run dev` proxies to Flask
+# doesn't need this stage; `cd frontend && bun dev` proxies to Flask
 # on :8100 directly (see frontend/vite.config.ts).
-FROM node:20-alpine AS frontend-build
+#
+# Bun is faster than npm at install (~10x on cold cache) and ships its own
+# JS runtime + package manager + script runner in a single ~50MB image.
+FROM oven/bun:1-alpine AS frontend-build
 WORKDIR /frontend
-COPY frontend/package.json frontend/package-lock.json* ./
-# `npm install` (not `npm ci`) because package-lock is optional in early
-# development — CI will pin later. Alpine node ships no python-gyp deps
-# so we don't need build-base for the pure-JS/TS toolchain used here.
-RUN npm install
+COPY frontend/package.json frontend/bun.lock* ./
+# `bun install --frozen-lockfile` when bun.lock is present (reproducible);
+# falls back to unpinned install when the lockfile hasn't been committed
+# yet (early-development scenario).
+RUN if [ -f bun.lock ]; then bun install --frozen-lockfile; else bun install; fi
 COPY frontend/ ./
-RUN npm run build
+RUN bun run build
 
 # ── Stage 2: Flask sidecar with the built bundle copied in ─────────────────
 FROM python:3.11-slim
