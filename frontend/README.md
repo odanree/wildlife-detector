@@ -92,17 +92,14 @@ Open `http://localhost:8100/react/` to see the shell after a rebuild.
 | 1 | Scaffold + `<CostChip />` proof-of-pipeline | ✅ merged |
 | 2 | Alerts page skeleton (feature parity) | ✅ merged |
 | 3 | Alerts page interactivity (lightbox, nav) | ✅ merged |
-| 4 | **Alerts cutover** — delete `_ALERTS_HTML`, redirect `/alerts` → `/react/alerts` | **this PR** |
-| 5 | Shared header chips (funnel/cost/resources) | pending |
-| 6 | Baselines page | pending |
-| 7+ | Live preview, zone/mask editors | pending |
+| 4 | Alerts cutover — delete `_ALERTS_HTML`, `/alerts` → `/react/alerts` | ✅ merged |
+| 5 | Baselines page (parallel) | ✅ merged |
+| 6 | **Baselines cutover** — delete `_BASELINES_HTML`, `/baselines` → `/react/baselines` | **this PR** |
+| 7 | Shared header chips (funnel/cost/resources) | pending |
+| 8+ | Live preview, zone/mask editors | pending |
 
-`/alerts` now 302-redirects to `/react/alerts`. Old bookmarks continue
-to work; nav links point directly at `/react/alerts` to skip the
-redirect hop. `_ALERTS_HTML` (~400 lines of vanilla JS) removed from
-`preview.py`.
-
-`/` (live preview) and `/baselines` still serve vanilla templates and
-migrate in future PRs following the same strangler-fig pattern:
-build React version in parallel → prove parity + interactivity in
-staged PRs → redirect the old route + delete the template.
+After this PR: `/alerts` and `/baselines` both 302-redirect to their
+React equivalents. Vanilla templates for both are deleted.
+`/` (live preview) still on vanilla — the hard one, migrates next
+via shared header chips first (PR 7), then the streaming preview +
+zone/mask canvas editors.
