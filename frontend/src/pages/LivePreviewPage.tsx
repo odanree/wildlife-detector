@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { StatusBar } from "../components/StatusBar";
 import { useCameras } from "../hooks/useCameras";
@@ -19,9 +19,12 @@ import styles from "./LivePreviewPage.module.css";
  * key on the src URL forces a fresh stream connection when the
  * camera changes (browsers otherwise cling to the previous stream).
  *
- * Pattern: strangler-fig continuation. Serves at /react/preview
- * alongside the untouched vanilla-JS /. Cutover after PRs 12 + 13
- * ship the editors.
+ * The img size is driven imperatively by useZoom via a ref, NOT via
+ * React width/height props. The three-round bug-hunt on cursor-
+ * anchored zoom convinced us that going through React's re-render
+ * pipeline for a per-wheel-notch DOM mutation was the wrong abstraction
+ * — mixing sync DOM writes with sync scroll writes without React
+ * scheduling in between is what makes the anchor stable.
  */
 export function LivePreviewPage() {
   const { data: camerasData } = useCameras();
@@ -34,6 +37,7 @@ export function LivePreviewPage() {
   const detW = status?.detection_size?.[0] ?? 1280;
   const detH = status?.detection_size?.[1] ?? 720;
 
+  const imgRef = useRef<HTMLImageElement | null>(null);
   const { zoom, adjustBy, setZoomTo, onWheel } = useZoom(camera, {
     storageKey: "livePreviewZoom",
     min: 0.25,
@@ -41,13 +45,10 @@ export function LivePreviewPage() {
     step: 0.1,
     baseW: detW,
     baseH: detH,
+    imgRef,
   });
 
   const [streamError, setStreamError] = useState(false);
-
-  // Cache-bust key changes when the camera changes so the browser
-  // opens a fresh MJPEG connection instead of reusing the previous
-  // stream (which would otherwise show frames from the WRONG camera).
   const [streamKey, setStreamKey] = useState(0);
   const currentSrc = camera ? `/stream?camera=${encodeURIComponent(camera)}&t=${streamKey}` : "";
 
@@ -134,13 +135,15 @@ export function LivePreviewPage() {
               </div>
             </div>
           ) : (
+            // No width/height JSX props — imperatively managed by useZoom
+            // via imgRef so the wheel handler can mutate the DOM without
+            // fighting React's re-render pipeline.
             <img
+              ref={imgRef}
               key={streamKey}
               className={styles.stream}
               src={currentSrc}
               alt={`live stream ${camera}`}
-              width={Math.round(detW * zoom)}
-              height={Math.round(detH * zoom)}
               onWheel={onWheel}
               onError={() => setStreamError(true)}
             />
