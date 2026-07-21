@@ -1,4 +1,5 @@
 import {
+  type MutableRefObject,
   type WheelEvent as ReactWheelEvent,
   useCallback,
   useEffect,
@@ -8,47 +9,45 @@ import {
 } from "react";
 
 interface UseZoomOptions {
-  /** localStorage key prefix for persisting the zoom per-camera. */
   storageKey: string;
-  /** Min/max zoom factor. */
   min?: number;
   max?: number;
-  /** Wheel notch step. */
   step?: number;
-  /** Native image dimensions (before zoom). Used to compute deltas
-   * deterministically instead of reading the DOM post-commit, which
-   * races with React's async paint. */
   baseW: number;
   baseH: number;
+  /** Ref to the <img> being zoomed. */
+  imgRef: MutableRefObject<HTMLImageElement | null>;
 }
 
 /**
- * Cursor-anchored zoom hook. Returns the current zoom factor + a
- * wheel handler that adjusts scroll position after the zoom change
- * so the same image pixel stays under the cursor.
+ * Cursor-anchored zoom hook. React version of the vanilla-JS wheel
+ * zoom on the live-preview page.
  *
- * Prior versions of this hook tried `flushSync + read scrollWidth`
- * in the wheel handler itself. The pattern was correct on paper but
- * X-axis anchor still drifted in React — the scroll write kept
- * landing before React's <img width={...}> attribute change had
- * expanded the scroll host's scroll range. Vanilla-JS equivalents
- * worked because they mutated the DOM synchronously with the wheel
- * event.
+ * Design after two failed attempts:
+ *   - Attempt 1 (RAF + read post-commit rect): scroll write landed
+ *     before React committed the new width; delta came out zero.
+ *   - Attempt 2 (flushSync + useLayoutEffect): commit landed but the
+ *     scroll write still didn't take on the X axis in Chromium.
+ *     Suspect: the img `width` attribute (as opposed to CSS width)
+ *     doesn't reliably expand the parent's scroll range in one tick.
  *
- * Current design: split intent from effect.
- *   1. Wheel handler captures the desired {zoom, scrollLeft, scrollY}
- *      into a ref and calls setState.
- *   2. React commits the new zoom → <img> width attribute updates.
- *   3. useLayoutEffect fires AFTER the commit but BEFORE the browser
- *      paints. At that point the scroll host's scroll range reflects
- *      the new content size, so setting scrollLeft to the target
- *      lands correctly.
+ * Current design mirrors the vanilla-JS impl exactly:
+ *   1. Wheel handler mutates the img's inline `style.width/height`
+ *      synchronously — a direct DOM write that browsers process
+ *      before returning control.
+ *   2. Reads the new rect via getBoundingClientRect() — forces the
+ *      browser to compute layout right now, which also expands the
+ *      scroll range.
+ *   3. Sets scrollLeft/scrollY based on the actual new size.
+ *   4. Only THEN updates React state (for the zoom % display).
  *
- * The pattern is the React-canonical way to sync scroll position
- * with a state-driven layout change.
+ * The img's size lives on `style.width/height`, not the React `width`
+ * prop, so React's re-render doesn't fight the imperative write.
+ * A useLayoutEffect syncs style for non-wheel triggers (button clicks,
+ * localStorage restore, camera-switch reset).
  */
 export function useZoom(cameraId: string, options: UseZoomOptions) {
-  const { storageKey, min = 0.5, max = 3.0, step = 0.1, baseW, baseH } = options;
+  const { storageKey, min = 0.5, max = 3.0, step = 0.1, baseW, baseH, imgRef } = options;
   const key = `${storageKey}:${cameraId || "default"}`;
 
   const [zoom, setZoom] = useState<number>(() => {
@@ -58,10 +57,6 @@ export function useZoom(cameraId: string, options: UseZoomOptions) {
 
   const zoomRef = useRef(zoom);
   zoomRef.current = zoom;
-
-  // Pending scroll adjustment queued by the wheel handler, applied by
-  // useLayoutEffect after the zoom commits. null when nothing pending.
-  const pendingScrollRef = useRef<{ scrollLeft: number; scrollDeltaY: number } | null>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem(key);
@@ -81,9 +76,22 @@ export function useZoom(cameraId: string, options: UseZoomOptions) {
 
   const adjustBy = useCallback((delta: number) => setZoomTo(zoomRef.current + delta), [setZoomTo]);
 
+  // Sync img.style.{width,height} with the current zoom for non-wheel
+  // triggers (button click, camera switch, initial mount). The wheel
+  // handler bypasses this by writing to style directly BEFORE calling
+  // setZoomTo — the effect fires on the resulting rerender but is a
+  // no-op because the style is already correct.
+  useLayoutEffect(() => {
+    if (imgRef.current) {
+      imgRef.current.style.width = `${baseW * zoom}px`;
+      imgRef.current.style.height = `${baseH * zoom}px`;
+    }
+  }, [zoom, baseW, baseH, imgRef]);
+
   const onWheel = useCallback(
-    (e: ReactWheelEvent<HTMLElement>) => {
+    (e: ReactWheelEvent<HTMLImageElement>) => {
       e.preventDefault();
+      const img = e.currentTarget;
       const oldZoom = zoomRef.current;
       const newZoom = clamp(
         Math.round((oldZoom + (e.deltaY < 0 ? step : -step)) * 100) / 100,
@@ -92,53 +100,36 @@ export function useZoom(cameraId: string, options: UseZoomOptions) {
       );
       if (newZoom === oldZoom) return;
 
-      const rect = e.currentTarget.getBoundingClientRect();
+      const rect = img.getBoundingClientRect();
       const fracX = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0.5;
       const fracY = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0.5;
 
       const scrollHost = document.getElementById("live-scroll-host");
       const oldScrollLeft = scrollHost?.scrollLeft ?? 0;
 
-      const oldRenderedW = baseW * oldZoom;
-      const newRenderedW = baseW * newZoom;
-      const oldRenderedH = baseH * oldZoom;
-      const newRenderedH = baseH * newZoom;
+      // Imperative DOM write — happens synchronously, browser processes
+      // it before this function returns.
+      img.style.width = `${baseW * newZoom}px`;
+      img.style.height = `${baseH * newZoom}px`;
 
-      // Absolute new scroll targets to keep cursor over the same
-      // image pixel. See derivation in commit history.
-      pendingScrollRef.current = {
-        scrollLeft: oldScrollLeft + fracX * (newRenderedW - oldRenderedW),
-        scrollDeltaY: fracY * (newRenderedH - oldRenderedH),
-      };
+      // Read new rect. Not for the delta (we can compute it) but to
+      // FORCE the browser to lay out the new size right now, which
+      // expands the scroll host's scroll range so our scrollLeft
+      // write can actually land.
+      const newRect = img.getBoundingClientRect();
+      const dW = newRect.width - rect.width;
+      const dH = newRect.height - rect.height;
 
-      // Trigger the zoom state change. useLayoutEffect below picks up
-      // the pendingScrollRef after React commits and the DOM reflects
-      // the new img width/height.
+      if (scrollHost) scrollHost.scrollLeft = oldScrollLeft + fracX * dW;
+      if (dH !== 0) window.scrollBy(0, fracY * dH);
+
+      // React state catches up for the display. useLayoutEffect above
+      // will fire on the re-render but is a no-op because we already
+      // set the style.
       setZoomTo(newZoom);
     },
     [setZoomTo, min, max, step, baseW, baseH],
   );
-
-  // Apply queued scroll adjustment AFTER React commits the zoom into
-  // the <img width/height> attributes but BEFORE the browser paints.
-  // useLayoutEffect is the only hook with that timing guarantee; a
-  // regular useEffect can paint an intermediate frame with the new
-  // zoom but old scroll → visible flash of drift.
-  //
-  // `zoom` is the intended dependency — this effect must re-fire on
-  // every zoom change to apply the pending scroll queued by the
-  // wheel handler. Biome flags it as "unused" because the effect
-  // body only reads the ref; the ref is deliberate (mutable across
-  // renders without triggering rerenders) but `zoom` is the trigger.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: zoom is the intentional re-fire trigger; effect body uses the ref set alongside setZoomTo
-  useLayoutEffect(() => {
-    const pending = pendingScrollRef.current;
-    if (!pending) return;
-    pendingScrollRef.current = null;
-    const scrollHost = document.getElementById("live-scroll-host");
-    if (scrollHost) scrollHost.scrollLeft = pending.scrollLeft;
-    if (pending.scrollDeltaY !== 0) window.scrollBy(0, pending.scrollDeltaY);
-  }, [zoom]);
 
   return { zoom, adjustBy, setZoomTo, onWheel };
 }
