@@ -48,12 +48,20 @@
   font-size: 12px;
   text-decoration: none;
   cursor: pointer;
+  font-family: var(--font-sans);
 }
-.linkBtn:hover {
+.linkBtn:hover:not(:disabled) {
   border-color: var(--accent-blue);
 }
+.linkBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 
-.toolbar {
+/* Editor toolbar sits between header and panes. Only zone + mask
+   editors live here — everything per-camera (status, baseline, view,
+   zoom) moved into <CameraPane>. */
+.editorToolbar {
   display: flex;
   gap: var(--sp-2);
   align-items: center;
@@ -65,7 +73,15 @@
   flex-wrap: wrap;
 }
 
-.zoomBtns {
+.editorScope {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-lo);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.editorGroup {
   display: inline-flex;
   gap: var(--sp-1);
   align-items: center;
@@ -73,45 +89,13 @@
   margin-left: var(--sp-2);
   border-left: 1px solid var(--border-1);
 }
-
-.zoomBtns button {
-  background: var(--bg-2);
-  color: var(--text-hi);
-  border: 1px solid var(--border-3);
-  padding: 2px 8px;
-  border-radius: var(--r-md);
-  cursor: pointer;
-  font-size: 12px;
-  font-family: var(--font-mono);
-}
-.zoomBtns button:hover {
-  border-color: var(--accent-blue);
-}
-
-.zoomVal {
-  min-width: 44px;
-  text-align: center;
-  color: var(--text-md);
-  font-family: var(--font-mono);
-}
-
-/* Zone editor button group — same visual language as the zoom/baseline
-   groups; distinct only by the zone-label. */
-.zoneGroup {
-  display: inline-flex;
-  gap: var(--sp-1);
-  align-items: center;
-  padding-left: var(--sp-2);
-  margin-left: var(--sp-2);
-  border-left: 1px solid var(--border-1);
-}
-.zoneLabel {
+.editorLabel {
   color: var(--text-lo);
   font-family: var(--font-mono);
   font-size: 11px;
   margin-right: var(--sp-1);
 }
-.zoneBtn {
+.editorBtn {
   background: var(--bg-2);
   color: var(--text-hi);
   border: 1px solid var(--border-3);
@@ -121,80 +105,31 @@
   font-size: 12px;
   font-family: var(--font-mono);
 }
-.zoneBtn:hover:not(:disabled) {
+.editorBtn:hover:not(:disabled) {
   border-color: var(--accent-blue);
 }
-.zoneBtn:disabled {
+.editorBtn:disabled {
   opacity: 0.4;
   cursor: default;
 }
-.zoneBtnSave {
+.editorBtnSave {
   color: var(--accent-green);
   border-color: var(--accent-green);
 }
-.zoneBtnActive {
-  color: var(--accent-blue);
-  border-color: var(--accent-blue);
-  background: rgba(107, 221, 255, 0.1);
-}
-.zoneErr {
+.editorErr {
   color: var(--accent-err);
   font-size: 11px;
   font-family: var(--font-mono);
   margin-left: var(--sp-2);
 }
 
-/* Bounded canvas — the stream + overlays live inside this box.
-   Everything zoom-related is a CSS variable set by useZoom on the
-   `.canvas` element inside. */
-.scrollHost {
-  position: relative;
-  overflow: hidden;
+/* Panes stack — flex column so the two <CameraPane>s share the
+   remaining vertical space evenly (each with flex: 1 in its own CSS). */
+.panes {
   flex: 1 1 auto;
-  min-height: 400px;
-  padding: var(--sp-3);
-  background: var(--bg-1);
-  border-top: 1px solid var(--border-1);
-}
-
-/* The transform-carrying wrapper. useZoom sets:
-     --rendered-w / --rendered-h  (baseW/H × zoom, as CSS px strings)
-     --pan-x / --pan-y            (cursor anchor offset, CSS px)
-   Children inside inherit these vars automatically. */
-.canvas {
-  position: relative;
-  width: var(--rendered-w, 100%);
-  height: var(--rendered-h, 100%);
-  transform: translate(calc(-1 * var(--pan-x, 0px)), calc(-1 * var(--pan-y, 0px)));
-  transform-origin: top left;
-  line-height: 0;
-}
-
-/* Alert flash — 3s red border pulse when a new alert lands on the
-   currently-displayed camera. Applied via a fresh flashKey each event
-   so React re-mounts the .canvas and the animation restarts cleanly. */
-.canvasFlash {
-  animation: alertPulse 3s ease-out forwards;
-}
-
-@keyframes alertPulse {
-  0% {
-    box-shadow: 0 0 0 0 var(--accent-rodent);
-  }
-  40% {
-    box-shadow: 0 0 0 8px var(--accent-rodent);
-  }
-  100% {
-    box-shadow: 0 0 0 0 transparent;
-  }
-}
-
-.stream {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border-radius: var(--r-md);
-  background: #000;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .empty {

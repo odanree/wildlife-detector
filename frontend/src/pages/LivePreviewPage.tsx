@@ -1,61 +1,71 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { baselineImageUrl } from "../api/baseline";
 import { type Rect, saveMasks } from "../api/masks";
 import { type Point, saveZone } from "../api/zone";
-import { BaselineControls } from "../components/BaselineControls";
+import { CameraPane } from "../components/CameraPane";
 import { type MaskMode, MaskOverlay } from "../components/MaskOverlay";
-import { StatusBar } from "../components/StatusBar";
 import { type EditMode, ZoneOverlay } from "../components/ZoneOverlay";
-import { useBaselineMeta } from "../hooks/useBaselineMeta";
 import { useCameras } from "../hooks/useCameras";
 import { useMasks } from "../hooks/useMasks";
 import { useStatus } from "../hooks/useStatus";
 import { useZone } from "../hooks/useZone";
-import { useZoom } from "../hooks/useZoom";
 import styles from "./LivePreviewPage.module.css";
 
-type ViewMode = "live" | "day-baseline" | "night-baseline";
+const SECONDARY_STORAGE_KEY = "livePreview.secondaryCamera";
 
 /**
- * Live streaming preview + editors. PR 13 additions:
- *   - Mask editor (rectangle overlays, draw/tweak/save/cancel)
- *   - Baseline view toggle — replaces the live stream image with the
- *     stored day or night baseline JPG so the operator can compare
- *     "what the pipeline uses as reference" against the current scene.
- *   - Alert flash — red border pulse around the canvas when a new
- *     alert fires for the currently-displayed camera. Watches
- *     status.last_alert.ts and animates for 3s on change.
+ * Live streaming preview. This page is now a thin orchestrator on top
+ * of two <CameraPane> instances. Editor state (zone + mask) stays here
+ * because the editor toolbar always targets the *primary* pane and its
+ * mutual-exclusivity invariant lives above both panes.
  *
- * Editor mutual exclusivity: only one of {zoneMode, maskMode} can be
- * !== "idle" at a time. Entering one from the other's editing state
- * auto-cancels the other. Simpler mental model than "two editors
- * running in parallel," matches the vanilla UI.
+ * Architecture calls:
+ *   - **Component-level bulkhead** — <CameraPane> owns its own zoom,
+ *     view-mode, alert-flash, and baseline controls. A bug in one pane
+ *     can't corrupt the other's state.
+ *   - **URL as source of truth for primary, localStorage for secondary.**
+ *     Primary camera is bookmarkable (shared context). Secondary is a
+ *     per-viewer preference (opt-in via "+ Add pane" toggle).
+ *   - **Promote swap = state re-parenting.** Secondary's "↑ Promote"
+ *     swaps the two camera IDs; the editors follow whichever camera
+ *     ends up primary. useZone/useMasks re-poll on the id change.
  */
 export function LivePreviewPage() {
   const { data: camerasData } = useCameras();
   const cameras = camerasData?.cameras ?? [];
   const defaultCam = camerasData?.default ?? "";
   const [searchParams, setSearchParams] = useSearchParams();
-  const camera = searchParams.get("camera") ?? defaultCam;
+  const primary = searchParams.get("camera") ?? defaultCam;
 
-  const { data: status } = useStatus(camera || undefined);
-  const detW = status?.detection_size?.[0] ?? 1280;
-  const detH = status?.detection_size?.[1] ?? 720;
-
-  const canvasRef = useRef<HTMLDivElement | null>(null);
-  const { zoom, adjustBy, setZoomTo, onWheel } = useZoom(camera, {
-    storageKey: "livePreviewZoom",
-    min: 0.25,
-    max: 3.0,
-    step: 0.1,
-    baseW: detW,
-    baseH: detH,
-    canvasRef,
+  // Secondary camera opt-in — persisted per-viewer. null = pane closed.
+  const [secondary, setSecondary] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(SECONDARY_STORAGE_KEY);
+    } catch {
+      return null;
+    }
   });
+  useEffect(() => {
+    try {
+      if (secondary) localStorage.setItem(SECONDARY_STORAGE_KEY, secondary);
+      else localStorage.removeItem(SECONDARY_STORAGE_KEY);
+    } catch {
+      // localStorage quota or disabled — the pane still works this session.
+    }
+  }, [secondary]);
+  // If the persisted secondary collides with primary (e.g. user swapped
+  // in another tab), close it — same camera on both panes is a UX bug.
+  useEffect(() => {
+    if (secondary && secondary === primary) setSecondary(null);
+  }, [primary, secondary]);
+
+  // Editors target the primary camera. detW/detH come from primary's status.
+  const { data: primaryStatus } = useStatus(primary || undefined);
+  const detW = primaryStatus?.detection_size?.[0] ?? 1280;
+  const detH = primaryStatus?.detection_size?.[1] ?? 720;
 
   // ── Zone editor state ──
-  const { data: zoneData, refresh: refreshZone } = useZone(camera);
+  const { data: zoneData, refresh: refreshZone } = useZone(primary);
   const [zoneMode, setZoneMode] = useState<EditMode>("idle");
   const [workingPolygon, setWorkingPolygon] = useState<Point[]>([]);
   const [zoneSaving, setZoneSaving] = useState(false);
@@ -64,10 +74,8 @@ export function LivePreviewPage() {
     if (zoneMode === "idle" && zoneData) setWorkingPolygon(zoneData.polygon);
   }, [zoneData, zoneMode]);
 
-  // ── Mask editor state ──
-  // Vanilla parity: single edit mode. Existing masks aren't repositioned
-  // or resized — wrong ones get deleted (× handle) and re-drawn.
-  const { data: masksData, refresh: refreshMasks } = useMasks(camera);
+  // ── Mask editor state (vanilla-parity: single edit mode) ──
+  const { data: masksData, refresh: refreshMasks } = useMasks(primary);
   const [maskMode, setMaskMode] = useState<MaskMode>("idle");
   const [workingMasks, setWorkingMasks] = useState<Rect[]>([]);
   const [maskSaving, setMaskSaving] = useState(false);
@@ -76,44 +84,18 @@ export function LivePreviewPage() {
     if (maskMode === "idle" && masksData) setWorkingMasks(masksData.masks);
   }, [masksData, maskMode]);
 
-  // ── Baseline view ──
-  const { data: baselineMeta } = useBaselineMeta(camera);
-  const [viewMode, setViewMode] = useState<ViewMode>("live");
-
-  // ── Alert flash — watch last_alert.ts, trigger animation on change ──
-  const [flashKey, setFlashKey] = useState(0);
-  const lastSeenAlertTs = useRef<number>(0);
+  // Any change to the primary camera cancels both editors — otherwise
+  // the operator would silently be editing a stale polygon/rect set.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: primary IS the fire trigger; body only calls setters
   useEffect(() => {
-    const ts = status?.last_alert?.ts;
-    if (!ts) return;
-    // First-load: adopt the current ts without flashing (otherwise every
-    // page load would flash for whatever the last historical alert was).
-    if (lastSeenAlertTs.current === 0) {
-      lastSeenAlertTs.current = ts;
-      return;
-    }
-    if (ts > lastSeenAlertTs.current) {
-      lastSeenAlertTs.current = ts;
-      setFlashKey((k) => k + 1);
-    }
-  }, [status?.last_alert?.ts]);
-
-  const [streamError, setStreamError] = useState(false);
-  const [streamKey, setStreamKey] = useState(0);
-  const liveSrc = camera ? `/stream?camera=${encodeURIComponent(camera)}&t=${streamKey}` : "";
-  const baselineSrc = (() => {
-    if (!baselineMeta || !camera) return "";
-    if (viewMode === "day-baseline") return baselineImageUrl(camera, "day", baselineMeta.version);
-    if (viewMode === "night-baseline")
-      return baselineImageUrl(camera, "night", baselineMeta.version);
-    return "";
-  })();
-  const currentSrc = viewMode === "live" ? liveSrc : baselineSrc;
+    setZoneMode("idle");
+    setMaskMode("idle");
+  }, [primary]);
 
   const displayedPolygon = zoneMode === "idle" ? (zoneData?.polygon ?? []) : workingPolygon;
   const displayedMasks = maskMode === "idle" ? (masksData?.masks ?? []) : workingMasks;
 
-  // ── Editor mutual exclusivity — entering one auto-cancels the other ──
+  // ── Editor mutual exclusivity ──
   function enterZoneDraw() {
     if (maskMode !== "idle") cancelMaskEdit();
     setWorkingPolygon([]);
@@ -139,7 +121,7 @@ export function LivePreviewPage() {
     setZoneSaving(true);
     setZoneErr(null);
     try {
-      await saveZone(camera, workingPolygon);
+      await saveZone(primary, workingPolygon);
       refreshZone();
       setZoneMode("idle");
     } catch (e) {
@@ -165,7 +147,7 @@ export function LivePreviewPage() {
     setMaskSaving(true);
     setMaskErr(null);
     try {
-      await saveMasks(camera, workingMasks);
+      await saveMasks(primary, workingMasks);
       refreshMasks();
       setMaskMode("idle");
     } catch (e) {
@@ -173,6 +155,26 @@ export function LivePreviewPage() {
     } finally {
       setMaskSaving(false);
     }
+  }
+
+  // ── Secondary-pane orchestration ──
+  const canAddSecondary = cameras.length >= 2 && !secondary;
+  function addSecondaryPane() {
+    const next = cameras.find((c) => c !== primary);
+    if (next) setSecondary(next);
+  }
+  function removeSecondaryPane() {
+    setSecondary(null);
+  }
+  function selectSecondaryCamera(c: string) {
+    if (c === primary) return;
+    setSecondary(c);
+  }
+  function promoteSecondary() {
+    if (!secondary) return;
+    const oldPrimary = primary;
+    setSearchParams({ camera: secondary });
+    setSecondary(oldPrimary);
   }
 
   return (
@@ -184,29 +186,23 @@ export function LivePreviewPage() {
         <span className={styles.spacer} />
         <select
           className={styles.select}
-          value={camera}
-          onChange={(e) => {
-            setSearchParams({ camera: e.target.value });
-            setStreamKey((k) => k + 1);
-            setStreamError(false);
-            setZoneMode("idle");
-            setMaskMode("idle");
-            setViewMode("live");
-            lastSeenAlertTs.current = 0;
-          }}
+          value={primary}
+          onChange={(e) => setSearchParams({ camera: e.target.value })}
+          aria-label="Primary camera"
         >
           {cameras.length === 0 && <option value="">(loading)</option>}
           {cameras.map((c) => (
-            <option key={c} value={c}>
+            <option key={c} value={c} disabled={c === secondary}>
               {c}
+              {c === secondary ? " (secondary)" : ""}
             </option>
           ))}
         </select>
-        {camera && (
+        {primary && (
           <a
             className={styles.linkBtn}
-            href={`/snapshot?camera=${encodeURIComponent(camera)}`}
-            download={`${camera}-snapshot.jpg`}
+            href={`/snapshot?camera=${encodeURIComponent(primary)}`}
+            download={`${primary}-snapshot.jpg`}
             title="Download the current annotated frame as JPEG"
           >
             Snapshot
@@ -223,16 +219,9 @@ export function LivePreviewPage() {
         </Link>
       </header>
 
-      {camera && (
-        <div className={styles.toolbar}>
-          <StatusBar camera={camera} />
-          <BaselineControls camera={camera} />
-          <ViewModeButtons
-            viewMode={viewMode}
-            onSet={setViewMode}
-            dayExists={!!baselineMeta?.day.exists}
-            nightExists={!!baselineMeta?.night.exists}
-          />
+      {primary && (
+        <div className={styles.editorToolbar}>
+          <span className={styles.editorScope}>editing: primary</span>
           <ZoneEditorButtons
             mode={zoneMode}
             vertexCount={workingPolygon.length}
@@ -252,125 +241,64 @@ export function LivePreviewPage() {
             onSave={doMaskSave}
             onCancel={cancelMaskEdit}
           />
-          <div className={styles.zoomBtns}>
-            <button type="button" onClick={() => adjustBy(-0.1)} title="Zoom out">
-              −
-            </button>
-            <span className={styles.zoomVal}>{zoom.toFixed(2)}×</span>
-            <button type="button" onClick={() => adjustBy(0.1)} title="Zoom in">
-              +
-            </button>
-            <button type="button" onClick={() => setZoomTo(1.0)} title="Reset zoom to 1×">
-              1×
-            </button>
-          </div>
-        </div>
-      )}
-
-      {!camera ? (
-        <div className={styles.empty}>Waiting for camera roster…</div>
-      ) : (
-        <div id="live-scroll-host" className={styles.scrollHost}>
-          {streamError && viewMode === "live" ? (
-            <div className={styles.empty}>
-              Stream unavailable. Detector may still be starting up — retry in a few seconds.
-              <div style={{ marginTop: 12 }}>
-                <button
-                  type="button"
-                  className={styles.linkBtn}
-                  onClick={() => {
-                    setStreamKey((k) => k + 1);
-                    setStreamError(false);
-                  }}
-                >
-                  Retry
-                </button>
-              </div>
-            </div>
-          ) : (
-            // key on flashKey re-triggers the CSS animation for each
-            // new alert; without it the animation would only play once
-            // per mount even if last_alert.ts kept changing.
-            <div
-              ref={canvasRef}
-              key={`canvas-${flashKey}`}
-              className={`${styles.canvas} ${flashKey > 0 ? styles.canvasFlash : ""}`}
+          <span className={styles.spacer} />
+          {secondary ? null : (
+            <button
+              type="button"
+              className={styles.linkBtn}
+              onClick={addSecondaryPane}
+              disabled={!canAddSecondary}
+              title={
+                cameras.length < 2
+                  ? "Need at least two cameras to open a secondary pane"
+                  : "Show a second camera below the primary"
+              }
             >
-              <img
-                key={streamKey}
-                className={styles.stream}
-                src={currentSrc}
-                alt={
-                  viewMode === "live"
-                    ? `live stream ${camera}`
-                    : `${viewMode.split("-")[0]} baseline ${camera}`
-                }
-                onWheel={onWheel}
-                onError={() => viewMode === "live" && setStreamError(true)}
-              />
-              <ZoneOverlay
-                baseW={detW}
-                baseH={detH}
-                polygon={displayedPolygon}
-                mode={zoneMode}
-                onChange={setWorkingPolygon}
-                onClose={onZoneDrawClose}
-              />
-              <MaskOverlay
-                baseW={detW}
-                baseH={detH}
-                masks={displayedMasks}
-                mode={maskMode}
-                onChange={setWorkingMasks}
-              />
-            </div>
+              + Add camera pane
+            </button>
           )}
         </div>
       )}
-    </div>
-  );
-}
 
-function ViewModeButtons({
-  viewMode,
-  onSet,
-  dayExists,
-  nightExists,
-}: {
-  viewMode: ViewMode;
-  onSet: (m: ViewMode) => void;
-  dayExists: boolean;
-  nightExists: boolean;
-}) {
-  return (
-    <div className={styles.zoneGroup}>
-      <span className={styles.zoneLabel}>view</span>
-      <button
-        type="button"
-        className={`${styles.zoneBtn} ${viewMode === "live" ? styles.zoneBtnActive : ""}`}
-        onClick={() => onSet("live")}
-        title="Show the live MJPEG stream"
-      >
-        Live
-      </button>
-      <button
-        type="button"
-        className={`${styles.zoneBtn} ${viewMode === "day-baseline" ? styles.zoneBtnActive : ""}`}
-        onClick={() => onSet("day-baseline")}
-        disabled={!dayExists}
-        title={dayExists ? "Show the day baseline JPG" : "No day baseline captured yet"}
-      >
-        Day baseline
-      </button>
-      <button
-        type="button"
-        className={`${styles.zoneBtn} ${viewMode === "night-baseline" ? styles.zoneBtnActive : ""}`}
-        onClick={() => onSet("night-baseline")}
-        disabled={!nightExists}
-        title={nightExists ? "Show the night baseline JPG" : "No night baseline captured yet"}
-      >
-        Night baseline
-      </button>
+      {!primary ? (
+        <div className={styles.empty}>Waiting for camera roster…</div>
+      ) : (
+        <div className={styles.panes}>
+          <CameraPane
+            camera={primary}
+            isPrimary
+            cameras={cameras}
+            otherPaneCamera={secondary ?? undefined}
+          >
+            <ZoneOverlay
+              baseW={detW}
+              baseH={detH}
+              polygon={displayedPolygon}
+              mode={zoneMode}
+              onChange={setWorkingPolygon}
+              onClose={onZoneDrawClose}
+            />
+            <MaskOverlay
+              baseW={detW}
+              baseH={detH}
+              masks={displayedMasks}
+              mode={maskMode}
+              onChange={setWorkingMasks}
+            />
+          </CameraPane>
+          {secondary && (
+            <CameraPane
+              camera={secondary}
+              isPrimary={false}
+              cameras={cameras}
+              otherPaneCamera={primary}
+              onSelectCamera={selectSecondaryCamera}
+              onPromote={promoteSecondary}
+              onRemove={removeSecondaryPane}
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -396,11 +324,11 @@ function ZoneEditorButtons({
 }) {
   if (mode === "idle") {
     return (
-      <div className={styles.zoneGroup}>
-        <span className={styles.zoneLabel}>zone</span>
+      <div className={styles.editorGroup}>
+        <span className={styles.editorLabel}>zone</span>
         <button
           type="button"
-          className={styles.zoneBtn}
+          className={styles.editorBtn}
           onClick={onDraw}
           title="Draw a new zone polygon from scratch"
         >
@@ -408,7 +336,7 @@ function ZoneEditorButtons({
         </button>
         <button
           type="button"
-          className={styles.zoneBtn}
+          className={styles.editorBtn}
           onClick={onTweak}
           title="Edit vertices of the current polygon"
           disabled={vertexCount < 3}
@@ -420,13 +348,13 @@ function ZoneEditorButtons({
   }
   const canSave = vertexCount >= 3 && !saving;
   return (
-    <div className={styles.zoneGroup}>
-      <span className={styles.zoneLabel}>
+    <div className={styles.editorGroup}>
+      <span className={styles.editorLabel}>
         {mode === "draw" ? "drawing" : "tweaking"} zone · {vertexCount} pts
       </span>
       <button
         type="button"
-        className={`${styles.zoneBtn} ${styles.zoneBtnSave}`}
+        className={`${styles.editorBtn} ${styles.editorBtnSave}`}
         onClick={onSave}
         disabled={!canSave}
         title={vertexCount < 3 ? "Need at least 3 vertices" : "Save polygon to config"}
@@ -435,13 +363,13 @@ function ZoneEditorButtons({
       </button>
       <button
         type="button"
-        className={styles.zoneBtn}
+        className={styles.editorBtn}
         onClick={onCancel}
         title="Discard unsaved changes"
       >
         Cancel
       </button>
-      {saveErr && <span className={styles.zoneErr}>err: {saveErr}</span>}
+      {saveErr && <span className={styles.editorErr}>err: {saveErr}</span>}
     </div>
   );
 }
@@ -465,11 +393,11 @@ function MaskEditorButtons({
 }) {
   if (mode === "idle") {
     return (
-      <div className={styles.zoneGroup}>
-        <span className={styles.zoneLabel}>mask</span>
+      <div className={styles.editorGroup}>
+        <span className={styles.editorLabel}>mask</span>
         <button
           type="button"
-          className={styles.zoneBtn}
+          className={styles.editorBtn}
           onClick={onEdit}
           title="Draw OSD mask rectangles (drag on canvas). Click × on any mask to remove it."
         >
@@ -479,11 +407,11 @@ function MaskEditorButtons({
     );
   }
   return (
-    <div className={styles.zoneGroup}>
-      <span className={styles.zoneLabel}>editing masks · {count}</span>
+    <div className={styles.editorGroup}>
+      <span className={styles.editorLabel}>editing masks · {count}</span>
       <button
         type="button"
-        className={`${styles.zoneBtn} ${styles.zoneBtnSave}`}
+        className={`${styles.editorBtn} ${styles.editorBtnSave}`}
         onClick={onSave}
         disabled={saving}
         title="Save masks to config"
@@ -492,13 +420,13 @@ function MaskEditorButtons({
       </button>
       <button
         type="button"
-        className={styles.zoneBtn}
+        className={styles.editorBtn}
         onClick={onCancel}
         title="Discard unsaved changes"
       >
         Cancel
       </button>
-      {saveErr && <span className={styles.zoneErr}>err: {saveErr}</span>}
+      {saveErr && <span className={styles.editorErr}>err: {saveErr}</span>}
     </div>
   );
 }

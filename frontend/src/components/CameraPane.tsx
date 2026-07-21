@@ -1,0 +1,276 @@
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { baselineImageUrl } from "../api/baseline";
+import { useBaselineMeta } from "../hooks/useBaselineMeta";
+import { useStatus } from "../hooks/useStatus";
+import { useZoom } from "../hooks/useZoom";
+import { BaselineControls } from "./BaselineControls";
+import styles from "./CameraPane.module.css";
+import { StatusBar } from "./StatusBar";
+
+export type ViewMode = "live" | "day-baseline" | "night-baseline";
+
+interface CameraPaneProps {
+  camera: string;
+  isPrimary: boolean;
+  /** Full camera roster; used by the secondary pane's own dropdown. */
+  cameras: string[];
+  /** Camera occupying the other pane — disabled in this pane's dropdown
+   *  so both panes can't converge on the same camera. Not used on
+   *  primary (primary's dropdown lives in the page header). */
+  otherPaneCamera?: string;
+  /** Secondary-only: user picked a different camera for this pane. */
+  onSelectCamera?: (c: string) => void;
+  /** Secondary-only: swap this pane's camera up to primary. */
+  onPromote?: () => void;
+  /** Secondary-only: close the pane. */
+  onRemove?: () => void;
+  /** Rendered inside the canvas div (on top of the stream img). Used by
+   *  the primary pane to slot in Zone/Mask overlays. Secondary passes
+   *  nothing — editors live on primary only. */
+  children?: ReactNode;
+}
+
+/**
+ * One camera's live view. Owns its own zoom, view-mode toggle, alert
+ * flash, and BaselineControls. Composed by LivePreviewPage — primary
+ * pane gets the editor overlays as `children`; secondary gets a
+ * dropdown + Promote/Remove actions.
+ *
+ * Pattern: component-level bulkhead. Panes share nothing but the
+ * camera roster prop — a zoom mishap or view-mode change in one pane
+ * cannot leak into the other. The parent page keeps only the
+ * primary-editor state and orchestration (add/promote/remove).
+ */
+export function CameraPane({
+  camera,
+  isPrimary,
+  cameras,
+  otherPaneCamera,
+  onSelectCamera,
+  onPromote,
+  onRemove,
+  children,
+}: CameraPaneProps) {
+  const { data: status } = useStatus(camera || undefined);
+  const detW = status?.detection_size?.[0] ?? 1280;
+  const detH = status?.detection_size?.[1] ?? 720;
+
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  // Per-pane storage-key branch so primary and secondary keep
+  // independent zooms even when they hold the same camera briefly
+  // during a promote swap.
+  const zoomKey = isPrimary ? "livePreviewZoom.primary" : "livePreviewZoom.secondary";
+  const { zoom, adjustBy, setZoomTo, onWheel } = useZoom(camera, {
+    storageKey: zoomKey,
+    min: 0.25,
+    max: 3.0,
+    step: 0.1,
+    baseW: detW,
+    baseH: detH,
+    canvasRef,
+  });
+
+  const { data: baselineMeta } = useBaselineMeta(camera);
+  const [viewMode, setViewMode] = useState<ViewMode>("live");
+  // When the camera changes underneath this pane (secondary select or
+  // promote swap), revert to live so we don't show a stale baseline
+  // for the wrong camera.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: camera IS the fire trigger; body only calls a setter so biome can't infer the intent
+  useEffect(() => {
+    setViewMode("live");
+  }, [camera]);
+
+  // ── Alert flash — watch this pane's camera's last_alert.ts ──
+  const [flashKey, setFlashKey] = useState(0);
+  const lastSeenAlertTs = useRef<number>(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: camera IS the fire trigger; body only touches a ref + setter
+  useEffect(() => {
+    // Camera change: reset baseline so we don't flash on the new
+    // camera's historical alert.
+    lastSeenAlertTs.current = 0;
+    setFlashKey(0);
+  }, [camera]);
+  useEffect(() => {
+    const ts = status?.last_alert?.ts;
+    if (!ts) return;
+    if (lastSeenAlertTs.current === 0) {
+      lastSeenAlertTs.current = ts;
+      return;
+    }
+    if (ts > lastSeenAlertTs.current) {
+      lastSeenAlertTs.current = ts;
+      setFlashKey((k) => k + 1);
+    }
+  }, [status?.last_alert?.ts]);
+
+  const [streamError, setStreamError] = useState(false);
+  const [streamKey, setStreamKey] = useState(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: camera IS the fire trigger; body only calls setters
+  useEffect(() => {
+    // Force <img> re-fetch on camera change; MJPEG readers cache the
+    // response and would otherwise keep piping the old camera's frames.
+    setStreamKey((k) => k + 1);
+    setStreamError(false);
+  }, [camera]);
+
+  const liveSrc = camera ? `/stream?camera=${encodeURIComponent(camera)}&t=${streamKey}` : "";
+  const baselineSrc = (() => {
+    if (!baselineMeta || !camera) return "";
+    if (viewMode === "day-baseline") return baselineImageUrl(camera, "day", baselineMeta.version);
+    if (viewMode === "night-baseline")
+      return baselineImageUrl(camera, "night", baselineMeta.version);
+    return "";
+  })();
+  const currentSrc = viewMode === "live" ? liveSrc : baselineSrc;
+
+  return (
+    <section className={`${styles.pane} ${isPrimary ? styles.panePrimary : styles.paneSecondary}`}>
+      <div className={styles.paneHeader}>
+        <span className={styles.paneLabel}>{isPrimary ? "primary" : "secondary"}</span>
+        {!isPrimary && (
+          <>
+            <select
+              className={styles.select}
+              value={camera}
+              onChange={(e) => onSelectCamera?.(e.target.value)}
+              aria-label="Secondary camera"
+            >
+              {cameras.map((c) => (
+                <option key={c} value={c} disabled={c === otherPaneCamera}>
+                  {c}
+                  {c === otherPaneCamera ? " (primary)" : ""}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className={styles.linkBtn}
+              onClick={onPromote}
+              title="Swap this camera into the primary slot (editors follow the primary)"
+            >
+              ↑ Promote
+            </button>
+            <button
+              type="button"
+              className={styles.linkBtn}
+              onClick={onRemove}
+              title="Close the secondary pane"
+            >
+              × Remove
+            </button>
+          </>
+        )}
+      </div>
+
+      <div className={styles.paneToolbar}>
+        <StatusBar camera={camera} />
+        <BaselineControls camera={camera} />
+        <ViewModeButtons
+          viewMode={viewMode}
+          onSet={setViewMode}
+          dayExists={!!baselineMeta?.day.exists}
+          nightExists={!!baselineMeta?.night.exists}
+        />
+        <div className={styles.zoomBtns}>
+          <button type="button" onClick={() => adjustBy(-0.1)} title="Zoom out">
+            −
+          </button>
+          <span className={styles.zoomVal}>{zoom.toFixed(2)}×</span>
+          <button type="button" onClick={() => adjustBy(0.1)} title="Zoom in">
+            +
+          </button>
+          <button type="button" onClick={() => setZoomTo(1.0)} title="Reset zoom to 1×">
+            1×
+          </button>
+        </div>
+      </div>
+
+      <div className={styles.scrollHost}>
+        {streamError && viewMode === "live" ? (
+          <div className={styles.empty}>
+            Stream unavailable. Detector may still be starting up — retry in a few seconds.
+            <div style={{ marginTop: 12 }}>
+              <button
+                type="button"
+                className={styles.linkBtn}
+                onClick={() => {
+                  setStreamKey((k) => k + 1);
+                  setStreamError(false);
+                }}
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        ) : (
+          // Re-mount the canvas on each flashKey bump so the CSS
+          // keyframe animation restarts. Same pattern as the single-pane
+          // implementation before this extraction.
+          <div
+            ref={canvasRef}
+            key={`canvas-${flashKey}`}
+            className={`${styles.canvas} ${flashKey > 0 ? styles.canvasFlash : ""}`}
+          >
+            <img
+              key={streamKey}
+              className={styles.stream}
+              src={currentSrc}
+              alt={
+                viewMode === "live"
+                  ? `live stream ${camera}`
+                  : `${viewMode.split("-")[0]} baseline ${camera}`
+              }
+              onWheel={onWheel}
+              onError={() => viewMode === "live" && setStreamError(true)}
+            />
+            {children}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ViewModeButtons({
+  viewMode,
+  onSet,
+  dayExists,
+  nightExists,
+}: {
+  viewMode: ViewMode;
+  onSet: (m: ViewMode) => void;
+  dayExists: boolean;
+  nightExists: boolean;
+}) {
+  return (
+    <div className={styles.viewGroup}>
+      <span className={styles.viewLabel}>view</span>
+      <button
+        type="button"
+        className={`${styles.viewBtn} ${viewMode === "live" ? styles.viewBtnActive : ""}`}
+        onClick={() => onSet("live")}
+        title="Show the live MJPEG stream"
+      >
+        Live
+      </button>
+      <button
+        type="button"
+        className={`${styles.viewBtn} ${viewMode === "day-baseline" ? styles.viewBtnActive : ""}`}
+        onClick={() => onSet("day-baseline")}
+        disabled={!dayExists}
+        title={dayExists ? "Show the day baseline JPG" : "No day baseline captured yet"}
+      >
+        Day baseline
+      </button>
+      <button
+        type="button"
+        className={`${styles.viewBtn} ${viewMode === "night-baseline" ? styles.viewBtnActive : ""}`}
+        onClick={() => onSet("night-baseline")}
+        disabled={!nightExists}
+        title={nightExists ? "Show the night baseline JPG" : "No night baseline captured yet"}
+      >
+        Night baseline
+      </button>
+    </div>
+  );
+}
