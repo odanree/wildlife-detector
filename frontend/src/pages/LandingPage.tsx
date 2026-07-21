@@ -19,6 +19,9 @@ export function LandingPage() {
         <a href="/" className={styles.link}>
           ← Live preview (vanilla-JS)
         </a>
+        <Link to="/preview" className={styles.link}>
+          Live preview (react) →
+        </Link>
         <Link to="/status" className={styles.link}>
           Ops dashboard →
         </Link>

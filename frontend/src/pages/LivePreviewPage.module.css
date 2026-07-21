@@ -1,0 +1,141 @@
+.wrap {
+  height: 100vh;
+  background: var(--bg-0);
+  color: var(--text-hi);
+  font-family: var(--font-sans);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: 13px;
+  border-bottom: 1px solid var(--border-2);
+  background: var(--bg-3);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.title {
+  color: var(--text-hi);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.select {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 4px 10px;
+  border-radius: var(--r-md);
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.linkBtn {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 4px 10px;
+  border-radius: var(--r-md);
+  font-size: 12px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.linkBtn:hover {
+  border-color: var(--accent-blue);
+}
+
+/* Toolbar row under the header — camera-scoped controls */
+.toolbar {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--border-1);
+  background: var(--bg-1);
+  font-size: 12px;
+  color: var(--text-md);
+}
+
+.zoomBtns {
+  display: inline-flex;
+  gap: var(--sp-1);
+  align-items: center;
+  padding-left: var(--sp-2);
+  margin-left: var(--sp-2);
+  border-left: 1px solid var(--border-1);
+}
+
+.zoomBtns button {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 2px 8px;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+.zoomBtns button:hover {
+  border-color: var(--accent-blue);
+}
+
+.zoomVal {
+  min-width: 44px;
+  text-align: center;
+  color: var(--text-md);
+  font-family: var(--font-mono);
+}
+
+/* Scroll host is the bounded canvas the stream lives inside.
+   Cursor-anchored zoom uses CSS transform: translate on the image,
+   which would otherwise spill the transformed frame into the header
+   and toolbar above — so this element:
+     • fills the remaining viewport height (flex: 1 inside the
+       flex-column wrap) so it has a stable bounded box,
+     • clips any transformed content that extends past its edges
+       (overflow: hidden),
+     • gives the transform a stable layout origin (position: relative),
+     • carries a subtle border + background so the operator sees where
+       the "canvas" boundary is. */
+.scrollHost {
+  position: relative;
+  overflow: hidden;
+  flex: 1 1 auto;
+  min-height: 400px;
+  padding: var(--sp-3);
+  background: var(--bg-1);
+  border-top: 1px solid var(--border-1);
+}
+
+/* The image itself; transform-origin at top-left keeps the pan math
+   simple (translate is subtractive against a fixed origin). */
+.stream {
+  transform-origin: top left;
+}
+
+.stream {
+  display: block;
+  border-radius: var(--r-md);
+  background: #000;
+  line-height: 0;
+  cursor: grab;
+}
+
+.streamDim {
+  filter: brightness(0.4);
+}
+
+.empty {
+  padding: 60px;
+  text-align: center;
+  color: var(--text-lo);
+}
