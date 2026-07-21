@@ -56,3 +56,20 @@
 .vertexDragging {
   cursor: grabbing;
 }
+
+/* Vertex index label — shown in edit modes so operators can
+   identify a specific vertex when a polygon has a visually confusing
+   shape (concave notch, etc.). Text stroke gives contrast against
+   any background; pointer-events off so the label doesn't intercept
+   drag/right-click on the underlying circle. */
+.vertexLabel {
+  fill: #fff;
+  stroke: #000;
+  stroke-width: 3;
+  paint-order: stroke fill;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  pointer-events: none;
+  user-select: none;
+}
