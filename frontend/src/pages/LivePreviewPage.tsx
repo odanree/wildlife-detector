@@ -231,7 +231,7 @@ export function LivePreviewPage() {
             Snapshot
           </a>
         )}
-        <AlertsNavLink className={styles.linkBtn} />
+        <AlertsNavLink className={styles.linkBtn} camera={primary || undefined} />
         <Link to="/baselines" className={styles.linkBtn}>
           Baselines →
         </Link>

@@ -609,7 +609,20 @@ def init_alert_log(snapshot_dir: str, capacity: int = 500,
     _alerts = AlertLog(capacity=capacity)
     _alerts.bind_state(_state_db)
     logger.info("AlertLog initialized (snapshots=%s, db=%s)", _snapshot_dir, resolved_db_path)
-    _alerts.backfill_from_disk(_snapshot_dir)
+    # Backfill is a disaster-recovery path — re-imports JPEG snapshots
+    # as alert rows when the DB was lost. Running it on every startup
+    # was polluting the alerts view: each restart re-added rows for
+    # snapshots the operator had already seen or deleted. Gate on
+    # "DB is empty" so the recovery still fires cold but idempotent
+    # restarts don't churn.
+    existing = _state_db.total_alerts()
+    if existing == 0:
+        _alerts.backfill_from_disk(_snapshot_dir)
+    else:
+        logger.info(
+            "AlertLog: skipping backfill — DB already has %d rows (backfill is disaster-recovery only)",
+            existing,
+        )
     # Seed the process-local Stats counter from the DB so /status shows the
     # true across-restart alert count on the very first poll.
     _stats.seed_from_state(_state_db)
