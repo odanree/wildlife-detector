@@ -179,15 +179,41 @@
      via pan). */
   transform-origin: 50% 0;
   line-height: 0;
-  /* Smooth the aspect-ratio change on camera swap. Different cameras
-     have different detection sizes (e.g. yard 4:3, rooftop 16:9), so
-     a promote legitimately changes the pane's canvas geometry. Without
-     this transition the change snaps instantly, reading as jitter.
-     With it, the layout interpolates over 200ms — the same shift, but
-     smooth. Transitioning only aspect-ratio (not width/height) avoids
-     stepping on the zoom/pan transform which lives on the same
-     element. */
-  transition: aspect-ratio 200ms ease-out;
+}
+
+/* Skeleton covers the canvas from the moment `camera` (or view mode)
+   changes until the first MJPEG/baseline frame decodes. The canvas
+   itself is already sized correctly at first paint (from the
+   detection-size cache), so the skeleton fills the same box — no
+   layout shift when it disappears. */
+.skeleton {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-2);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 2;
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.04) 50%,
+    transparent 100%
+  );
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+}
+@keyframes skeleton-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
 }
 
 .canvasFlash {
