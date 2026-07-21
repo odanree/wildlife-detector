@@ -5,14 +5,18 @@ lands the scaffold + one live-wired proof-of-pipeline widget (`<CostChip />`).
 
 ## Stack
 
+- **Bun 1.x** — install + script runner (replaces npm; ~10x faster cold install)
 - **Vite 5** — bundler / dev server
 - **React 18** — UI
 - **TypeScript 5.6, strict** — no `any`, no `unknown` without narrowing
-- **ESLint** — recommended + react-hooks + react-refresh
-- **Prettier** — 100-col width, double quotes, trailing commas
+- **Biome 1.9** — lint + format in one Rust binary (replaces ESLint + Prettier)
 
 Kept the dep tree small on purpose. State management (context/reducer)
 and data-fetching abstractions land in PR 2+ if they earn their weight.
+
+Biome config lives in `biome.json`. Strict rules that would catch real bugs
+in this codebase: `useExhaustiveDependencies` (React hook deps),
+`useHookAtTopLevel`, `noExplicitAny`, `useImportType`.
 
 ## Layout
 
@@ -42,13 +46,26 @@ docker compose up -d web detector-yard detector-rooftop
 
 # 2. Vite dev server on :5173 with proxy to :8100
 cd frontend
-npm install    # first time only
-npm run dev
+bun install    # first time only (fast — ~1s cold on modern hardware)
+bun run dev
 ```
 
 Open `http://localhost:5173` — hot-reload on any src/ edit. API calls
 (`/status`, `/api/*`, `/snapshots`, `/stream.mjpg`) are transparently
 proxied to Flask on :8100 by the Vite dev server.
+
+## Lint / typecheck / format
+
+Local:
+```bash
+bun run lint       # biome check — lint + format check, non-mutating
+bun run lint:fix   # biome check --write — apply autofixes
+bun run typecheck  # tsc -b, strict mode
+bun run format     # biome format --write — format only, no lint
+```
+
+CI runs `lint` + `typecheck` + `build` on every PR touching `frontend/`
+or the web Dockerfile — see `.github/workflows/frontend.yml`.
 
 ## Production build
 
@@ -57,7 +74,7 @@ build (see `docker/web/Dockerfile`). To do it manually:
 
 ```bash
 cd frontend
-npm run build   # outputs to frontend/dist/
+bun run build   # outputs to frontend/dist/
 ```
 
 `docker compose build web` copies `frontend/dist/` into
