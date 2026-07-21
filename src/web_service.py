@@ -312,7 +312,13 @@ def create_app(registry: DetectorRegistry) -> Flask:
 
     @app.get("/baselines")
     def baselines_page():
-        return Response(preview._BASELINES_HTML, mimetype="text/html")
+        # Cutover: /baselines is now served by React at /react/baselines.
+        # 302 (temporary) so we can reroute later without stale-cache pain
+        # in operator browsers. Direct nav links in _INDEX_HTML point at
+        # /react/baselines to skip the redirect on first click; the 302
+        # is a safety net for existing bookmarks.
+        from flask import redirect
+        return redirect("/react/baselines", code=302)
 
     @app.get("/favicon.ico")
     @app.get("/favicon.svg")
