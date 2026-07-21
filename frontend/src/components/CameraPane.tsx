@@ -102,12 +102,16 @@ export function CameraPane({
   }, [status?.last_alert?.ts]);
 
   const [streamError, setStreamError] = useState(false);
+  // streamKey exists only for the user-triggered Retry button (same URL,
+  // want a fresh fetch). On camera change the URL already differs — the
+  // ?camera= query param carries the id — so the browser cancels the old
+  // MJPEG connection and opens the new one when React updates src. Bumping
+  // the key here would ALSO force an <img> unmount+remount, giving up to
+  // 6 concurrent /stream connections during a promote-swap (2 old draining
+  // + 2 short-lived + 2 final) and briefly stalling the backend.
   const [streamKey, setStreamKey] = useState(0);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: camera IS the fire trigger; body only calls setters
+  // biome-ignore lint/correctness/useExhaustiveDependencies: camera IS the fire trigger; body only resets error state
   useEffect(() => {
-    // Force <img> re-fetch on camera change; MJPEG readers cache the
-    // response and would otherwise keep piping the old camera's frames.
-    setStreamKey((k) => k + 1);
     setStreamError(false);
   }, [camera]);
 
