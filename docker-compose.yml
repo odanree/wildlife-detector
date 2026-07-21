@@ -76,6 +76,13 @@ services:
       MOTION_DETECT_SHADOWS: "1"
       BASELINE_DIFF_THRESHOLD: "0.06"
       DAY_BASELINE_DIFF_THRESHOLD: "0.18"
+      # Ollama qwen2.5vl:7b returns rodent confidence 0.4-0.7 typically;
+      # the default 0.95 daytime-rodent gate rejected effectively all
+      # daytime detections (funnel showed 515 VLM calls → 0 hits during
+      # a 15:30 PST afternoon window). Middle ground — 0.55 — more
+      # conservative than rooftop's 0.40 but not the default cliff.
+      # If daytime rats get missed, drop to 0.40 to match rooftop.
+      DAYTIME_RODENT_MIN_CONF: "0.55"
       # Cost-cutover: moved yard from cascade to pure Ollama after prod-
       # scale burn showed $2/night. qwen2.5vl:7b handles yard's side-angle
       # rat crops (was working fine as the cascade primary). Loses
