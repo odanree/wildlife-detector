@@ -1,0 +1,234 @@
+.wrap {
+  margin: 0;
+  background: var(--bg-0);
+  color: var(--text-hi);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+}
+
+.header {
+  display: flex;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: 13px;
+  border-bottom: 1px solid var(--border-2);
+  background: var(--bg-3);
+  align-items: center;
+}
+
+.title {
+  color: var(--text-hi);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.stat {
+  color: var(--text-md);
+}
+
+.b {
+  color: var(--text-hi);
+  margin-left: var(--sp-1);
+}
+
+.tools {
+  margin-left: auto;
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+}
+
+.label {
+  color: var(--text-md);
+  font-size: 12px;
+  display: inline-flex;
+  gap: var(--sp-1);
+  align-items: center;
+}
+
+.select {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 4px 10px;
+  border-radius: var(--r-md);
+  font-size: 12px;
+}
+
+.closeBtn {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 4px 10px;
+  border-radius: var(--r-md);
+  font-size: 14px;
+  text-decoration: none;
+  line-height: 1;
+  margin-left: var(--sp-2);
+  font-weight: 600;
+}
+
+.error {
+  padding: var(--sp-2) var(--sp-4);
+  color: var(--accent-err);
+  font-size: 12px;
+}
+
+.empty {
+  padding: 40px;
+  text-align: center;
+  color: var(--text-lo);
+  font-size: 14px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.thead {
+  position: sticky;
+  top: 0;
+  background: var(--bg-3);
+  border-bottom: 1px solid var(--border-2);
+}
+
+.th {
+  padding: var(--sp-2) var(--sp-3);
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-md);
+  font-size: 12px;
+}
+
+.thSnap {
+  padding: var(--sp-2) var(--sp-3);
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-md);
+  font-size: 12px;
+  width: 176px;
+}
+
+.row {
+  border-bottom: 1px solid #1e1e24;
+}
+.row:hover {
+  background: #191921;
+}
+
+.thumbCell {
+  padding: var(--sp-2) var(--sp-3);
+  width: 176px;
+}
+
+.thumbBtn {
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: zoom-in;
+  display: block;
+}
+
+.thumb {
+  width: 160px;
+  height: auto;
+  display: block;
+  border-radius: var(--r-sm);
+}
+
+.noSnapshot {
+  color: var(--text-lo);
+  font-size: 11px;
+  padding: var(--sp-3);
+}
+
+.ts {
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-md);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.rel {
+  color: var(--text-lo);
+  font-size: 11px;
+  margin-left: var(--sp-1);
+}
+
+/* Species cell coloring — set via a modifier class rather than
+   inline. Dynamic per-row: historical > rodent > other. */
+.species {
+  padding: var(--sp-2) var(--sp-3);
+  font-weight: 600;
+}
+.speciesHist {
+  color: var(--text-lo);
+}
+.speciesRodent {
+  color: var(--accent-rodent);
+}
+.speciesOther {
+  color: var(--accent-other);
+}
+
+.conf {
+  padding: var(--sp-2) var(--sp-3);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-hi);
+}
+
+.desc {
+  padding: var(--sp-2) var(--sp-3);
+  color: #bbc;
+  max-width: 480px;
+}
+
+.track {
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-lo);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.badgeHist {
+  display: inline-block;
+  background: #33333a;
+  color: #aab;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: var(--r-sm);
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.badgeCam {
+  display: inline-block;
+  background: var(--bg-2);
+  color: var(--accent-camera);
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: var(--r-sm);
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.badgeCount {
+  display: inline-block;
+  background: #2a6cbf;
+  color: #fff;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  margin-left: 6px;
+  font-weight: 500;
+}
+
+.footer {
+  padding: var(--sp-2) var(--sp-4);
+  font-size: 12px;
+  color: var(--text-lo);
+  border-top: 1px solid var(--border-2);
+  text-align: center;
+}

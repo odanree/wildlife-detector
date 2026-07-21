@@ -1,5 +1,6 @@
 import { useStatus } from "../hooks/useStatus";
 import { Chip } from "./Chip";
+import styles from "./GateFunnelChip.module.css";
 
 interface GateFunnelChipProps {
   camera: string;
@@ -26,21 +27,15 @@ export function GateFunnelChip({ camera }: GateFunnelChipProps) {
       label="gate"
       title="Motion → zone → baseline-passed → vlm → hit. Ratios show which stage filters the most; the drop between stages is the interesting signal."
     >
-      motion <b style={styles.b}>{g.motion_events}</b>
-      <span style={styles.arrow}>→</span>
-      zone <b style={styles.b}>{g.zone_events}</b>
-      <span style={styles.arrow}>→</span>
-      base <b style={styles.b}>{basePassed}</b>
-      <span style={styles.arrow}>→</span>
-      vlm <b style={styles.b}>{g.vlm_calls}</b>
-      <span style={styles.arrow}>→</span>
-      hit <b style={styles.hit}>{g.vlm_confirmed}</b>
+      motion <b className={styles.b}>{g.motion_events}</b>
+      <span className={styles.arrow}>→</span>
+      zone <b className={styles.b}>{g.zone_events}</b>
+      <span className={styles.arrow}>→</span>
+      base <b className={styles.b}>{basePassed}</b>
+      <span className={styles.arrow}>→</span>
+      vlm <b className={styles.b}>{g.vlm_calls}</b>
+      <span className={styles.arrow}>→</span>
+      hit <b className={styles.hit}>{g.vlm_confirmed}</b>
     </Chip>
   );
 }
-
-const styles = {
-  b: { color: "#ddd", fontWeight: 600, margin: "0 2px" },
-  hit: { color: "#4d9", fontWeight: 600, margin: "0 2px" },
-  arrow: { color: "#555", margin: "0 4px" },
-} as const;

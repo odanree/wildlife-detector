@@ -1,0 +1,13 @@
+.err {
+  color: var(--accent-err);
+}
+
+.b {
+  color: var(--text-hi);
+  font-weight: 600;
+}
+
+.dot {
+  color: var(--text-dim);
+  margin: 0 6px;
+}
