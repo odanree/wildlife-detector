@@ -53,7 +53,6 @@
   border-color: var(--accent-blue);
 }
 
-/* Toolbar row under the header — camera-scoped controls */
 .toolbar {
   display: flex;
   gap: var(--sp-2);
@@ -63,6 +62,7 @@
   background: var(--bg-1);
   font-size: 12px;
   color: var(--text-md);
+  flex-wrap: wrap;
 }
 
 .zoomBtns {
@@ -95,17 +95,53 @@
   font-family: var(--font-mono);
 }
 
-/* Scroll host is the bounded canvas the stream lives inside.
-   Cursor-anchored zoom uses CSS transform: translate on the image,
-   which would otherwise spill the transformed frame into the header
-   and toolbar above — so this element:
-     • fills the remaining viewport height (flex: 1 inside the
-       flex-column wrap) so it has a stable bounded box,
-     • clips any transformed content that extends past its edges
-       (overflow: hidden),
-     • gives the transform a stable layout origin (position: relative),
-     • carries a subtle border + background so the operator sees where
-       the "canvas" boundary is. */
+/* Zone editor button group — same visual language as the zoom/baseline
+   groups; distinct only by the zone-label. */
+.zoneGroup {
+  display: inline-flex;
+  gap: var(--sp-1);
+  align-items: center;
+  padding-left: var(--sp-2);
+  margin-left: var(--sp-2);
+  border-left: 1px solid var(--border-1);
+}
+.zoneLabel {
+  color: var(--text-lo);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  margin-right: var(--sp-1);
+}
+.zoneBtn {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 2px 8px;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+.zoneBtn:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+}
+.zoneBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.zoneBtnSave {
+  color: var(--accent-green);
+  border-color: var(--accent-green);
+}
+.zoneErr {
+  color: var(--accent-err);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  margin-left: var(--sp-2);
+}
+
+/* Bounded canvas — the stream + overlays live inside this box.
+   Everything zoom-related is a CSS variable set by useZoom on the
+   `.canvas` element inside. */
 .scrollHost {
   position: relative;
   overflow: hidden;
@@ -116,22 +152,25 @@
   border-top: 1px solid var(--border-1);
 }
 
-/* The image itself; transform-origin at top-left keeps the pan math
-   simple (translate is subtractive against a fixed origin). */
-.stream {
+/* The transform-carrying wrapper. useZoom sets:
+     --rendered-w / --rendered-h  (baseW/H × zoom, as CSS px strings)
+     --pan-x / --pan-y            (cursor anchor offset, CSS px)
+   Children inside inherit these vars automatically. */
+.canvas {
+  position: relative;
+  width: var(--rendered-w, 100%);
+  height: var(--rendered-h, 100%);
+  transform: translate(calc(-1 * var(--pan-x, 0px)), calc(-1 * var(--pan-y, 0px)));
   transform-origin: top left;
+  line-height: 0;
 }
 
 .stream {
   display: block;
+  width: 100%;
+  height: 100%;
   border-radius: var(--r-md);
   background: #000;
-  line-height: 0;
-  cursor: grab;
-}
-
-.streamDim {
-  filter: brightness(0.4);
 }
 
 .empty {
