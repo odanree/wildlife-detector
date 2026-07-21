@@ -17,8 +17,8 @@ export function App() {
       </header>
       <main style={styles.main}>
         <p style={styles.blurb}>
-          PR 1 scaffold. Vite + React 18 + strict TypeScript. This page renders one live
-          widget wired to the real Flask API to prove the pipeline works end-to-end.
+          PR 1 scaffold. Vite + React 18 + strict TypeScript. This page renders one live widget
+          wired to the real Flask API to prove the pipeline works end-to-end.
         </p>
         <section style={styles.section}>
           <h2 style={styles.h2}>Cost widget (rooftop)</h2>
