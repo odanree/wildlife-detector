@@ -1,0 +1,187 @@
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 0;
+  border-bottom: 1px solid var(--border-1);
+  background: var(--bg-0);
+}
+.pane:last-child {
+  border-bottom: none;
+}
+
+.panePrimary {
+  /* No structural difference — just a class hook for future overrides. */
+}
+
+.paneSecondary {
+  border-top: 1px solid var(--border-2);
+}
+
+.paneHeader {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  padding: 4px var(--sp-4);
+  font-size: 11px;
+  color: var(--text-lo);
+  font-family: var(--font-mono);
+  background: var(--bg-3);
+  border-bottom: 1px solid var(--border-1);
+}
+
+.paneLabel {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-md);
+}
+
+.select {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 2px 8px;
+  border-radius: var(--r-md);
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.linkBtn {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 2px 8px;
+  border-radius: var(--r-md);
+  font-size: 12px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+}
+.linkBtn:hover {
+  border-color: var(--accent-blue);
+}
+
+.paneToolbar {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--border-1);
+  background: var(--bg-1);
+  font-size: 12px;
+  color: var(--text-md);
+  flex-wrap: wrap;
+}
+
+.viewGroup {
+  display: inline-flex;
+  gap: var(--sp-1);
+  align-items: center;
+  padding-left: var(--sp-2);
+  margin-left: var(--sp-2);
+  border-left: 1px solid var(--border-1);
+}
+.viewLabel {
+  color: var(--text-lo);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  margin-right: var(--sp-1);
+}
+.viewBtn {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 2px 8px;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+.viewBtn:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+}
+.viewBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.viewBtnActive {
+  color: var(--accent-blue);
+  border-color: var(--accent-blue);
+  background: rgba(107, 221, 255, 0.1);
+}
+
+.zoomBtns {
+  display: inline-flex;
+  gap: var(--sp-1);
+  align-items: center;
+  padding-left: var(--sp-2);
+  margin-left: var(--sp-2);
+  border-left: 1px solid var(--border-1);
+}
+.zoomBtns button {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 2px 8px;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+.zoomBtns button:hover {
+  border-color: var(--accent-blue);
+}
+.zoomVal {
+  min-width: 44px;
+  text-align: center;
+  color: var(--text-md);
+  font-family: var(--font-mono);
+}
+
+/* Bounded canvas — inherited zoom variables from useZoom. */
+.scrollHost {
+  position: relative;
+  overflow: hidden;
+  flex: 1 1 auto;
+  min-height: 200px;
+  padding: var(--sp-3);
+  background: var(--bg-1);
+}
+
+.canvas {
+  position: relative;
+  width: var(--rendered-w, 100%);
+  height: var(--rendered-h, 100%);
+  transform: translate(calc(-1 * var(--pan-x, 0px)), calc(-1 * var(--pan-y, 0px)));
+  transform-origin: top left;
+  line-height: 0;
+}
+
+.canvasFlash {
+  animation: alertPulse 3s ease-out forwards;
+}
+
+@keyframes alertPulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--accent-rodent);
+  }
+  40% {
+    box-shadow: 0 0 0 8px var(--accent-rodent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.stream {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--r-md);
+  background: #000;
+}
+
+.empty {
+  padding: 60px;
+  text-align: center;
+  color: var(--text-lo);
+}
