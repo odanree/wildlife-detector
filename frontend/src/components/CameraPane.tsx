@@ -1,6 +1,7 @@
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
 import { baselineImageUrl } from "../api/baseline";
 import { useBaselineMeta } from "../hooks/useBaselineMeta";
+import { useDetectionSize } from "../hooks/useDetectionSize";
 import { useStatus } from "../hooks/useStatus";
 import { useZoom } from "../hooks/useZoom";
 import { BaselineControls } from "./BaselineControls";
@@ -59,8 +60,7 @@ export function CameraPane({
   children,
 }: CameraPaneProps) {
   const { data: status } = useStatus(camera || undefined);
-  const detW = status?.detection_size?.[0] ?? 1280;
-  const detH = status?.detection_size?.[1] ?? 720;
+  const [detW, detH] = useDetectionSize(camera, status?.detection_size);
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
   // Zoom is keyed by camera (not by pane slot) so a camera's zoom
