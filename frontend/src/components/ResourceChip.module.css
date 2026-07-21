@@ -1,0 +1,14 @@
+.b {
+  color: var(--text-hi);
+  font-weight: 600;
+  margin: 0 2px;
+}
+
+.dim {
+  color: var(--text-lo);
+}
+
+.sep {
+  color: var(--text-dim);
+  margin: 0 6px;
+}

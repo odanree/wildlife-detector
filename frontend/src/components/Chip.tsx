@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import styles from "./Chip.module.css";
 
 interface ChipProps {
   /** Label shown at chip start, low-emphasis color. */
@@ -19,51 +20,24 @@ interface ChipProps {
  */
 export function Chip({ label, title, children }: ChipProps) {
   return (
-    <span style={styles.chip} title={title}>
-      <span style={styles.label}>{label}</span>
-      <span style={styles.body}>{children}</span>
+    <span className={styles.chip} title={title}>
+      <span className={styles.label}>{label}</span>
+      <span className={styles.body}>{children}</span>
     </span>
   );
 }
 
 /** Value + optional secondary (e.g. "12% · peak 89%"). Bold value, dim separator. */
-export function ChipValue({
-  value,
-  secondary,
-}: {
-  value: string;
-  secondary?: string;
-}) {
+export function ChipValue({ value, secondary }: { value: string; secondary?: string }) {
   return (
     <>
-      <b style={styles.b}>{value}</b>
+      <b className={styles.b}>{value}</b>
       {secondary && (
-        <span style={styles.sec}>
-          <span style={styles.sep}> / </span>
+        <span className={styles.sec}>
+          <span className={styles.sep}> / </span>
           {secondary}
         </span>
       )}
     </>
   );
 }
-
-const styles = {
-  chip: {
-    display: "inline-flex",
-    alignItems: "baseline",
-    gap: 4,
-    background: "#1a1a20",
-    border: "1px solid #26262c",
-    borderRadius: 4,
-    padding: "6px 10px",
-    fontSize: 13,
-    color: "#9aa",
-    fontFamily: "ui-monospace, monospace",
-    whiteSpace: "nowrap" as const,
-  },
-  label: { color: "#667" },
-  body: { color: "#9aa" },
-  b: { color: "#ddd", fontWeight: 600 },
-  sec: { color: "#9aa" },
-  sep: { color: "#555" },
-} as const;

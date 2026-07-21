@@ -1,5 +1,6 @@
 import { useStatus } from "../hooks/useStatus";
 import { Chip } from "./Chip";
+import styles from "./CostChip.module.css";
 
 interface CostChipProps {
   camera: string;
@@ -10,7 +11,8 @@ interface CostChipProps {
  * header chip in preview.py (`vlm $X.XXXX · cache YY%`) but rendered
  * as a proper React component with typed data and composed on the
  * shared <Chip /> primitive. Was PR 1's proof-of-pipeline; refactored
- * in PR 7 to use the shared chip design system.
+ * in PR 7 to use the shared chip design system; ported to CSS Modules
+ * in PR 8.
  */
 export function CostChip({ camera }: CostChipProps) {
   const { data, error, loading } = useStatus(camera);
@@ -24,7 +26,7 @@ export function CostChip({ camera }: CostChipProps) {
   if (error)
     return (
       <Chip label="vlm" title={error.message}>
-        <span style={{ color: "#f88" }}>error</span>
+        <span className={styles.err}>error</span>
       </Chip>
     );
   if (!data) return null;
@@ -42,11 +44,10 @@ export function CostChip({ camera }: CostChipProps) {
       label="vlm"
       title="Session-lifetime VLM cost (USD) + prompt-cache hit rate. Cache should stay near 1.0 after warmup."
     >
-      <b style={{ color: "#ddd", fontWeight: 600 }}>${cost.cost_usd.toFixed(4)}</b>
-      <span style={{ color: "#555", margin: "0 6px" }}>·</span>
+      <b className={styles.b}>${cost.cost_usd.toFixed(4)}</b>
+      <span className={styles.dot}>·</span>
       <span>
-        cache{" "}
-        <b style={{ color: "#ddd", fontWeight: 600 }}>{Math.round(cost.cache_hit_rate * 100)}%</b>
+        cache <b className={styles.b}>{Math.round(cost.cache_hit_rate * 100)}%</b>
       </span>
     </Chip>
   );
