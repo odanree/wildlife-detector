@@ -458,6 +458,16 @@ def create_app(registry: DetectorRegistry) -> Flask:
             "items": items,
         })
 
+    @app.get("/api/alerts/counts")
+    def api_alert_counts():
+        """Per-camera alert counts in one call. Used by the header badge
+        to sum unread across all visible panes without paying N HTTP
+        round-trips per poll. Response shape: {"yard": 2290, "rooftop": 4790}."""
+        counts = {}
+        for cam in registry.camera_ids:
+            counts[cam] = _state.total_alerts(camera_id=cam)
+        return jsonify(counts)
+
     @app.get("/snapshots/<path:filename>")
     def serve_snapshot(filename: str):
         # send_from_directory blocks ../ traversal safely.

@@ -4,31 +4,38 @@ import styles from "./AlertsNavLink.module.css";
 
 interface AlertsNavLinkProps {
   className?: string;
-  /** Scope badge count + link destination to a specific camera.
-   *  Undefined = cross-camera badge + "/alerts" (no filter). */
-  camera?: string;
+  /** Set of cameras whose unread counts should sum into the badge.
+   *  In practice: the primary + optional secondary from LivePreviewPage
+   *  (dual-pane covers both). Empty/undefined = cross-camera "all". */
+  cameras?: readonly string[];
 }
 
 /**
  * "Alerts →" nav link with an unread-count pill.
  *
- * When `camera` is provided (e.g. the primary pane's camera), the
- * badge counts alerts for THAT camera only and the link navigates to
- * `/alerts?camera=<id>` so the alerts page pre-filters to match. This
- * prevents a yard viewer from being alarmed by rooftop's badge ticks.
- *
- * Badge is absolutely-positioned so a growing count doesn't shift
- * toolbar layout. Capped at "99+".
+ * Badge counts all `cameras` (union scope) so dual-pane sees activity
+ * on either visible camera in one badge. Single-camera view still
+ * pre-filters the alerts page via `?camera=X` in the link href;
+ * multi-camera view drops the filter (list shows all so any of the
+ * unread rows are visible).
  */
-export function AlertsNavLink({ className, camera }: AlertsNavLinkProps) {
-  const { unread } = useUnreadAlerts(camera);
-  const href = camera ? `/alerts?camera=${encodeURIComponent(camera)}` : "/alerts";
-  const badgeLabel = camera ? `${unread} unread ${camera} alerts` : `${unread} unread alerts`;
+export function AlertsNavLink({ className, cameras }: AlertsNavLinkProps) {
+  const { unread } = useUnreadAlerts(cameras);
+  const href =
+    cameras && cameras.length === 1
+      ? `/alerts?camera=${encodeURIComponent(cameras[0])}`
+      : "/alerts";
+  const scopeLabel =
+    !cameras || cameras.length === 0
+      ? "alerts"
+      : cameras.length === 1
+        ? `${cameras[0]} alerts`
+        : `alerts (${cameras.join(" + ")})`;
   return (
     <Link to={href} className={`${className ?? ""} ${styles.link}`}>
       Alerts →
       {unread > 0 && (
-        <span className={styles.badge} aria-label={badgeLabel}>
+        <span className={styles.badge} aria-label={`${unread} unread ${scopeLabel}`}>
           {unread > 99 ? "99+" : unread}
         </span>
       )}

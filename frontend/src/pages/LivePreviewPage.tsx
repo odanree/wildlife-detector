@@ -231,7 +231,10 @@ export function LivePreviewPage() {
             Snapshot
           </a>
         )}
-        <AlertsNavLink className={styles.linkBtn} camera={primary || undefined} />
+        <AlertsNavLink
+          className={styles.linkBtn}
+          cameras={[primary, secondary].filter((c): c is string => !!c)}
+        />
         <Link to="/baselines" className={styles.linkBtn}>
           Baselines →
         </Link>
