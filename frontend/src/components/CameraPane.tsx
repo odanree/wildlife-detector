@@ -24,6 +24,11 @@ interface CameraPaneProps {
   onPromote?: () => void;
   /** Secondary-only: close the pane. */
   onRemove?: () => void;
+  /** Current view mode for this pane's camera — hoisted to the parent
+   *  as a Record<camera, ViewMode> so it follows the camera across a
+   *  promote-swap. Same for onViewModeChange. */
+  viewMode: ViewMode;
+  onViewModeChange: (m: ViewMode) => void;
   /** Rendered inside the canvas div (on top of the stream img). Used by
    *  the primary pane to slot in Zone/Mask overlays. Secondary passes
    *  nothing — editors live on primary only. */
@@ -49,6 +54,8 @@ export function CameraPane({
   onSelectCamera,
   onPromote,
   onRemove,
+  viewMode,
+  onViewModeChange,
   children,
 }: CameraPaneProps) {
   const { data: status } = useStatus(camera || undefined);
@@ -56,12 +63,12 @@ export function CameraPane({
   const detH = status?.detection_size?.[1] ?? 720;
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
-  // Per-pane storage-key branch so primary and secondary keep
-  // independent zooms even when they hold the same camera briefly
-  // during a promote swap.
-  const zoomKey = isPrimary ? "livePreviewZoom.primary" : "livePreviewZoom.secondary";
+  // Zoom is keyed by camera (not by pane slot) so a camera's zoom
+  // preference follows it across a promote-swap. useZoom appends
+  // `:<cameraId>` to storageKey, so passing the same prefix from both
+  // panes gives us separate per-camera localStorage entries.
   const { zoom, adjustBy, setZoomTo, onWheel } = useZoom(camera, {
-    storageKey: zoomKey,
+    storageKey: "livePreviewZoom",
     min: 0.25,
     max: 3.0,
     step: 0.1,
@@ -69,14 +76,6 @@ export function CameraPane({
   });
 
   const { data: baselineMeta } = useBaselineMeta(camera);
-  const [viewMode, setViewMode] = useState<ViewMode>("live");
-  // When the camera changes underneath this pane (secondary select or
-  // promote swap), revert to live so we don't show a stale baseline
-  // for the wrong camera.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: camera IS the fire trigger; body only calls a setter so biome can't infer the intent
-  useEffect(() => {
-    setViewMode("live");
-  }, [camera]);
 
   // ── Alert flash — watch this pane's camera's last_alert.ts ──
   const [flashKey, setFlashKey] = useState(0);
@@ -169,7 +168,7 @@ export function CameraPane({
         <BaselineControls camera={camera} />
         <ViewModeButtons
           viewMode={viewMode}
-          onSet={setViewMode}
+          onSet={onViewModeChange}
           dayExists={!!baselineMeta?.day.exists}
           nightExists={!!baselineMeta?.night.exists}
         />
