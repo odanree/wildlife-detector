@@ -947,7 +947,7 @@ _INDEX_HTML = r"""<!doctype html>
       <button id="btn-view-baseline" title="View the current baseline reference image" style="display:none">View</button>
       <button id="btn-clear-baseline" class="warn" title="Delete the baseline (pipeline will fall back to single-frame classification)" style="display:none">Clear baseline</button>
       <button id="btn-snapshot" title="Download the current annotated frame as JPEG">Snapshot</button>
-      <a href="/alerts" style="background:#26262c;color:#ddd;border:1px solid #3a3a40;padding:4px 10px;border-radius:4px;font-size:12px;text-decoration:none;">Alerts →</a>
+      <a href="/alerts" id="alerts-link" style="background:#26262c;color:#ddd;border:1px solid #3a3a40;padding:4px 10px;border-radius:4px;font-size:12px;text-decoration:none;position:relative;">Alerts →<span id="alerts-unread" style="display:none;position:absolute;top:-6px;right:-8px;background:#f66;color:#fff;font-size:10px;font-weight:600;padding:1px 5px;border-radius:8px;min-width:14px;text-align:center;line-height:1.3;">0</span></a>
       <span style="border-left:1px solid #3a3a40;padding-left:8px;display:flex;gap:4px;align-items:center;">
         <button onclick="setZoom(-0.1)" title="Shrink preview">−</button>
         <span id="s-zoom" style="color:#9aa;font-size:12px;min-width:40px;text-align:center;">1.00×</span>
@@ -1255,6 +1255,17 @@ _INDEX_HTML = r"""<!doctype html>
       document.getElementById('s-alerts').textContent = s.alerts_total;
       document.getElementById('s-uptime').textContent = fmtDuration(s.uptime_seconds);
       document.getElementById('s-camera').textContent = s.camera;
+      // Unread-alerts badge next to the Alerts → link. lifetime alerts_total
+      // is monotonic across the DB, so unread = total - last-seen-total from
+      // localStorage. Cleared when user visits /alerts (see alerts page).
+      const total = s.alerts_total || 0;
+      const seen = parseInt(localStorage.getItem('alertsLastSeenTotal') || '0', 10);
+      const unread = Math.max(0, total - seen);
+      const badge = document.getElementById('alerts-unread');
+      if (badge) {
+        if (unread > 0) { badge.textContent = unread > 99 ? '99+' : String(unread); badge.style.display = ''; }
+        else            { badge.style.display = 'none'; }
+      }
       const la = document.getElementById('s-last-alert');
       if (s.last_alert) {
         const agoSec = Math.max(0, Math.floor(Date.now()/1000 - s.last_alert.ts));
@@ -2005,6 +2016,10 @@ async function refresh() {
     window.__lastItems = items;
     countEl.textContent = j.total || 0;
     shownEl.textContent = items.length;
+    // Being on this page IS the "seen" event — clear the unread badge on
+    // the main preview by marking the current total as seen in localStorage.
+    // Main-preview poll picks it up on its next 1s refresh.
+    localStorage.setItem('alertsLastSeenTotal', String(j.total || 0));
     if (items.length === 0) {
       rowsEl.innerHTML = '';
       emptyEl.style.display = '';

@@ -1,0 +1,99 @@
+# Frontend CI gate — runs on any PR/push touching the React app or the
+# Dockerfile that bakes it in. Fails fast on lint, typecheck, build, and
+# Docker multi-stage build so we catch "works on my machine" drift at
+# the trust boundary (PR review) instead of during a prod deploy.
+#
+# Pattern: fail-fast at the CI trust boundary. Each job is independent so
+# a lint failure doesn't hide a typecheck failure — reviewer sees the
+# full contract-violation surface in one run.
+
+name: frontend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - "docker/web/Dockerfile"
+      - ".github/workflows/frontend.yml"
+  pull_request:
+    paths:
+      - "frontend/**"
+      - "docker/web/Dockerfile"
+      - ".github/workflows/frontend.yml"
+
+# Prevent redundant runs when someone force-pushes to a PR branch.
+concurrency:
+  group: frontend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-typecheck:
+    name: biome + typecheck
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      # Prefer --frozen-lockfile once bun.lock is committed. Falls back to
+      # unpinned install for the pre-lockfile transition (first CI run
+       # after switching from npm). Follow-up PR pins the lock.
+      - run: |
+          if [ -f bun.lock ]; then
+            bun install --frozen-lockfile
+          else
+            bun install
+          fi
+      - name: Biome lint + format check
+        run: bun run lint
+      - name: TypeScript typecheck
+        run: bun run typecheck
+
+  build:
+    name: vite build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      # Prefer --frozen-lockfile once bun.lock is committed. Falls back to
+      # unpinned install for the pre-lockfile transition (first CI run
+       # after switching from npm). Follow-up PR pins the lock.
+      - run: |
+          if [ -f bun.lock ]; then
+            bun install --frozen-lockfile
+          else
+            bun install
+          fi
+      - name: Build production bundle
+        run: bun run build
+      - name: Verify dist output exists
+        run: |
+          test -f dist/index.html
+          test -d dist/assets
+
+  docker-web-build:
+    name: docker web (multi-stage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build web image (both stages)
+        # Verifies the bun→python multi-stage build works end-to-end so
+        # "vite build passes locally but Docker build breaks" is caught
+        # here rather than during `docker compose build` on the host.
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/web/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -314,6 +314,41 @@ def create_app(registry: DetectorRegistry) -> Flask:
         return Response(preview._FAVICON_SVG, mimetype="image/svg+xml",
                         headers={"Cache-Control": "public, max-age=86400"})
 
+    # ── React shell (PR 1 of frontend migration) ────────────────────────────
+    # Vite builds to /app/static/react/ (see docker/web/Dockerfile stage 1).
+    # Base path is "/react/" per vite.config.ts, so index.html references
+    # assets as /react/assets/... — Flask needs to serve both the entry
+    # HTML and the hashed assets under that prefix. Missing bundle (dev
+    # run of Flask without the build step) returns a helpful 404 body
+    # rather than a bare stack trace.
+    import os as _os_mod
+    _REACT_DIST = _os_mod.path.join(_os_mod.path.dirname(_os_mod.path.abspath(__file__)),
+                                    "..", "static", "react")
+    _REACT_DIST = _os_mod.path.abspath(_REACT_DIST)
+
+    @app.get("/react/")
+    @app.get("/react/<path:_p>")
+    def react_shell(_p: str = ""):
+        # Any subpath serves index.html (SPA-style routing). Vite-hashed
+        # assets are matched by the more specific /react/assets route
+        # below and won't fall through here.
+        idx = _os_mod.path.join(_REACT_DIST, "index.html")
+        if not _os_mod.exists(idx):
+            return Response(
+                "React bundle not built. Run `docker compose build web` "
+                "or `cd frontend && npm run build`.",
+                status=404, mimetype="text/plain",
+            )
+        with open(idx, "rb") as fh:
+            return Response(fh.read(), mimetype="text/html")
+
+    @app.get("/react/assets/<path:filename>")
+    def react_assets(filename: str):
+        from flask import send_from_directory
+        assets_dir = _os_mod.path.join(_REACT_DIST, "assets")
+        return send_from_directory(assets_dir, filename,
+                                   max_age=31536000)  # hashed → immutable
+
     # ── Cameras roster (for UI dropdown) ────────────────────────────────────
 
     @app.get("/api/cameras")
