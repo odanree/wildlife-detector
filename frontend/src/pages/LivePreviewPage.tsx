@@ -6,6 +6,7 @@ import { CameraPane, type ViewMode } from "../components/CameraPane";
 import { type MaskMode, MaskOverlay } from "../components/MaskOverlay";
 import { type EditMode, ZoneOverlay } from "../components/ZoneOverlay";
 import { useCameras } from "../hooks/useCameras";
+import { useDetectionSize } from "../hooks/useDetectionSize";
 import { useMasks } from "../hooks/useMasks";
 import { useStatus } from "../hooks/useStatus";
 import { useZone } from "../hooks/useZone";
@@ -66,10 +67,12 @@ export function LivePreviewPage() {
   const setViewModeFor = (camera: string) => (mode: ViewMode) =>
     setViewModes((prev) => ({ ...prev, [camera]: mode }));
 
-  // Editors target the primary camera. detW/detH come from primary's status.
+  // Editors target the primary camera. detW/detH come from primary's status,
+  // with useDetectionSize's cache filling the gap during a camera-change so
+  // ZoneOverlay/MaskOverlay viewBox coords don't briefly render at the
+  // 1280×720 fallback aspect.
   const { data: primaryStatus } = useStatus(primary || undefined);
-  const detW = primaryStatus?.detection_size?.[0] ?? 1280;
-  const detH = primaryStatus?.detection_size?.[1] ?? 720;
+  const [detW, detH] = useDetectionSize(primary, primaryStatus?.detection_size);
 
   // ── Zone editor state ──
   const { data: zoneData, refresh: refreshZone } = useZone(primary);

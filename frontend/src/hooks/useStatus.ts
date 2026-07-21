@@ -19,6 +19,13 @@ export function useStatus(camera?: string, intervalMs = 1000): UseStatusResult {
   const [loading, setLoading] = useState<boolean>(true);
 
   useEffect(() => {
+    // Reset data on camera change — otherwise consumers keep reading
+    // the previous camera's snapshot until the new fetch resolves,
+    // which contaminates any downstream cache keyed by the *current*
+    // camera (e.g. useDetectionSize) and causes cross-camera state
+    // leaks in general.
+    setData(null);
+    setLoading(true);
     let cancelled = false;
     const controller = new AbortController();
 
