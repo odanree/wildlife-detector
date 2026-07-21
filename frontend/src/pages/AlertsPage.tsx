@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import type { AlertRow } from "../api/alerts";
 import { AlertLightbox } from "../components/AlertLightbox";
 import { useAlerts } from "../hooks/useAlerts";
@@ -25,8 +25,12 @@ interface GroupedAlerts {
  */
 export function AlertsPage() {
   const [species, setSpecies] = useState<string>("");
+  // URL `?camera=` takes precedence over the sticky localStorage filter
+  // so navigating from a specific pane's "Alerts →" link lands with that
+  // camera pre-filtered (matches the badge scope the user just saw).
+  const [urlParams, setUrlParams] = useSearchParams();
   const [camera, setCamera] = useState<string>(
-    () => localStorage.getItem("alertsCameraFilter") ?? "",
+    () => urlParams.get("camera") ?? localStorage.getItem("alertsCameraFilter") ?? "",
   );
   const [grouped, setGrouped] = useState<boolean>(true);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
@@ -53,17 +57,25 @@ export function AlertsPage() {
   // Cold-start (never visited): initialSeenId stays null → adopted as
   // max(current ids) on first data (see effect below) so we don't
   // highlight all historical alerts as unread on the first-ever load.
-  const [initialSeenId, setInitialSeenId] = useState<number | null>(readLastSeenId);
+  // Watermarks are camera-scoped so a yard-alerts view doesn't clear
+  // the rooftop badge (and vice versa). Snapshot at mount for row
+  // highlighting; re-snapshot when the filter camera changes.
+  const [initialSeenId, setInitialSeenId] = useState<number | null>(() =>
+    readLastSeenId(camera || null),
+  );
+  useEffect(() => {
+    setInitialSeenId(readLastSeenId(camera || null));
+  }, [camera]);
 
   // Being on this page IS the "seen" event — stamp total + highest-id
-  // seen so the header badge zeros out and revisits don't re-highlight.
-  // Also adopts the initial highlight-baseline on cold-start.
+  // seen for the active camera filter. Also adopts the initial
+  // highlight-baseline on cold-start (never-visited case).
   useEffect(() => {
     if (!data) return;
     const maxId = items.reduce((m, a) => Math.max(m, a.id), 0);
     if (initialSeenId === null) setInitialSeenId(maxId);
-    markAlertsSeen(data.total, maxId);
-  }, [data, items, initialSeenId]);
+    markAlertsSeen(camera || null, data.total, maxId);
+  }, [data, items, initialSeenId, camera]);
 
   return (
     <div className={styles.wrap}>
@@ -103,8 +115,16 @@ export function AlertsPage() {
               className={styles.select}
               value={camera}
               onChange={(e) => {
-                setCamera(e.target.value);
-                localStorage.setItem("alertsCameraFilter", e.target.value);
+                const v = e.target.value;
+                setCamera(v);
+                localStorage.setItem("alertsCameraFilter", v);
+                // Keep URL in sync so a copy-paste of the current URL
+                // reproduces the same filtered view (+ the header badge
+                // logic on other tabs reads the same scope).
+                const nextParams = new URLSearchParams(urlParams);
+                if (v) nextParams.set("camera", v);
+                else nextParams.delete("camera");
+                setUrlParams(nextParams, { replace: true });
               }}
             >
               <option value="">all</option>

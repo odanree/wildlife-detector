@@ -450,7 +450,11 @@ def create_app(registry: DetectorRegistry) -> Flask:
         items = _state.list_alerts(limit=limit, species=species_filter,
                                     camera_id=camera_filter)
         return jsonify({
-            "total": _state.total_alerts(),
+            # Scope total to the same camera filter as items — otherwise
+            # the header unread badge diffs a per-camera watermark against
+            # an all-cameras counter and shows "you have 5 unread yard
+            # alerts" when in fact 5 rooftop alerts fired.
+            "total": _state.total_alerts(camera_id=camera_filter),
             "items": items,
         })
 

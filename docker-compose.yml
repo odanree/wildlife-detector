@@ -129,16 +129,25 @@ services:
       # losing the wildlife targets we actually care about at overhead.
       # Ground rats will get missed by rooftop — that's yard's job anyway.
       MIN_MOTION_BBOX_PX: "30"
-      # Rooftop scene has wind-blown foliage that MOG2's variance model
-      # learns as background — a slow raccoon crossing brush gets absorbed.
-      # KNN stores raw samples instead of averaging variance; keeps
-      # foreground signal when background is textured. Aggressive tune:
-      # 2-min learning window, near-noise-floor sensitivity, small
-      # blob-area floor for partial-visibility (raccoon peeking through
-      # leaves).
-      MOTION_BACKEND: knn
-      MOTION_HISTORY: "1500"
-      MOTION_VAR_THRESHOLD: "5"
+      # Rooftop was on KNN because MOG2's variance model absorbed slow
+      # raccoons crossing wind-blown brush. Retesting MOG2 now that the
+      # persistence gate + baseline-diff pre-filter catch downstream
+      # FPs — if MOG2 works here, we save ~2.5GB vs KNN=500 (KNN buffer
+      # at 2048×928 dominates memory on this container).
+      #
+      # Aggressive tune:
+      # - history=200 → short 13s learning window; foliage variance
+      #   gets learned as background quickly, but a slow raccoon that
+      #   pauses > 13s could be absorbed. Bump to 400+ if that hits.
+      # - var_threshold=8 (vs OpenCV default 16) → picks up subtle
+      #   IR-mode intensity changes that a raccoon's fur creates
+      #   against brush.
+      # - min_area=40 kept for partial-visibility raccoon-peeking.
+      #
+      # Rollback: MOTION_BACKEND=knn + MOTION_HISTORY=500 restores prior.
+      MOTION_BACKEND: mog2
+      MOTION_HISTORY: "200"
+      MOTION_VAR_THRESHOLD: "8"
       MOTION_MIN_AREA: "40"
       KNN_DIST2_THRESHOLD: "400"
       # Rooftop shadows drift more with the sun's arc than the yard.

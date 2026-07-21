@@ -221,8 +221,17 @@ class StateDB:
         row = cur.fetchone()
         return self._row_to_dict(row) if row else None
 
-    def total_alerts(self) -> int:
-        cur = self._conn.execute("SELECT COUNT(*) FROM alerts")
+    def total_alerts(self, camera_id: str | None = None) -> int:
+        """Total alert count. Optional camera_id filter so the /api/alerts
+        response's `total` field matches the filter applied to `items` —
+        critical for per-camera unread-badge math (otherwise badge shows
+        cross-camera drift even when the caller only wants one camera)."""
+        if camera_id:
+            cur = self._conn.execute(
+                "SELECT COUNT(*) FROM alerts WHERE camera_id = ?", (camera_id,)
+            )
+        else:
+            cur = self._conn.execute("SELECT COUNT(*) FROM alerts")
         return int(cur.fetchone()[0])
 
     def snapshots_present(self) -> set[str]:
