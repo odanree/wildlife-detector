@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import type { AlertRow } from "../api/alerts";
+import { AlertLightbox } from "../components/AlertLightbox";
 import { useAlerts } from "../hooks/useAlerts";
 import { useCameras } from "../hooks/useCameras";
 import { fmtRelative, fmtTs } from "../util/time";
@@ -35,6 +36,11 @@ export function AlertsPage() {
   );
   const [grouped, setGrouped] = useState<boolean>(true);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
+  // Lightbox state as alert-id, NOT index — poll-driven inserts at the top
+  // of the list would silently shift an index-based cursor to a different
+  // snapshot. Anchoring on id keeps the operator on the same crop across
+  // refreshes.
+  const [openId, setOpenId] = useState<number | null>(null);
 
   const camerasResp = useCameras();
   const { data, error, loading } = useAlerts(
@@ -147,24 +153,30 @@ export function AlertsPage() {
               <th style={styles.th}>Track</th>
             </tr>
           </thead>
-          <tbody>{groups.flatMap((g) => renderGroup(g, camera === ""))}</tbody>
+          <tbody>{groups.flatMap((g) => renderGroup(g, camera === "", setOpenId))}</tbody>
         </table>
       )}
       <footer style={styles.footer}>
         Ring buffer capacity 500 · rolls oldest first · JPEGs on disk backfilled at startup (marked{" "}
         <span style={styles.badgeHist}>from disk</span> — confidence + description not persisted)
       </footer>
+      <AlertLightbox items={items} openId={openId} setOpenId={setOpenId} />
     </div>
   );
 }
 
-function renderGroup(g: GroupedAlerts, showCameraBadge: boolean): JSX.Element[] {
+function renderGroup(
+  g: GroupedAlerts,
+  showCameraBadge: boolean,
+  onOpen: (id: number) => void,
+): JSX.Element[] {
   const rows = [
     <Row
       key={g.head.id}
       alert={g.head}
       showCameraBadge={showCameraBadge}
       groupSize={g.children.length + 1}
+      onOpen={onOpen}
     />,
   ];
   return rows;
@@ -174,10 +186,12 @@ function Row({
   alert,
   showCameraBadge,
   groupSize,
+  onOpen,
 }: {
   alert: AlertRow;
   showCameraBadge: boolean;
   groupSize: number;
+  onOpen: (id: number) => void;
 }): JSX.Element {
   const isRodent = RODENT_SPECIES.has(alert.species);
   const isHist = alert.historical;
@@ -187,12 +201,22 @@ function Row({
     <tr style={styles.row}>
       <td style={styles.thumbCell}>
         {alert.snapshot ? (
-          <img
-            style={styles.thumb}
-            src={`/snapshots/${encodeURIComponent(alert.snapshot)}`}
-            alt="snapshot"
-            loading="lazy"
-          />
+          // Wrap the thumbnail in a button so keyboard/screen-reader users
+          // get the same "open lightbox" affordance as mouse users. Biome
+          // a11y rules would reject a bare <img onClick>.
+          <button
+            type="button"
+            onClick={() => onOpen(alert.id)}
+            style={styles.thumbBtn}
+            aria-label={`Open ${alert.species} snapshot from ${alert.camera_id}`}
+          >
+            <img
+              style={styles.thumb}
+              src={`/snapshots/${encodeURIComponent(alert.snapshot)}`}
+              alt="snapshot"
+              loading="lazy"
+            />
+          </button>
         ) : (
           <div style={styles.noSnapshot}>no snapshot</div>
         )}
@@ -305,6 +329,13 @@ const styles = {
   },
   row: { borderBottom: "1px solid #1e1e24" },
   thumbCell: { padding: "8px 12px", width: 176 },
+  thumbBtn: {
+    background: "transparent",
+    border: "none",
+    padding: 0,
+    cursor: "zoom-in",
+    display: "block",
+  },
   thumb: { width: 160, height: "auto", display: "block", borderRadius: 3, cursor: "zoom-in" },
   noSnapshot: { color: "#667", fontSize: 11, padding: 12 },
   ts: {
