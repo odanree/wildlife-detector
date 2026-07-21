@@ -35,3 +35,54 @@ export function baselineImageUrl(camera: string, mode: "day" | "night", version:
   const params = new URLSearchParams({ camera, mode, v: String(version) });
   return `/api/baseline.jpg?${params.toString()}`;
 }
+
+export type BaselineMode = "day" | "night";
+
+export interface CaptureResult {
+  ok: boolean;
+  captured_mode?: BaselineMode;
+  error?: string;
+}
+
+/**
+ * Capture the current frame as a baseline for the given mode. Mode is
+ * explicit — the backend has an auto-picker keyed on brightness that
+ * misclassifies IR-lit night as "day" on the overhead camera, so
+ * exposing an explicit-mode capture from the UI is the reliable path.
+ */
+export async function captureBaseline(
+  camera: string,
+  mode: BaselineMode,
+  signal?: AbortSignal,
+): Promise<CaptureResult> {
+  const params = new URLSearchParams({ camera, mode });
+  const r = await fetch(`/api/baseline/capture?${params.toString()}`, {
+    method: "POST",
+    signal,
+  });
+  const body = (await r.json().catch(() => ({}))) as CaptureResult;
+  if (!r.ok) {
+    throw new Error(body.error ?? `/api/baseline/capture ${r.status}`);
+  }
+  return body;
+}
+
+/**
+ * Delete the baseline for the given mode. Reversible (just re-capture).
+ * Confirming is left to the caller — the button component owns UX policy.
+ */
+export async function clearBaseline(
+  camera: string,
+  mode: BaselineMode,
+  signal?: AbortSignal,
+): Promise<void> {
+  const params = new URLSearchParams({ camera, mode });
+  const r = await fetch(`/api/baseline/clear?${params.toString()}`, {
+    method: "POST",
+    signal,
+  });
+  if (!r.ok) {
+    const body = (await r.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `/api/baseline/clear ${r.status}`);
+  }
+}
