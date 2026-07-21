@@ -145,9 +145,14 @@ services:
       # - min_area=40 kept for partial-visibility raccoon-peeking.
       #
       # Rollback: MOTION_BACKEND=knn + MOTION_HISTORY=500 restores prior.
+      # var_threshold 8 → 15: MOG2's Gaussian variance model was firing
+      # on moving shadow-under-tree pixels at IR-mode low contrast.
+      # Higher threshold means only stronger intensity deltas count as
+      # foreground. Wildlife fur against brush still passes; wind-blown
+      # shadow edges no longer do.
       MOTION_BACKEND: mog2
       MOTION_HISTORY: "200"
-      MOTION_VAR_THRESHOLD: "8"
+      MOTION_VAR_THRESHOLD: "15"
       MOTION_MIN_AREA: "40"
       KNN_DIST2_THRESHOLD: "400"
       # Rooftop shadows drift more with the sun's arc than the yard.

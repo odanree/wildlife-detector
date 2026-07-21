@@ -383,6 +383,17 @@ class VLMAnalyzer:
         self._user_prompt = user_prompt or _USER_PROMPT
         self._system_prompt = system_prompt or _SYSTEM_PROMPT
 
+        # Reusable HTTP client for Ollama backend. Sharing one Client
+        # across calls avoids the per-call `with httpx.Client(...)`
+        # allocation pattern that leaked ~7GB / hour on yard: at
+        # ~4000 VLM calls/hour, each transient client's socket pool +
+        # DNS cache + auth state added up (Python's allocator doesn't
+        # return freed heap to the OS, so fragmentation looked like a
+        # memory leak). Also cuts TCP handshake cost.
+        self._ollama_http: httpx.Client | None = (
+            httpx.Client(timeout=_OLLAMA_TIMEOUT) if backend not in ("claude", "mock") else None
+        )
+
         if backend == "claude":
             self._claude = anthropic.Anthropic()
             self._claude_model = claude_model
@@ -604,10 +615,10 @@ class VLMAnalyzer:
             "format": "json",
             "keep_alive": _OLLAMA_KEEP_ALIVE,
         }
-        with httpx.Client(timeout=_OLLAMA_TIMEOUT) as c:
-            r = c.post(f"{self._ollama_url}/api/generate", json=payload)
-            r.raise_for_status()
-            data = r.json()
+        assert self._ollama_http is not None, "OllamaAnalyzer used without ollama backend"
+        r = self._ollama_http.post(f"{self._ollama_url}/api/generate", json=payload)
+        r.raise_for_status()
+        data = r.json()
         return _parse_json(data.get("response", "{}"))
 
 
