@@ -13,35 +13,37 @@ interface UseZoomOptions {
   min?: number;
   max?: number;
   step?: number;
-  baseW: number;
-  baseH: number;
-  /** Ref to the wrapper element that carries the size + transform.
-   * Children (img, overlay SVG) sit inside at 100% width/height, so
-   * they scale + translate together with the wrapper via CSS. */
+  /** Ref to the wrapper element that carries the transform. Must be
+   *  sized by CSS (aspect-ratio + max-w/-h = container-fit); this hook
+   *  only publishes `--zoom` and pan offsets. */
   canvasRef: MutableRefObject<HTMLElement | null>;
 }
 
 /**
- * Cursor-anchored zoom hook. Rewritten in PR 12b to publish state as
- * CSS variables on a single wrapper element:
- *   --rendered-w, --rendered-h  → wrapper size (baseW/H × zoom)
- *   --pan-x,      --pan-y       → translate offset in CSS pixels
+ * Cursor-anchored zoom hook. Publishes CSS variables on a single
+ * wrapper element:
+ *   --zoom              → scale factor
+ *   --pan-x, --pan-y    → translate offset in CSS pixels
  *
- * Every child inside the wrapper (stream img, zone-editor SVG
- * overlay, mask-editor overlay later) sits at 100% width/height and
- * gets the transform for free. No per-child style mutation, no
- * imperative width/height writes, no ref-per-child.
+ * The wrapper's own dimensions come from CSS
+ * (aspect-ratio + max-width/-height), so at zoom 1 it fits the
+ * container regardless of image resolution. Zoom > 1 is a
+ * `transform: scale(--zoom)` — overflow is clipped by the scrollHost
+ * ancestor and revealed by panning.
  *
- * Anchor math: pan increases by fracPos × sizeDelta so the image
- * pixel under the cursor stays put across zoom steps.
+ * Anchor math: pan increases by fracPos × (newRenderedW - oldRenderedW)
+ * so the image pixel under the cursor stays put across zoom steps.
+ * Rendered dimensions come from getBoundingClientRect (post-transform)
+ * so the hook is agnostic to the image aspect ratio and the container
+ * layout — a change from the PR 12b version, which had baseW/baseH
+ * baked in and broke when the container was smaller than baseW × baseH.
  *
  * Pattern: shared CSS-variable state as a design-system escape hatch
  * for cross-cutting values. Same discipline as the color/spacing
- * tokens in index.css — the wrapper element is the canonical carrier
- * for zoom/pan; components subscribe by living inside it.
+ * tokens in index.css.
  */
 export function useZoom(cameraId: string, options: UseZoomOptions) {
-  const { storageKey, min = 0.5, max = 3.0, step = 0.1, baseW, baseH, canvasRef } = options;
+  const { storageKey, min = 0.5, max = 3.0, step = 0.1, canvasRef } = options;
   const key = `${storageKey}:${cameraId || "default"}`;
 
   const [zoom, setZoom] = useState<number>(() => {
@@ -66,12 +68,11 @@ export function useZoom(cameraId: string, options: UseZoomOptions) {
     (z: number, panX: number, panY: number) => {
       const el = canvasRef.current;
       if (!el) return;
-      el.style.setProperty("--rendered-w", `${baseW * z}px`);
-      el.style.setProperty("--rendered-h", `${baseH * z}px`);
+      el.style.setProperty("--zoom", String(z));
       el.style.setProperty("--pan-x", `${panX}px`);
       el.style.setProperty("--pan-y", `${panY}px`);
     },
-    [baseW, baseH, canvasRef],
+    [canvasRef],
   );
 
   useLayoutEffect(() => {
@@ -107,17 +108,24 @@ export function useZoom(cameraId: string, options: UseZoomOptions) {
       );
       if (newZoom === oldZoom) return;
 
+      // getBoundingClientRect returns the post-transform bounding box, so
+      // rect.width = containerFitW × oldZoom (and same for height). We
+      // derive the container-fit size implicitly instead of taking it
+      // as a prop.
       const rect = el.getBoundingClientRect();
-      const fracX = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0.5;
-      const fracY = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0.5;
+      const oldRenderedW = rect.width;
+      const oldRenderedH = rect.height;
+      if (oldRenderedW <= 0 || oldRenderedH <= 0) return;
 
-      const oldW = rect.width;
-      const oldH = rect.height;
-      const newW = baseW * newZoom;
-      const newH = baseH * newZoom;
+      const fracX = (e.clientX - rect.left) / oldRenderedW;
+      const fracY = (e.clientY - rect.top) / oldRenderedH;
 
-      panXRef.current += fracX * (newW - oldW);
-      panYRef.current += fracY * (newH - oldH);
+      const scale = newZoom / oldZoom;
+      const newRenderedW = oldRenderedW * scale;
+      const newRenderedH = oldRenderedH * scale;
+
+      panXRef.current += fracX * (newRenderedW - oldRenderedW);
+      panYRef.current += fracY * (newRenderedH - oldRenderedH);
 
       publish(newZoom, panXRef.current, panYRef.current);
 
@@ -125,7 +133,7 @@ export function useZoom(cameraId: string, options: UseZoomOptions) {
       zoomRef.current = newZoom;
       localStorage.setItem(key, String(newZoom));
     },
-    [publish, min, max, step, baseW, baseH, key, canvasRef],
+    [publish, min, max, step, key, canvasRef],
   );
 
   return { zoom, adjustBy, setZoomTo, onWheel };

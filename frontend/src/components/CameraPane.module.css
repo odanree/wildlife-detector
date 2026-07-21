@@ -137,7 +137,10 @@
   font-family: var(--font-mono);
 }
 
-/* Bounded canvas — inherited zoom variables from useZoom. */
+/* Bounded canvas — the .canvas element sizes itself via aspect-ratio +
+   max-width/height so at zoom 1 it always fits within scrollHost while
+   preserving the image's aspect ratio. Zoom > 1 is a CSS scale
+   transform (via useZoom's --zoom var); overflow is clipped here. */
 .scrollHost {
   position: relative;
   overflow: hidden;
@@ -145,13 +148,18 @@
   min-height: 200px;
   padding: var(--sp-3);
   background: var(--bg-1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .canvas {
   position: relative;
-  width: var(--rendered-w, 100%);
-  height: var(--rendered-h, 100%);
-  transform: translate(calc(-1 * var(--pan-x, 0px)), calc(-1 * var(--pan-y, 0px)));
+  aspect-ratio: var(--img-aspect, 1280 / 720);
+  max-width: 100%;
+  max-height: 100%;
+  transform: translate(calc(-1 * var(--pan-x, 0px)), calc(-1 * var(--pan-y, 0px)))
+    scale(var(--zoom, 1));
   transform-origin: top left;
   line-height: 0;
 }

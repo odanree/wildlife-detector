@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
 import { baselineImageUrl } from "../api/baseline";
 import { useBaselineMeta } from "../hooks/useBaselineMeta";
 import { useStatus } from "../hooks/useStatus";
@@ -65,8 +65,6 @@ export function CameraPane({
     min: 0.25,
     max: 3.0,
     step: 0.1,
-    baseW: detW,
-    baseH: detH,
     canvasRef,
   });
 
@@ -210,6 +208,10 @@ export function CameraPane({
             ref={canvasRef}
             key={`canvas-${flashKey}`}
             className={`${styles.canvas} ${flashKey > 0 ? styles.canvasFlash : ""}`}
+            // Feed the image aspect ratio to CSS so the canvas sizes
+            // itself to fit the container while preserving aspect.
+            // Any change is picked up automatically by aspect-ratio.
+            style={{ "--img-aspect": `${detW} / ${detH}` } as CSSProperties}
           >
             <img
               key={streamKey}
