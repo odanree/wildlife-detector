@@ -263,16 +263,15 @@ export function CameraPane({
             </div>
           </div>
         ) : (
-          // Re-mount the canvas on each flashKey bump so the CSS
-          // keyframe animation restarts. Same pattern as the single-pane
-          // implementation before this extraction.
+          // Canvas div stays mounted across flash events. The animation
+          // lives on a sibling overlay below so re-keying that element
+          // restarts the animation WITHOUT unmounting the canvas — which
+          // would otherwise clear the `--zoom` / `--pan-x` / `--pan-y`
+          // CSS vars useZoom sets imperatively on canvasRef.current and
+          // visibly reset the user's zoom on every alert.
           <div
             ref={canvasRef}
-            key={`canvas-${flashKey}`}
-            className={`${styles.canvas} ${flashKey > 0 ? styles.canvasFlash : ""}`}
-            // Feed the image aspect ratio to CSS so the canvas sizes
-            // itself to fit the container while preserving aspect.
-            // Any change is picked up automatically by aspect-ratio.
+            className={styles.canvas}
             style={
               {
                 width: canvasBox ? `${canvasBox.w}px` : 0,
@@ -299,6 +298,9 @@ export function CameraPane({
               }}
             />
             {!frameReady && <div className={styles.skeleton} aria-hidden="true" />}
+            {flashKey > 0 && (
+              <div key={flashKey} className={styles.flashOverlay} aria-hidden="true" />
+            )}
             {children}
           </div>
         )}
