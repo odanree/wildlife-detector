@@ -1,0 +1,80 @@
+.wrap {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  padding-left: var(--sp-2);
+  margin-left: var(--sp-2);
+  border-left: 1px solid var(--border-1);
+  font-size: 12px;
+  color: var(--text-md);
+  flex-wrap: wrap;
+}
+
+.group {
+  display: inline-flex;
+  gap: var(--sp-1);
+  align-items: center;
+}
+
+.label {
+  color: var(--text-lo);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.btn {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 2px 8px;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+.btn:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.btnCap {
+  color: var(--accent-fresh);
+}
+
+.btnClear {
+  color: var(--accent-rodent);
+}
+
+.flash {
+  color: var(--accent-fresh);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  animation: fade 2s ease-out forwards;
+}
+
+.err {
+  color: var(--accent-err);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.status {
+  color: var(--text-lo);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+@keyframes fade {
+  0% {
+    opacity: 1;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
