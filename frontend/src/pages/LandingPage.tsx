@@ -17,6 +17,9 @@ export function LandingPage() {
         <Link to="/alerts" style={styles.link}>
           Alerts →
         </Link>
+        <Link to="/baselines" style={styles.link}>
+          Baselines →
+        </Link>
       </header>
       <main style={styles.main}>
         <p style={styles.blurb}>
