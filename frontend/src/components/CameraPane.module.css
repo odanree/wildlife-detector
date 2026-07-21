@@ -211,8 +211,17 @@
   }
 }
 
-.canvasFlash {
+/* Flash overlay — sibling of the stream img, inset:0 so its box exactly
+   matches the canvas box. Re-keyed by flashKey to restart the animation
+   without touching the canvas element itself (which would clear the
+   imperatively-set --zoom / --pan CSS vars and visibly reset zoom). */
+.flashOverlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
   animation: alertPulse 3s ease-out forwards;
+  border-radius: var(--r-md);
 }
 
 @keyframes alertPulse {
