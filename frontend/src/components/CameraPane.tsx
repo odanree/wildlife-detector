@@ -109,10 +109,19 @@ export function CameraPane({
   // 6 concurrent /stream connections during a promote-swap (2 old draining
   // + 2 short-lived + 2 final) and briefly stalling the backend.
   const [streamKey, setStreamKey] = useState(0);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: camera IS the fire trigger; body only resets error state
+
+  // frameReady: false = show skeleton over the canvas. Flipped true by
+  // the img's onLoad (first frame decoded) or by a 2500ms grace timer
+  // in case the stream never yields a frame (detector down, etc.) so
+  // the user isn't stuck on the skeleton indefinitely.
+  const [frameReady, setFrameReady] = useState(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: (camera, viewMode) ARE the fire triggers; body only calls setters/setTimeout
   useEffect(() => {
     setStreamError(false);
-  }, [camera]);
+    setFrameReady(false);
+    const t = window.setTimeout(() => setFrameReady(true), 2500);
+    return () => window.clearTimeout(t);
+  }, [camera, viewMode]);
 
   const liveSrc = camera ? `/stream?camera=${encodeURIComponent(camera)}&t=${streamKey}` : "";
   const baselineSrc = (() => {
@@ -226,8 +235,15 @@ export function CameraPane({
                   : `${viewMode.split("-")[0]} baseline ${camera}`
               }
               onWheel={onWheel}
-              onError={() => viewMode === "live" && setStreamError(true)}
+              onLoad={() => setFrameReady(true)}
+              onError={() => {
+                if (viewMode === "live") setStreamError(true);
+                // Still reveal the canvas — otherwise the error UI
+                // hides behind the skeleton.
+                setFrameReady(true);
+              }}
             />
+            {!frameReady && <div className={styles.skeleton} aria-hidden="true" />}
             {children}
           </div>
         )}
