@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { type Rect, saveMasks } from "../api/masks";
 import { type Point, saveZone } from "../api/zone";
-import { CameraPane } from "../components/CameraPane";
+import { CameraPane, type ViewMode } from "../components/CameraPane";
 import { type MaskMode, MaskOverlay } from "../components/MaskOverlay";
 import { type EditMode, ZoneOverlay } from "../components/ZoneOverlay";
 import { useCameras } from "../hooks/useCameras";
@@ -58,6 +58,13 @@ export function LivePreviewPage() {
   useEffect(() => {
     if (secondary && secondary === primary) setSecondary(null);
   }, [primary, secondary]);
+
+  // View mode is keyed by camera (not pane slot) so it follows a
+  // camera across a promote-swap. Session-only — not persisted across
+  // reloads so re-opening the page always starts on the Live stream.
+  const [viewModes, setViewModes] = useState<Record<string, ViewMode>>({});
+  const setViewModeFor = (camera: string) => (mode: ViewMode) =>
+    setViewModes((prev) => ({ ...prev, [camera]: mode }));
 
   // Editors target the primary camera. detW/detH come from primary's status.
   const { data: primaryStatus } = useStatus(primary || undefined);
@@ -269,6 +276,8 @@ export function LivePreviewPage() {
             isPrimary
             cameras={cameras}
             otherPaneCamera={secondary ?? undefined}
+            viewMode={viewModes[primary] ?? "live"}
+            onViewModeChange={setViewModeFor(primary)}
           >
             <ZoneOverlay
               baseW={detW}
@@ -295,6 +304,8 @@ export function LivePreviewPage() {
               onSelectCamera={selectSecondaryCamera}
               onPromote={promoteSecondary}
               onRemove={removeSecondaryPane}
+              viewMode={viewModes[secondary] ?? "live"}
+              onViewModeChange={setViewModeFor(secondary)}
             />
           )}
         </div>
