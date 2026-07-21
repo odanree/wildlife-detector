@@ -124,7 +124,11 @@ export function useZoom(cameraId: string, options: UseZoomOptions) {
       const newRenderedW = oldRenderedW * scale;
       const newRenderedH = oldRenderedH * scale;
 
-      panXRef.current += fracX * (newRenderedW - oldRenderedW);
+      // Anchor math tied to CSS transform-origin `50% 0` on the canvas:
+      // horizontal scale grows from the box's horizontal center, so the
+      // invariant point under a pure scale is fracX = 0.5. Vertical
+      // scale grows from y=0 (top), so vertical math is unchanged.
+      panXRef.current += (fracX - 0.5) * (newRenderedW - oldRenderedW);
       panYRef.current += fracY * (newRenderedH - oldRenderedH);
 
       publish(newZoom, panXRef.current, panYRef.current);
