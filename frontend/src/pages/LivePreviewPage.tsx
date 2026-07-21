@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { type Rect, saveMasks } from "../api/masks";
 import { type Point, saveZone } from "../api/zone";
+import { AlertsNavLink } from "../components/AlertsNavLink";
 import { CameraPane, type ViewMode } from "../components/CameraPane";
 import { type MaskMode, MaskOverlay } from "../components/MaskOverlay";
 import { type EditMode, ZoneOverlay } from "../components/ZoneOverlay";
@@ -218,9 +219,7 @@ export function LivePreviewPage() {
             Snapshot
           </a>
         )}
-        <Link to="/alerts" className={styles.linkBtn}>
-          Alerts →
-        </Link>
+        <AlertsNavLink className={styles.linkBtn} />
         <Link to="/baselines" className={styles.linkBtn}>
           Baselines →
         </Link>
