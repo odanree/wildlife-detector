@@ -56,20 +56,40 @@ export function ZoneOverlay({ baseW, baseH, polygon, mode, onChange, onClose }: 
   }
 
   function onSvgClick(e: ReactMouseEvent) {
-    if (mode !== "draw") return;
     const pt = eventToImagePoint(e);
     if (!pt) return;
-    // Close-loop if clicking near the first vertex and we have ≥3
-    if (polygon.length >= 3) {
-      const [fx, fy] = polygon[0];
-      const dx = pt[0] - fx;
-      const dy = pt[1] - fy;
-      if (Math.hypot(dx, dy) <= closeThreshold) {
-        onClose();
-        return;
+    if (mode === "draw") {
+      // Close-loop if clicking near the first vertex and we have ≥3
+      if (polygon.length >= 3) {
+        const [fx, fy] = polygon[0];
+        const dx = pt[0] - fx;
+        const dy = pt[1] - fy;
+        if (Math.hypot(dx, dy) <= closeThreshold) {
+          onClose();
+          return;
+        }
+      }
+      onChange([...polygon, pt]);
+      return;
+    }
+    if (mode === "tweak" && polygon.length >= 2) {
+      // Edge-click → insert a new vertex splitting that edge. First
+      // guard: if the click landed near an existing vertex, do nothing
+      // — the vertex's own handlers already own that pixel area for
+      // drag / right-click-delete. Second: if the click is close to
+      // an edge (within 2× vertex radius so hit targets are generous),
+      // insert a new vertex at the projection point.
+      const nearVertex = polygon.some(
+        (v) => Math.hypot(v[0] - pt[0], v[1] - pt[1]) <= vertexRadius * 1.5,
+      );
+      if (nearVertex) return;
+      const hit = nearestEdge(polygon, pt);
+      if (hit && hit.dist <= vertexRadius * 2) {
+        const next = polygon.slice();
+        next.splice(hit.insertAt, 0, hit.projection);
+        onChange(next);
       }
     }
-    onChange([...polygon, pt]);
   }
 
   function onSvgMouseMove(e: ReactMouseEvent) {
@@ -179,18 +199,66 @@ export function ZoneOverlay({ baseW, baseH, polygon, mode, onChange, onClose }: 
           .filter(Boolean)
           .join(" ");
         return (
-          <circle
-            // biome-ignore lint/suspicious/noArrayIndexKey: polygon vertices have no stable identity — index IS the identity for edit ops
-            key={i}
-            className={cls}
-            cx={p[0]}
-            cy={p[1]}
-            r={vertexRadius}
-            onMouseDown={(e) => onVertexMouseDown(i, e)}
-            onContextMenu={(e) => onVertexContextMenu(i, e)}
-          />
+          // biome-ignore lint/suspicious/noArrayIndexKey: polygon vertices have no stable identity — index IS the identity for edit ops
+          <g key={i}>
+            <circle
+              className={cls}
+              cx={p[0]}
+              cy={p[1]}
+              r={vertexRadius}
+              onMouseDown={(e) => onVertexMouseDown(i, e)}
+              onContextMenu={(e) => onVertexContextMenu(i, e)}
+            />
+            {isEditing && (
+              // Vertex index label — helps identify which vertex to delete
+              // when a polygon looks visually wrong (e.g. a concave notch
+              // caused by one vertex placed inside the outer envelope).
+              // Only shown while editing so read-only view stays clean.
+              <text
+                className={styles.vertexLabel}
+                x={p[0]}
+                y={p[1] - vertexRadius - 4}
+                textAnchor="middle"
+              >
+                {i}
+              </text>
+            )}
+          </g>
         );
       })}
     </svg>
   );
+}
+
+/** Find the nearest polygon edge to a point in image-pixel space and
+ *  return the split-insertion payload. Returns null for polygons with
+ *  fewer than 2 vertices.
+ *
+ *  insertAt is the array index at which to splice the new vertex so
+ *  the polygon topology stays consistent: edge i connects vertex i to
+ *  vertex (i+1) % n, so inserting the new vertex at position i+1
+ *  places it between the two endpoints of edge i. */
+function nearestEdge(
+  polygon: readonly Point[],
+  pt: Point,
+): { dist: number; projection: Point; insertAt: number } | null {
+  const n = polygon.length;
+  if (n < 2) return null;
+  let best: { dist: number; projection: Point; insertAt: number } | null = null;
+  for (let i = 0; i < n; i++) {
+    const a = polygon[i];
+    const b = polygon[(i + 1) % n];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq === 0) continue;
+    let t = ((pt[0] - a[0]) * dx + (pt[1] - a[1]) * dy) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+    const proj: Point = [Math.round(a[0] + t * dx), Math.round(a[1] + t * dy)];
+    const d = Math.hypot(pt[0] - proj[0], pt[1] - proj[1]);
+    if (best === null || d < best.dist) {
+      best = { dist: d, projection: proj, insertAt: i + 1 };
+    }
+  }
+  return best;
 }
