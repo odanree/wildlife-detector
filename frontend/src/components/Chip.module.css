@@ -1,0 +1,38 @@
+/* Shared chip primitive — inherited by every subsystem chip. */
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-1);
+  background: var(--bg-2);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-md);
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--text-md);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+.chip:hover {
+  border-color: var(--border-3);
+}
+
+.label {
+  color: var(--text-lo);
+}
+
+.body {
+  color: var(--text-md);
+}
+
+.b {
+  color: var(--text-hi);
+  font-weight: 600;
+}
+
+.sec {
+  color: var(--text-md);
+}
+
+.sep {
+  color: var(--text-dim);
+}

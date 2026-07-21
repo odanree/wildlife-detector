@@ -1,0 +1,16 @@
+.b {
+  color: var(--text-hi);
+  font-weight: 600;
+  margin: 0 2px;
+}
+
+.hit {
+  color: var(--accent-green);
+  font-weight: 600;
+  margin: 0 2px;
+}
+
+.arrow {
+  color: var(--text-dim);
+  margin: 0 var(--sp-1);
+}

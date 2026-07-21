@@ -1,6 +1,7 @@
 import { useStatus } from "../hooks/useStatus";
 import { fmtDuration, fmtMB, fmtPct } from "../util/format";
 import { Chip } from "./Chip";
+import styles from "./ResourceChip.module.css";
 
 interface ResourceChipProps {
   camera: string;
@@ -33,19 +34,13 @@ export function ResourceChip({ camera }: ResourceChipProps) {
       label="proc"
       title={`Detector process on ${data.camera_id}. CPU is multi-core (0..${cores * 100}%), same as \`docker stats\`.`}
     >
-      cpu <b style={styles.b}>{fmtPct(cpu)}</b>
-      <span style={styles.dim}> / peak {fmtPct(cpuPeak)}</span>
-      <span style={styles.sep}>·</span>
-      mem <b style={styles.b}>{fmtMB(rss)}</b>
-      <span style={styles.dim}> / peak {fmtMB(rssPeak)}</span>
-      <span style={styles.sep}>·</span>
-      up <b style={styles.b}>{fmtDuration(data.uptime_seconds)}</b>
+      cpu <b className={styles.b}>{fmtPct(cpu)}</b>
+      <span className={styles.dim}> / peak {fmtPct(cpuPeak)}</span>
+      <span className={styles.sep}>·</span>
+      mem <b className={styles.b}>{fmtMB(rss)}</b>
+      <span className={styles.dim}> / peak {fmtMB(rssPeak)}</span>
+      <span className={styles.sep}>·</span>
+      up <b className={styles.b}>{fmtDuration(data.uptime_seconds)}</b>
     </Chip>
   );
 }
-
-const styles = {
-  b: { color: "#ddd", fontWeight: 600, margin: "0 2px" },
-  dim: { color: "#666" },
-  sep: { color: "#555", margin: "0 6px" },
-} as const;
