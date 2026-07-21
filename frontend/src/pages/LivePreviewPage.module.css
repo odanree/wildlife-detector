@@ -1,10 +1,11 @@
 .wrap {
-  min-height: 100vh;
+  height: 100vh;
   background: var(--bg-0);
   color: var(--text-hi);
   font-family: var(--font-sans);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .header {
@@ -94,17 +95,25 @@
   font-family: var(--font-mono);
 }
 
-/* Scroll host contains the stream image. Cursor-anchored zoom uses
-   CSS transform: translate on the image, not scroll adjustment —
-   scroll would require the page to always have room to scroll,
-   which isn't guaranteed at smaller zooms or narrow images.
-   `overflow: visible` lets the translated image extend past the
-   host's box; `position: relative` gives the transform a stable
-   layout origin. */
+/* Scroll host is the bounded canvas the stream lives inside.
+   Cursor-anchored zoom uses CSS transform: translate on the image,
+   which would otherwise spill the transformed frame into the header
+   and toolbar above — so this element:
+     • fills the remaining viewport height (flex: 1 inside the
+       flex-column wrap) so it has a stable bounded box,
+     • clips any transformed content that extends past its edges
+       (overflow: hidden),
+     • gives the transform a stable layout origin (position: relative),
+     • carries a subtle border + background so the operator sees where
+       the "canvas" boundary is. */
 .scrollHost {
   position: relative;
-  overflow: visible;
+  overflow: hidden;
+  flex: 1 1 auto;
+  min-height: 400px;
   padding: var(--sp-3);
+  background: var(--bg-1);
+  border-top: 1px solid var(--border-1);
 }
 
 /* The image itself; transform-origin at top-left keeps the pan math
