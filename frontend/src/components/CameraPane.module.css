@@ -179,6 +179,15 @@
      via pan). */
   transform-origin: 50% 0;
   line-height: 0;
+  /* Smooth the aspect-ratio change on camera swap. Different cameras
+     have different detection sizes (e.g. yard 4:3, rooftop 16:9), so
+     a promote legitimately changes the pane's canvas geometry. Without
+     this transition the change snaps instantly, reading as jitter.
+     With it, the layout interpolates over 200ms — the same shift, but
+     smooth. Transitioning only aspect-ratio (not width/height) avoids
+     stepping on the zoom/pan transform which lives on the same
+     element. */
+  transition: aspect-ratio 200ms ease-out;
 }
 
 .canvasFlash {
