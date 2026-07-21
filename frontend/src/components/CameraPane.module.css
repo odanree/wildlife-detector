@@ -164,7 +164,11 @@
   max-height: 100%;
   transform: translate(calc(-1 * var(--pan-x, 0px)), calc(-1 * var(--pan-y, 0px)))
     scale(var(--zoom, 1));
-  transform-origin: top left;
+  /* Top-center origin: button zoom grows symmetrically left/right and
+     downward from the top edge, filling the pane's empty vertical
+     space. Wheel zoom is still cursor-anchored (useZoom compensates
+     via pan). */
+  transform-origin: 50% 0;
   line-height: 0;
 }
 
