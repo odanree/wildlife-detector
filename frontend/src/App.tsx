@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AlertsPage } from "./pages/AlertsPage";
+import { BaselinesPage } from "./pages/BaselinesPage";
 import { LandingPage } from "./pages/LandingPage";
 
 /**
@@ -18,6 +19,7 @@ export function App() {
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/alerts" element={<AlertsPage />} />
+        <Route path="/baselines" element={<BaselinesPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
