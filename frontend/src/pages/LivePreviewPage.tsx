@@ -65,6 +65,8 @@ export function LivePreviewPage() {
   }, [zoneData, zoneMode]);
 
   // ── Mask editor state ──
+  // Vanilla parity: single edit mode. Existing masks aren't repositioned
+  // or resized — wrong ones get deleted (× handle) and re-drawn.
   const { data: masksData, refresh: refreshMasks } = useMasks(camera);
   const [maskMode, setMaskMode] = useState<MaskMode>("idle");
   const [workingMasks, setWorkingMasks] = useState<Rect[]>([]);
@@ -147,16 +149,10 @@ export function LivePreviewPage() {
     }
   }
 
-  function enterMaskDraw() {
+  function enterMaskEdit() {
     if (zoneMode !== "idle") cancelZoneEdit();
     setWorkingMasks(masksData?.masks ?? []);
-    setMaskMode("draw");
-    setMaskErr(null);
-  }
-  function enterMaskTweak() {
-    if (zoneMode !== "idle") cancelZoneEdit();
-    setWorkingMasks(masksData?.masks ?? []);
-    setMaskMode("tweak");
+    setMaskMode("edit");
     setMaskErr(null);
   }
   function cancelMaskEdit() {
@@ -252,8 +248,7 @@ export function LivePreviewPage() {
             count={workingMasks.length}
             saving={maskSaving}
             saveErr={maskErr}
-            onDraw={enterMaskDraw}
-            onTweak={enterMaskTweak}
+            onEdit={enterMaskEdit}
             onSave={doMaskSave}
             onCancel={cancelMaskEdit}
           />
@@ -456,8 +451,7 @@ function MaskEditorButtons({
   count,
   saving,
   saveErr,
-  onDraw,
-  onTweak,
+  onEdit,
   onSave,
   onCancel,
 }: {
@@ -465,8 +459,7 @@ function MaskEditorButtons({
   count: number;
   saving: boolean;
   saveErr: string | null;
-  onDraw: () => void;
-  onTweak: () => void;
+  onEdit: () => void;
   onSave: () => void;
   onCancel: () => void;
 }) {
@@ -477,32 +470,17 @@ function MaskEditorButtons({
         <button
           type="button"
           className={styles.zoneBtn}
-          onClick={onDraw}
-          title="Add a new OSD mask rectangle (click-and-drag on the canvas)"
+          onClick={onEdit}
+          title="Draw OSD mask rectangles (drag on canvas). Click × on any mask to remove it."
         >
-          Draw
-        </button>
-        <button
-          type="button"
-          className={styles.zoneBtn}
-          onClick={onTweak}
-          disabled={count === 0}
-          title={
-            count === 0
-              ? "No masks to tweak"
-              : "Edit existing mask rectangles (drag to move, corners to resize, right-click to delete)"
-          }
-        >
-          Tweak
+          Draw OSD mask
         </button>
       </div>
     );
   }
   return (
     <div className={styles.zoneGroup}>
-      <span className={styles.zoneLabel}>
-        {mode === "draw" ? "drawing" : "tweaking"} masks · {count}
-      </span>
+      <span className={styles.zoneLabel}>editing masks · {count}</span>
       <button
         type="button"
         className={`${styles.zoneBtn} ${styles.zoneBtnSave}`}
