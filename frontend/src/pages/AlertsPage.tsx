@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import type { AlertRow } from "../api/alerts";
 import { AlertLightbox } from "../components/AlertLightbox";
 import { useAlerts } from "../hooks/useAlerts";
 import { useCameras } from "../hooks/useCameras";
+import { markAlertsSeen } from "../hooks/useUnreadAlerts";
 import { fmtRelative, fmtTs } from "../util/time";
 import styles from "./AlertsPage.module.css";
 
@@ -43,9 +44,12 @@ export function AlertsPage() {
     [items, grouped],
   );
 
-  if (data && typeof window !== "undefined") {
-    localStorage.setItem("alertsLastSeenTotal", String(data.total));
-  }
+  // Being on this page IS the "seen" event — stamp the current total as
+  // seen so the header badge on other pages zeros out. In an effect (not
+  // during render) so we don't repeatedly write on unrelated re-renders.
+  useEffect(() => {
+    if (data) markAlertsSeen(data.total);
+  }, [data]);
 
   return (
     <div className={styles.wrap}>
