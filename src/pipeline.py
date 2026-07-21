@@ -599,6 +599,14 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             all_dets = all_dets + motion_dets
             if motion_dets:
                 _preview_stats.record_motion(len(motion_dets))
+            # Surface the kinematic-gate reject counts (populated inside
+            # MotionDetector.detect above) so the funnel chip can show
+            # how much the velocity + persistence gates are killing.
+            _v_rej, _p_rej = motion.pop_reject_counts()
+            if _v_rej:
+                _preview_stats.record_motion_kinematic_rejected("velocity", _v_rej)
+            if _p_rej:
+                _preview_stats.record_motion_kinematic_rejected("persistence", _p_rej)
 
             zone_dets = zone_filter.filter(all_dets, zone_key)
             # Reject any bbox whose center falls inside an OSD mask — the

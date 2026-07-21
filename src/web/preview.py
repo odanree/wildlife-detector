@@ -268,6 +268,12 @@ class Stats:
         # Answers "is the VLM silent because there's no motion, or because the
         # baseline pre-filter is eating everything?" — read them via /status.
         self._motion_events = 0        # MOG2 fired at least once this frame
+        # Kinematic-gate rejects — counted before motion_events (a
+        # rejected blob never becomes a "motion event"). Split by gate
+        # so the operator can see which one is doing the work and tune
+        # each threshold independently. Reset on restart, session-local.
+        self._motion_velocity_rejected = 0
+        self._motion_persistence_rejected = 0
         self._zone_events = 0          # at least one motion/YOLO det landed in zone
         self._baseline_filtered = 0    # zone det skipped VLM (pixel-diff below threshold)
         self._vlm_calls = 0            # VLM invocation submitted
@@ -293,6 +299,16 @@ class Stats:
     def record_motion(self, count: int = 1) -> None:
         with self._lock:
             self._motion_events += count
+
+    def record_motion_kinematic_rejected(self, kind: str, count: int = 1) -> None:
+        """kind: 'velocity' or 'persistence'. Silently ignore unknown
+        kinds so we can add more gate flavors later without a hard
+        error on stale writer code."""
+        with self._lock:
+            if kind == "velocity":
+                self._motion_velocity_rejected += count
+            elif kind == "persistence":
+                self._motion_persistence_rejected += count
 
     def record_zone_motion(self, count: int = 1) -> None:
         with self._lock:
@@ -429,6 +445,11 @@ class Stats:
                 # Gate funnel — reset on restart. Ratios tell you which stage
                 # is doing the filtering work: motion → zone → baseline_pass → vlm → confirmed.
                 "gate_funnel": {
+                    # Kinematic-gate rejects sit BEFORE motion_events —
+                    # they never reach the motion_events counter. Show
+                    # them so the operator sees the pre-funnel filtering.
+                    "motion_velocity_rejected":    self._motion_velocity_rejected,
+                    "motion_persistence_rejected": self._motion_persistence_rejected,
                     "motion_events":     self._motion_events,
                     "zone_events":       self._zone_events,
                     "baseline_filtered": self._baseline_filtered,
