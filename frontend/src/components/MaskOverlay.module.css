@@ -1,0 +1,55 @@
+.svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.svgInteractive {
+  pointer-events: auto;
+}
+
+.svgDraw {
+  cursor: crosshair;
+}
+
+.mask {
+  fill: var(--accent-rodent);
+  fill-opacity: 0.15;
+  stroke: var(--accent-rodent);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.maskEditing {
+  fill-opacity: 0.08;
+  stroke-dasharray: 6 4;
+  cursor: grab;
+}
+
+.maskDragging {
+  cursor: grabbing;
+}
+
+.handle {
+  fill: var(--accent-rodent);
+  stroke: #000;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  cursor: nwse-resize;
+}
+.handleNE,
+.handleSW {
+  cursor: nesw-resize;
+}
+
+.rubberband {
+  fill: var(--accent-rodent);
+  fill-opacity: 0.08;
+  stroke: var(--accent-rodent);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+  vector-effect: non-scaling-stroke;
+}
