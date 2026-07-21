@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { fetchAlerts } from "../api/alerts";
 
 /** Base key; camera scope (or "all") is suffixed onto it so per-camera
@@ -27,88 +27,95 @@ export function readLastSeenId(camera?: string | null): number | null {
 }
 
 /**
- * Poll alert count and compute unread relative to the last time the
- * operator visited /alerts.
+ * Poll alert counts for one OR MORE cameras and sum unread across all
+ * of them. The header badge in dual-pane view uses this to cover both
+ * visible cameras so activity on either shows up in the count
+ * regardless of which is primary.
  *
- * Camera-scoped: pass `camera` to count only that camera's alerts —
- * critical for the header badge, otherwise a yard viewer sees the
- * badge tick up for rooftop alerts. Omit `camera` for cross-camera
- * total (used by the alerts page's "all" view).
+ * Single camera: fetches /api/alerts?limit=1&camera=<id>.
+ * Multi-camera: fetches /api/alerts/counts once — batch response with
+ * per-camera totals in one request. Sums unread per camera against
+ * its per-camera watermark.
  *
- * Watermark is scoped by the same camera key, so a yard viewer's
- * "seen" state doesn't leak into the rooftop badge.
+ * Watermarks are per-camera: visiting /alerts?camera=yard clears
+ * yard's unread contribution but leaves rooftop's alone.
+ * Cold-start-per-camera prevents "99+" for historical alerts.
  *
- * Pattern: monotonic-counter diff for unread state + per-entity
- * watermark scoping.
+ * Pattern: monotonic-counter diff with union-scoped aggregation.
+ * The scope is a SET of cameras (visible in the panes), not a single
+ * entity — badge = Σ per-camera unread.
  */
 export function useUnreadAlerts(
-  camera?: string | null,
+  cameras?: readonly string[] | null,
   intervalMs = 5000,
-): { unread: number; total: number } {
-  const [total, setTotal] = useState<number>(0);
-  const key = seenKey(camera);
-  const [seen, setSeen] = useState<number | null>(() => {
-    try {
-      const raw = localStorage.getItem(key);
-      // null (never visited) is distinct from 0 (visited when total was 0):
-      // on cold-start we adopt the current total instead of showing "99+"
-      // for historical alerts we've never had a chance to see.
-      return raw === null ? null : Number.parseInt(raw, 10) || 0;
-    } catch {
-      return null;
-    }
-  });
-  // Camera change: reset seen from the NEW camera's watermark so we
-  // don't briefly show the wrong count while polling races.
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(key);
-      setSeen(raw === null ? null : Number.parseInt(raw, 10) || 0);
-    } catch {
-      setSeen(null);
-    }
-    setTotal(0);
-  }, [key]);
+): { unread: number } {
+  // Normalize: empty / undefined → cross-camera pseudo-scope "all".
+  const camsKey = cameras && cameras.length > 0 ? cameras.join(",") : "all";
+  const cams = useMemo(() => camsKey.split(","), [camsKey]);
 
+  const [totals, setTotals] = useState<Record<string, number>>({});
+  const [seens, setSeens] = useState<Record<string, number | null>>(() => readWatermarks(cams));
+
+  // Cameras change → re-read the new set's watermarks. Clear totals so
+  // the unread computation doesn't briefly mix old-set numbers with
+  // new-set state.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: cams identity tracked via camsKey
+  useEffect(() => {
+    setSeens(readWatermarks(cams));
+    setTotals({});
+  }, [camsKey]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: cams identity tracked via camsKey
   useEffect(() => {
     let cancelled = false;
     const controller = new AbortController();
 
     async function tick(): Promise<void> {
       try {
-        const q: { limit: number; camera?: string } = { limit: 1 };
-        if (camera) q.camera = camera;
-        const resp = await fetchAlerts(q, controller.signal);
+        const newTotals =
+          cams.length === 1 && cams[0] === "all"
+            ? await fetchAllTotal(controller.signal)
+            : await fetchCountsForCameras(cams, controller.signal);
         if (cancelled) return;
-        const t = resp.total ?? 0;
-        setTotal(t);
-        // Cold-start for this camera: adopt current total as seen.
-        setSeen((prev) => {
-          if (prev !== null) return prev;
-          try {
-            localStorage.setItem(key, String(t));
-          } catch {
-            /* ignore */
+        setTotals(newTotals);
+        // Cold-start per camera: adopt current total as seen on first
+        // sighting so we don't show 99+ for historical alerts.
+        setSeens((prev) => {
+          const next: Record<string, number | null> = { ...prev };
+          let mutated = false;
+          for (const c of cams) {
+            if (next[c] === null && newTotals[c] != null) {
+              try {
+                localStorage.setItem(seenKey(c), String(newTotals[c]));
+              } catch {
+                /* ignore */
+              }
+              next[c] = newTotals[c];
+              mutated = true;
+            }
           }
-          return t;
+          return mutated ? next : prev;
         });
       } catch (e) {
         if (cancelled) return;
         if (e instanceof DOMException && e.name === "AbortError") return;
-        // Silent — the header badge isn't worth surfacing errors for.
+        // Silent — header badge failure isn't worth surfacing.
       }
     }
 
     void tick();
     const handle = window.setInterval(tick, intervalMs);
 
-    // Cross-tab sync: another tab visiting /alerts for this camera
-    // writes the same key, and the storage event lets us update
-    // without polling localStorage.
+    // Cross-tab sync: any tab stamping a watermark for one of our
+    // cameras should update our seen state so the badge stays honest.
+    const watchedKeys = new Set(cams.map((c) => seenKey(c)));
     function onStorage(e: StorageEvent) {
-      if (e.key === key && e.newValue !== null) {
-        setSeen(Number.parseInt(e.newValue, 10) || 0);
-      }
+      if (!e.key || !watchedKeys.has(e.key) || e.newValue === null) return;
+      const camera = e.key.slice(SEEN_KEY_BASE.length + 1);
+      setSeens((prev) => ({
+        ...prev,
+        [camera]: Number.parseInt(e.newValue as string, 10) || 0,
+      }));
     }
     window.addEventListener("storage", onStorage);
 
@@ -118,9 +125,48 @@ export function useUnreadAlerts(
       window.clearInterval(handle);
       window.removeEventListener("storage", onStorage);
     };
-  }, [camera, intervalMs, key]);
+  }, [camsKey, intervalMs]);
 
-  return { unread: seen === null ? 0 : Math.max(0, total - seen), total };
+  const unread = cams.reduce((sum, c) => {
+    const s = seens[c];
+    const t = totals[c] ?? 0;
+    return sum + (s === null ? 0 : Math.max(0, t - s));
+  }, 0);
+
+  return { unread };
+}
+
+function readWatermarks(cams: readonly string[]): Record<string, number | null> {
+  const out: Record<string, number | null> = {};
+  for (const c of cams) {
+    try {
+      const raw = localStorage.getItem(seenKey(c));
+      out[c] = raw === null ? null : Number.parseInt(raw, 10) || 0;
+    } catch {
+      out[c] = null;
+    }
+  }
+  return out;
+}
+
+async function fetchAllTotal(signal: AbortSignal): Promise<Record<string, number>> {
+  const r = await fetchAlerts({ limit: 1 }, signal);
+  return { all: r.total ?? 0 };
+}
+
+/** Fetch per-camera counts via /api/alerts/counts. Restricts response
+ *  to cameras we care about so unrelated activity doesn't leak into
+ *  our sum. */
+async function fetchCountsForCameras(
+  cams: readonly string[],
+  signal: AbortSignal,
+): Promise<Record<string, number>> {
+  const r = await fetch("/api/alerts/counts", { signal });
+  if (!r.ok) throw new Error(`/api/alerts/counts ${r.status}`);
+  const body = (await r.json()) as Record<string, number>;
+  const out: Record<string, number> = {};
+  for (const c of cams) out[c] = body[c] ?? 0;
+  return out;
 }
 
 /**
@@ -143,6 +189,6 @@ export function markAlertsSeen(
       localStorage.setItem(seenIdKey(camera), String(highestId));
     }
   } catch {
-    // localStorage unavailable — badge won't zero-out, minor cosmetic.
+    /* ignore */
   }
 }
