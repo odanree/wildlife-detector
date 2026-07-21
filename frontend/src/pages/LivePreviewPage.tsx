@@ -34,11 +34,13 @@ export function LivePreviewPage() {
   const detW = status?.detection_size?.[0] ?? 1280;
   const detH = status?.detection_size?.[1] ?? 720;
 
-  const { zoom, adjustBy, onWheel } = useZoom(camera, {
+  const { zoom, adjustBy, setZoomTo, onWheel } = useZoom(camera, {
     storageKey: "livePreviewZoom",
     min: 0.25,
     max: 3.0,
     step: 0.1,
+    baseW: detW,
+    baseH: detH,
   });
 
   const [streamError, setStreamError] = useState(false);
@@ -104,7 +106,7 @@ export function LivePreviewPage() {
             <button type="button" onClick={() => adjustBy(0.1)} title="Zoom in">
               +
             </button>
-            <button type="button" onClick={() => adjustBy(1 - zoom)} title="Reset zoom to 1×">
+            <button type="button" onClick={() => setZoomTo(1.0)} title="Reset zoom to 1×">
               1×
             </button>
           </div>

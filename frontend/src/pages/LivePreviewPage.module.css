@@ -96,15 +96,20 @@
 
 /* Scroll host contains the stream image; horizontal scroll only.
    Vertical scroll happens on the window (matches the vanilla-JS
-   preview page's behavior so zone-editor coord math will map
-   the same way in the next PR). */
+   preview page's behavior so zone-editor coord math maps the same
+   way in the next PR).
+
+   Deliberately NOT flex-centered: the cursor-anchored zoom needs a
+   fixed top-left origin so scrollLeft has meaningful, monotonic
+   effect at every zoom level. Flex centering would shift the origin
+   with every zoom step and the anchor drift becomes visible. Image
+   sits left-aligned instead; when the operator zooms out below
+   viewport width, there's just some blank space to the right — an
+   accepted trade for correct anchor math. */
 .scrollHost {
   overflow-x: auto;
   overflow-y: visible;
   padding: var(--sp-3);
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
 }
 
 .stream {
