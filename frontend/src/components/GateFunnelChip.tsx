@@ -22,11 +22,26 @@ export function GateFunnelChip({ camera }: GateFunnelChipProps) {
   if (!data) return <Chip label="gate">…</Chip>;
   const g = data.gate_funnel;
   const basePassed = Math.max(0, g.zone_events - g.baseline_filtered);
+  const velRej = g.motion_velocity_rejected ?? 0;
+  const perRej = g.motion_persistence_rejected ?? 0;
+  const kinRej = velRej + perRej;
   return (
     <Chip
       label="gate"
-      title="Motion → zone → baseline-passed → vlm → hit. Ratios show which stage filters the most; the drop between stages is the interesting signal."
+      title={`Motion → zone → baseline-passed → vlm → hit. Ratios show which stage filters the most; the drop between stages is the interesting signal.${
+        kinRej > 0
+          ? ` Kinematic pre-filter (before motion counter): velocity ×${velRej}, persistence ×${perRej}.`
+          : ""
+      }`}
     >
+      {kinRej > 0 && (
+        <>
+          <span className={styles.kin}>
+            kin −{velRej}v/−{perRej}p
+          </span>
+          <span className={styles.arrow}>→</span>
+        </>
+      )}
       motion <b className={styles.b}>{g.motion_events}</b>
       <span className={styles.arrow}>→</span>
       zone <b className={styles.b}>{g.zone_events}</b>

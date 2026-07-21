@@ -15,6 +15,8 @@ export interface VlmCost {
 }
 
 export interface GateFunnel {
+  motion_velocity_rejected?: number;
+  motion_persistence_rejected?: number;
   motion_events: number;
   zone_events: number;
   baseline_filtered: number;

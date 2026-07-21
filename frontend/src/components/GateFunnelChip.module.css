@@ -14,3 +14,9 @@
   color: var(--text-dim);
   margin: 0 var(--sp-1);
 }
+
+.kin {
+  color: var(--accent-warn, #d0aa5a);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
