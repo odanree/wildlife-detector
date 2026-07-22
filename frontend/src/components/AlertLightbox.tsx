@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { setAlertLabel } from "../api/alerts";
 import type { AlertRow, LabelVerdict } from "../api/alerts";
 import { fmtTs } from "../util/time";
 import styles from "./AlertLightbox.module.css";
@@ -154,7 +155,30 @@ export function AlertLightbox({
     if (!current) return;
     const originalOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+    // Fast-vote: write label to backend + sync overlay so the visible
+    // LabelPicker updates, then auto-advance to the next alert. Auto-
+    // advance is the whole point of keyboard voting — you can label a
+    // hundred rows in a few minutes without leaving the keyboard.
+    const vote = (verdict: LabelVerdict) => {
+      if (!current) return;
+      const alertId = current.id;
+      setAlertLabel(alertId, verdict, null, null)
+        .then(() => {
+          onLabeled?.(alertId, verdict, null);
+          // Auto-advance if there's a next alert. Guard prevents wrap-around.
+          if (currentIdx < navList.length - 1) go(1);
+        })
+        .catch((e) => {
+          console.error("keyboard vote failed:", e);
+        });
+    };
     function onKey(e: KeyboardEvent): void {
+      // Skip when focus is on a form control — otherwise typing in a
+      // textarea/select would trigger votes.
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) {
+        return;
+      }
       switch (e.key) {
         case "Escape":
           close();
@@ -169,6 +193,21 @@ export function AlertLightbox({
         case "Home":
           resetZoom();
           break;
+        case "y":
+        case "Y":
+        case "1":
+          vote("correct");
+          break;
+        case "n":
+        case "N":
+        case "2":
+          vote("incorrect");
+          break;
+        case "u":
+        case "U":
+        case "3":
+          vote("unclear");
+          break;
       }
     }
     window.addEventListener("keydown", onKey);
@@ -176,7 +215,7 @@ export function AlertLightbox({
       window.removeEventListener("keydown", onKey);
       document.body.style.overflow = originalOverflow;
     };
-  }, [current, close, go, resetZoom]);
+  }, [current, close, go, resetZoom, currentIdx, navList.length, onLabeled]);
 
   if (!current || !current.snapshot) return null;
 
@@ -276,6 +315,10 @@ export function AlertLightbox({
         </div>
         <div className={styles.pos}>
           {currentIdx + 1} / {navList.length}
+          <span className={styles.zoomBadge}>
+            {" "}
+            · keys: Y correct · N incorrect · U unclear · ← / → nav · Esc close
+          </span>
           {zoom > 1 && (
             <span className={styles.zoomBadge}>
               {" "}
