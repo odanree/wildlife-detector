@@ -166,33 +166,26 @@ services:
       # - min_area=40 kept for partial-visibility raccoon-peeking.
       #
       # Rollback: MOTION_BACKEND=knn + MOTION_HISTORY=500 restores prior.
-      # var_threshold 8 → 15: MOG2's Gaussian variance model was firing
-      # on moving shadow-under-tree pixels at IR-mode low contrast.
-      # Higher threshold means only stronger intensity deltas count as
-      # foreground. Wildlife fur against brush still passes; wind-blown
-      # shadow edges no longer do.
-      #
-      # detectShadows=1: MOG2's built-in shadow model marks shadow
-      # pixels gray (128); motion_detector thresholds those out before
-      # contour finding. Cuts shadow blobs at the source. Belt-and-
-      # suspenders with the baseline_diff bump downstream.
+      # Reverted to LOOSE config after replay-testing rooftop_raccoon_0009
+      # showed the strict tune (var=15 + shadow_filter=on + base=0.12)
+      # dropped the raccoon entirely (0 alerts vs 8 with these settings).
+      # Running loose in prod for a few hours to gather ground-truth on
+      # what wind-shadow FPs actually look like when they cross the
+      # funnel. Middle-ground (var=10, base=0.06/0.08, shadow_filter=on)
+      # caught 1 alert on the raccoon in the replay if we want to
+      # tighten later without losing recall entirely.
       MOTION_BACKEND: mog2
       MOTION_HISTORY: "200"
-      MOTION_VAR_THRESHOLD: "15"
-      MOTION_DETECT_SHADOWS: "1"
+      MOTION_VAR_THRESHOLD: "8"
+      MOTION_DETECT_SHADOWS: "0"
       MOTION_MIN_AREA: "40"
       KNN_DIST2_THRESHOLD: "400"
-      # Baseline-diff bumped 0.03 → 0.08 (night), 0.05 → 0.12 (day) to
-      # kill shadow flood: post-MOG2 tuning still showed 94% of zone
-      # events crossing the 0.03 baseline gate (25781 of 27304), with
-      # 100% of resulting VLM calls rejected (4757 → 0 hits). Shadow
-      # regions LOOK like the baseline (same still scene, just darker
-      # bulk-shift in luminance), so a stricter mean-diff threshold
-      # correctly rejects them. Trade: subtle raccoon-in-shadow whose
-      # fur brightness ≈ baseline might get dropped — acceptable given
-      # the current all-noise funnel.
-      BASELINE_DIFF_THRESHOLD: "0.08"
-      DAY_BASELINE_DIFF_THRESHOLD: "0.12"
+      # Reverted to loose thresholds after replay-testing showed the
+      # 0.08/0.12 tune killed the raccoon (diff=0.116 was just under
+      # 0.12). Data-gathering config for a few hours; middle-ground
+      # (0.06/0.08) is the fallback if shadow FPs get untenable.
+      BASELINE_DIFF_THRESHOLD: "0.05"
+      DAY_BASELINE_DIFF_THRESHOLD: "0.05"
       # Yard's 0.95 daytime-rodent gate rejects nearly all overhead rat
       # detections (grainy IR + small target = 0.4-0.6 conf typical).
       # Rooftop's baseline auto-picker also misclassifies IR-lit night as
