@@ -62,6 +62,11 @@ services:
       BASELINE_PATH: data/baseline.jpg
       # Yard is optimized for rodent detection — small bbox floor.
       MIN_MOTION_BBOX_PX: "22"
+      # VLM per-track throttle: 3s between VLM calls for the same
+      # track_id. Bumped from default 2s to cut spam on high-motion
+      # scenes while still catching quick-passing rats (typical rat
+      # transit ≥ 5s, so one VLM call within that window still fires).
+      VLM_INTERVAL_S: "3"
       # Yard's side-angle view has stable non-foliage background — MOG2
       # defaults (variance-based) work well; conservative threshold keeps
       # shadow-jitter FPs down.
@@ -141,6 +146,10 @@ services:
       # losing the wildlife targets we actually care about at overhead.
       # Ground rats will get missed by rooftop — that's yard's job anyway.
       MIN_MOTION_BBOX_PX: "30"
+      # VLM per-track throttle 3s (from 2s default). Rooftop generates
+      # more shadow/wind ghosts than yard, so the extra headroom matters
+      # more here.
+      VLM_INTERVAL_S: "3"
       # Rooftop was on KNN because MOG2's variance model absorbed slow
       # raccoons crossing wind-blown brush. Retesting MOG2 now that the
       # persistence gate + baseline-diff pre-filter catch downstream
