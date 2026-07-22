@@ -9,8 +9,9 @@ interface BulkLabelBarProps {
 }
 
 const CORRECT_SPECIES = [
-  "real_rat",
-  "real_mouse",
+  // Rodent species merged — mouse vs rat is usually indistinguishable at
+  // IR viewing distance. See LabelPicker.tsx for rationale.
+  "real_rodent",
   "real_raccoon",
   "real_opossum",
   "real_cat",

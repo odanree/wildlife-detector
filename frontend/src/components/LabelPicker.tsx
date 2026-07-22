@@ -31,8 +31,11 @@ interface LabelPickerProps {
  * that separates "labeled" from "unlabeled" rows in the table view.
  */
 const CORRECT_SPECIES = [
-  "real_rat",
-  "real_mouse",
+  // Rodent species merged — mouse vs rat is usually indistinguishable at
+  // IR viewing distance for the yard cams, and for a binary rodent-vs-FP
+  // classifier the finer split is noise. Bring separate species back
+  // later if we ever want to distinguish (e.g. eradication reporting).
+  "real_rodent",
   "real_raccoon",
   "real_opossum",
   "real_cat",
