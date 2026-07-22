@@ -719,6 +719,19 @@ def _description_is_hedged(text: str) -> str | None:
 
 
 _DAYTIME_RODENT_MIN_CONF = float(os.getenv("DAYTIME_RODENT_MIN_CONF", "0.95"))
+# Insect-appearance override tokens — the VLM claimed rodent but the
+# description reveals bright/pale/winged morphology. In night IR, real
+# mice are DARK (fur absorbs IR); a light-colored or wing-shaped shape
+# is a moth catching the IR emitter. Small VLMs are prone to rodent-
+# label bias for "small moving thing on ground" even when their own
+# description gives the game away. Trust the description over the label.
+# Same post-processor pattern as _EYESHINE_TOKENS + daytime.
+_INSECT_APPEARANCE_TOKENS = [
+    "light-colored", "light colored", "pale", "whitish", "white body",
+    "bright body", "brightly colored", "off-white",
+    "wing", "wings", "wing-shape", "wing-shaped", "wing-blur",
+    "fluttering", "hovering", "moth", "insect", "wasp",
+]
 # Tokens that imply IR-eyeshine evidence — physically impossible during
 # daytime, when no IR emitter is active. Any of these in the description
 # during a daytime detection means the VLM hallucinated.
@@ -781,6 +794,26 @@ def _normalize(data: dict, is_daytime: bool | None = None) -> dict:
             detected = False
             conf_f = min(conf_f, 0.30)
             description = f"[hedge-word rejected: '{hedge}'] {description}"
+
+    # Rodent-to-insect override (nighttime only) — VLM claimed rat/mouse but
+    # its own description reveals bright/pale/winged morphology that only
+    # makes sense for an insect catching the IR emitter. Flip to species=
+    # 'insect' (non-alertable → no alert row, but funnel counter ticks up).
+    # Daytime skipped because "light-colored" is ambiguous for real mice
+    # (tan/light-brown fur is normal in visible light).
+    if detected and is_rodent and is_daytime is False:
+        lo = description.lower()
+        for tok in _INSECT_APPEARANCE_TOKENS:
+            if tok in lo:
+                logger.info(
+                    "VLM rodent-to-insect override (night): '%s' in description → species='insect'",
+                    tok,
+                )
+                species = "insect"
+                is_rodent = False
+                detected = False
+                description = f"[rodent-to-insect override on '{tok}'] {description}"
+                break
 
     # Daytime rodent skepticism rail — rats/mice are nocturnal, so daytime
     # calls at moderate confidence are usually FPs on plastic/shadow/etc.
