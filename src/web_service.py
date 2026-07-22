@@ -501,6 +501,72 @@ def create_app(registry: DetectorRegistry) -> Flask:
             return jsonify({"error": "alert not found"}), 404
         return jsonify({"ok": True, "alert_id": alert_id, "verdict": verdict, "species": species})
 
+    @app.post("/api/labels/backfill-from-disk")
+    def api_labels_backfill():
+        """Re-import snapshot JPEGs from disk as historical alert rows so
+        they show up in the labeling UI. Idempotent (INSERT OR IGNORE).
+
+        Body/query params (all optional):
+          from_date  "YYYY-MM-DD" inclusive
+          to_date    "YYYY-MM-DD" inclusive
+          camera     tag inserted rows with this camera_id (default: 'yard')
+          hour_start local hour, inclusive  (e.g. 22 for 10 PM)
+          hour_end   local hour, exclusive  (e.g. 5 for 5 AM)
+                     Wrap-around supported: hour_start=22 + hour_end=5 =
+                     "10 PM through 5 AM" the nocturnal window rodents
+                     actually move in.
+
+        Returns {inserted, from_date, to_date, hour_start, hour_end}."""
+        # Accept params from either JSON body or query string — the endpoint
+        # is easy to hit from curl or from a future UI button.
+        payload = request.get_json(silent=True) or {}
+        def _pick(key, default=None, cast=None):
+            v = payload.get(key)
+            if v is None:
+                v = request.args.get(key)
+            if v is None or v == "":
+                return default
+            if cast:
+                try:
+                    return cast(v)
+                except (TypeError, ValueError):
+                    return default
+            return v
+        from_date  = _pick("from_date")
+        to_date    = _pick("to_date")
+        camera     = _pick("camera")
+        hour_start = _pick("hour_start", cast=int)
+        hour_end   = _pick("hour_end", cast=int)
+        # Prefer preview.py's initialized _snapshot_dir; fall back to the
+        # SNAPSHOT_DIR env used elsewhere in this service. The web
+        # container's preview.init flow doesn't always run before HTTP
+        # traffic hits this endpoint.
+        from src.web.preview import _alerts, _snapshot_dir
+        from pathlib import Path
+        snap_dir = _snapshot_dir if _snapshot_dir is not None else _SNAPSHOT_DIR
+        if not snap_dir.exists():
+            return jsonify({"error": f"snapshot dir not found: {snap_dir}"}), 503
+        # AlertLog needs a bound StateDB before it can insert. If preview
+        # setup didn't wire it, do it here so the endpoint works standalone.
+        if _alerts._state is None and _state is not None:
+            _alerts.bind_state(_state)
+        n = _alerts.backfill_from_disk(
+            snap_dir,
+            from_date=from_date,
+            to_date=to_date,
+            camera_id=camera,
+            hour_start=hour_start,
+            hour_end=hour_end,
+        )
+        return jsonify({
+            "inserted":   n,
+            "from_date":  from_date,
+            "to_date":    to_date,
+            "camera":     camera,
+            "hour_start": hour_start,
+            "hour_end":   hour_end,
+        })
+
     @app.post("/api/alerts/label-bulk")
     def api_alerts_label_bulk():
         """Apply the same label to N alerts in one call. Body shape:

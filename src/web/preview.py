@@ -558,26 +558,71 @@ class AlertLog:
     def latest(self) -> dict | None:
         return None if self._state is None else self._state.latest_alert()
 
-    def backfill_from_disk(self, snapshot_dir: Path) -> int:
+    def backfill_from_disk(
+        self,
+        snapshot_dir: Path,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        camera_id: str | None = None,
+        hour_start: int | None = None,
+        hour_end: int | None = None,
+    ) -> int:
         """Walk snapshots/ (recursively) and INSERT OR IGNORE each JPEG into
-        alerts as a historical row. Idempotent — running on every startup
-        re-imports any files added while the detector was down without
-        duplicating existing rows (uniqueness enforced on (ts, species, snapshot)).
+        alerts as a historical row. Idempotent — INSERT OR IGNORE keys off
+        (ts, species, snapshot) so re-running is safe.
+
+        Optional filters for the labeling-workflow selective backfill:
+          from_date / to_date: "YYYY-MM-DD" inclusive; matches against the
+                               snapshot directory (snapshots/YYYY-MM-DD/*.jpg).
+          camera_id: 'yard' default (historical filename schema predates
+                     multi-camera). Pass explicitly for rooftop-era files.
+          hour_start / hour_end: local-hour filter, inclusive/exclusive.
+                     Wrap-around supported (e.g. 20 → 6 = 8 PM to 6 AM).
+                     Rodents are nocturnal, so nighttime-only backfill
+                     drops daytime shadow/moth FPs from the labeling pile.
         """
         if self._state is None or not snapshot_dir.exists():
             return 0
         pattern = re.compile(r'^([a-z_]+)_(\d{8})_(\d{6})\.jpg$', re.IGNORECASE)
         rows: list[dict] = []
+        scanned = 0
+
+        def hour_in_range(hour: int) -> bool:
+            if hour_start is None and hour_end is None:
+                return True
+            hs = hour_start if hour_start is not None else 0
+            he = hour_end if hour_end is not None else 24
+            if hs < he:
+                return hs <= hour < he
+            # Wrap-around case (e.g. 20 → 6): hour ≥ 20 OR hour < 6.
+            return hour >= hs or hour < he
+
         for f in snapshot_dir.rglob('*.jpg'):
+            # Date filter is against the parent dir (snapshots/YYYY-MM-DD/…).
+            if from_date or to_date:
+                day_dir = f.parent.name  # expect "YYYY-MM-DD"
+                if from_date and day_dir < from_date:
+                    continue
+                if to_date and day_dir > to_date:
+                    continue
             m = pattern.match(f.name)
             if not m:
                 continue
+            scanned += 1
             event_type, date, hms = m.groups()
             try:
                 ts = datetime.strptime(f"{date}_{hms}", "%Y%m%d_%H%M%S").timestamp()
                 relpath = str(f.relative_to(snapshot_dir)).replace('\\', '/')
             except ValueError:
                 continue
+            # Hour filter — reject files whose HH doesn't fall in the range.
+            if hour_start is not None or hour_end is not None:
+                try:
+                    file_hour = int(hms[:2])
+                except (IndexError, ValueError):
+                    continue
+                if not hour_in_range(file_hour):
+                    continue
             rows.append({
                 "ts":          ts,
                 "species":     event_type,     # e.g. "rodent" — no species detail available
@@ -588,10 +633,11 @@ class AlertLog:
                 "yolo_conf":   None,
                 "is_rodent":   1 if event_type == "rodent" else 0,
                 "historical":  1,
+                "camera_id":   camera_id or "yard",
             })
         inserted = self._state.append_alerts_bulk(rows)
-        logger.info("AlertLog: backfill scanned %d JPEGs, %d new rows inserted from %s",
-                    len(rows), inserted, snapshot_dir)
+        logger.info("AlertLog: backfill scanned %d JPEGs, %d new rows inserted from %s (from=%s to=%s cam=%s hours=%s-%s)",
+                    scanned, inserted, snapshot_dir, from_date, to_date, camera_id, hour_start, hour_end)
         return inserted
 
 
