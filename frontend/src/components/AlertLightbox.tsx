@@ -9,6 +9,7 @@ import {
 import type { AlertRow } from "../api/alerts";
 import { fmtTs } from "../util/time";
 import styles from "./AlertLightbox.module.css";
+import { ReplayButton } from "./ReplayButton";
 
 const RODENT_SPECIES = new Set(["rat", "mouse"]);
 const ZOOM_MIN = 1;
@@ -224,10 +225,13 @@ export function AlertLightbox({ items, openId, setOpenId }: AlertLightboxProps) 
           />
         </div>
         <div className={styles.meta}>
-          <div>
-            <span className={speciesCls}>{current.species || "?"}</span>{" "}
-            {current.camera_id && <span className={styles.badgeCam}>{current.camera_id}</span>} ·{" "}
-            {fmtTs(current.ts)} · conf {confPct} · track #{current.track_id ?? "—"}
+          <div className={styles.metaRow}>
+            <span>
+              <span className={speciesCls}>{current.species || "?"}</span>{" "}
+              {current.camera_id && <span className={styles.badgeCam}>{current.camera_id}</span>} ·{" "}
+              {fmtTs(current.ts)} · conf {confPct} · track #{current.track_id ?? "—"}
+            </span>
+            <ReplayButton alertId={current.id} size="md" />
           </div>
           <div className={styles.desc}>{current.description ?? ""}</div>
         </div>

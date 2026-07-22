@@ -1,0 +1,21 @@
+.btn {
+  background: var(--bg-elev, #1c1c1e);
+  border: 1px solid var(--border-dim, #333);
+  color: var(--text-hi, #ddd);
+  padding: var(--sp-1, 4px) var(--sp-2, 8px);
+  border-radius: var(--r-sm, 4px);
+  cursor: pointer;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+
+.btn:hover {
+  background: var(--bg-elev-hi, #2a2a2c);
+  border-color: var(--accent-blue, #4a6fa8);
+}
+
+/* md variant for the lightbox: larger tap target next to enlarged metadata */
+.md {
+  padding: var(--sp-2, 8px) var(--sp-3, 12px);
+  font-size: 13px;
+}

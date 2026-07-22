@@ -54,6 +54,17 @@
   max-width: 900px;
 }
 
+/* Flex row so the Replay button sits inline with the metadata text and
+   doesn't push the description into a two-column layout. Wrap allows
+   long species/desc lines to break gracefully on narrow viewports. */
+.metaRow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3, 12px);
+  flex-wrap: wrap;
+}
+
 .species {
   font-weight: 600;
 }
