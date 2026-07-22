@@ -67,6 +67,12 @@ services:
       # scenes while still catching quick-passing rats (typical rat
       # transit ≥ 5s, so one VLM call within that window still fires).
       VLM_INTERVAL_S: "3"
+      # Insect brightness pre-filter — bbox mean grayscale above this
+      # threshold classified as insect (moth wings reflect IR/light),
+      # skip VLM entirely. 110 catches moths on darker backgrounds where
+      # 130 (code default) let them through. Bump higher if legit
+      # bright-lit rodents get flagged.
+      NIGHT_INSECT_BRIGHTNESS_MIN: "110"
       # Yard's side-angle view has stable non-foliage background — MOG2
       # defaults (variance-based) work well; conservative threshold keeps
       # shadow-jitter FPs down.
@@ -150,6 +156,12 @@ services:
       # more shadow/wind ghosts than yard, so the extra headroom matters
       # more here.
       VLM_INTERVAL_S: "3"
+      # Insect brightness pre-filter — bbox mean grayscale above this
+      # threshold classified as insect (moth wings reflect IR/light),
+      # skip VLM. 110 catches moths on darker backgrounds where 130
+      # (code default) let them through. Bump higher if legit bright-lit
+      # rodents get flagged.
+      NIGHT_INSECT_BRIGHTNESS_MIN: "110"
       # Rooftop was on KNN because MOG2's variance model absorbed slow
       # raccoons crossing wind-blown brush. Retesting MOG2 now that the
       # persistence gate + baseline-diff pre-filter catch downstream
