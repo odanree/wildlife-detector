@@ -468,6 +468,63 @@ def create_app(registry: DetectorRegistry) -> Flask:
             counts[cam] = _state.total_alerts(camera_id=cam)
         return jsonify(counts)
 
+    @app.post("/api/alerts/<int:alert_id>/label")
+    def api_alert_label(alert_id: int):
+        """Apply / clear a human label on an alert row.
+        Body: {"verdict": "correct" | "incorrect" | "unclear" | null,
+               "species": "real_mouse" | "FP:insect" | ..., "notes": "..."}
+        verdict=null clears the label (undo)."""
+        payload = request.get_json(silent=True) or {}
+        verdict = payload.get("verdict")
+        if verdict not in (None, "correct", "incorrect", "unclear"):
+            return jsonify({"error": "verdict must be one of: correct, incorrect, unclear, or null"}), 400
+        species = payload.get("species") or None
+        notes = payload.get("notes") or None
+        if not _state:
+            return jsonify({"error": "state db unavailable"}), 503
+        ok = _state.set_label(alert_id, verdict, species, notes)
+        if not ok:
+            return jsonify({"error": "alert not found"}), 404
+        return jsonify({"ok": True, "alert_id": alert_id, "verdict": verdict, "species": species})
+
+    @app.post("/api/alerts/label-bulk")
+    def api_alerts_label_bulk():
+        """Apply the same label to N alerts in one call. Body shape:
+        {"alert_ids": [1,2,3,...], "verdict": "correct"|"incorrect"|"unclear"|null,
+         "species": "real_mouse"|"FP:insect"|null, "notes": null}
+        Returns {updated: N}. Used by the mass-tag select-all UI."""
+        payload = request.get_json(silent=True) or {}
+        ids = payload.get("alert_ids") or []
+        if not isinstance(ids, list) or not all(isinstance(x, int) for x in ids):
+            return jsonify({"error": "alert_ids must be a list of integers"}), 400
+        if len(ids) > 500:
+            return jsonify({"error": "batch size capped at 500"}), 400
+        verdict = payload.get("verdict")
+        if verdict not in (None, "correct", "incorrect", "unclear"):
+            return jsonify({"error": "verdict must be one of: correct, incorrect, unclear, or null"}), 400
+        species = payload.get("species") or None
+        notes = payload.get("notes") or None
+        if not _state:
+            return jsonify({"error": "state db unavailable"}), 503
+        n = _state.set_labels_bulk(ids, verdict, species, notes)
+        return jsonify({"updated": n, "verdict": verdict, "species": species})
+
+    @app.get("/api/alerts/unlabeled")
+    def api_alerts_unlabeled():
+        """Return the newest N unlabeled alerts for the batch labeling page.
+        Query params: limit (default 50, max 200), camera (optional filter)."""
+        try:
+            limit = min(200, max(1, int(request.args.get("limit", "50"))))
+        except ValueError:
+            limit = 50
+        camera = (request.args.get("camera") or "").strip() or None
+        if not _state:
+            return jsonify({"items": [], "counts": {}})
+        return jsonify({
+            "items":  _state.list_unlabeled(limit=limit, camera_id=camera),
+            "counts": _state.label_counts(),
+        })
+
     @app.get("/api/alerts/<int:alert_id>/playback-url")
     def api_alert_playback(alert_id: int):
         """Return an RTSP NVR playback URL for the alert's timestamp so the

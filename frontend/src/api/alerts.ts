@@ -6,6 +6,8 @@
  * schema v1.
  */
 
+export type LabelVerdict = "correct" | "incorrect" | "unclear" | null;
+
 export interface AlertRow {
   id: number;
   ts: number;
@@ -19,6 +21,49 @@ export interface AlertRow {
   snapshot?: string | null;
   track_id?: number | null;
   yolo_conf?: number | null;
+  // Human-in-the-loop label fields — supervised training data.
+  // label_verdict null = unlabeled; otherwise 'correct' | 'incorrect' | 'unclear'.
+  // label_species is the fine-grained tag (real_mouse, FP:insect, ...) applied
+  // via the species-picker popover — quick-verdict rows leave it null.
+  label_verdict?: LabelVerdict;
+  label_species?: string | null;
+  label_notes?: string | null;
+  label_ts?: number | null;
+}
+
+export async function setAlertLabel(
+  alertId: number,
+  verdict: LabelVerdict,
+  species?: string | null,
+  notes?: string | null,
+): Promise<void> {
+  const r = await fetch(`/api/alerts/${alertId}/label`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ verdict, species: species ?? null, notes: notes ?? null }),
+  });
+  if (!r.ok) throw new Error(`/api/alerts/${alertId}/label ${r.status}`);
+}
+
+export async function setAlertLabelsBulk(
+  alertIds: number[],
+  verdict: LabelVerdict,
+  species?: string | null,
+  notes?: string | null,
+): Promise<number> {
+  const r = await fetch("/api/alerts/label-bulk", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      alert_ids: alertIds,
+      verdict,
+      species: species ?? null,
+      notes: notes ?? null,
+    }),
+  });
+  if (!r.ok) throw new Error(`/api/alerts/label-bulk ${r.status}`);
+  const j = (await r.json()) as { updated: number };
+  return j.updated;
 }
 
 export interface AlertsResponse {
