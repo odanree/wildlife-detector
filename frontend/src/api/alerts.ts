@@ -71,10 +71,20 @@ export interface AlertsResponse {
   items: AlertRow[];
 }
 
+export type AlertsScope = "historical" | "live" | "all";
+export type AlertsLabelFilter = "unlabeled" | "labeled" | "all";
+
 export interface AlertsQuery {
   limit?: number;
   species?: string;
   camera?: string;
+  /** 'historical' → only backfilled/pre-tuning rows (labeling workflow default),
+   *  'live' → only fresh VLM-fired rows, 'all' → both. */
+  scope?: AlertsScope;
+  /** 'unlabeled' → hide rows already voted on (sifting flow),
+   *  'labeled'   → only show rows you've labeled,
+   *  'all'       → both. */
+  label_filter?: AlertsLabelFilter;
 }
 
 export async function fetchAlerts(
@@ -85,6 +95,8 @@ export async function fetchAlerts(
   params.set("limit", String(query.limit ?? 200));
   if (query.species) params.set("species", query.species);
   if (query.camera) params.set("camera", query.camera);
+  if (query.scope) params.set("scope", query.scope);
+  if (query.label_filter) params.set("label_filter", query.label_filter);
   const r = await fetch(`/api/alerts?${params.toString()}`, { signal });
   if (!r.ok) throw new Error(`/api/alerts ${r.status}`);
   return (await r.json()) as AlertsResponse;

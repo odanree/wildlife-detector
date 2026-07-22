@@ -212,10 +212,19 @@ class StateDB:
         species: str | None = None,
         since_ts: float | None = None,
         camera_id: str | None = None,
+        scope: str | None = None,
+        label_filter: str | None = None,
     ) -> list[dict]:
         """Return alerts, newest first. Filters push into SQL, so page size
         doesn't blow up memory. camera_id=None returns rows from ALL cameras
-        (unified view); pass a specific id for per-camera pages."""
+        (unified view); pass a specific id for per-camera pages.
+
+        scope: 'historical' | 'live' | None (all) — pile of interest.
+        label_filter: 'unlabeled' | 'labeled' | None (all) — for the
+        sifting workflow: 'unlabeled' hides rows already voted on so
+        operator can walk the backlog without re-reviewing their own
+        work. Composes with scope: scope='historical' + label_filter=
+        'unlabeled' = "the un-voted piece of the old pile"."""
         query = "SELECT * FROM alerts"
         clauses: list[str] = []
         params: list = []
@@ -228,6 +237,14 @@ class StateDB:
         if camera_id:
             clauses.append("camera_id = ?")
             params.append(camera_id)
+        if scope == "historical":
+            clauses.append("historical = 1")
+        elif scope == "live":
+            clauses.append("historical = 0")
+        if label_filter == "unlabeled":
+            clauses.append("label_ts IS NULL")
+        elif label_filter == "labeled":
+            clauses.append("label_ts IS NOT NULL")
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY ts DESC LIMIT ?"
@@ -301,13 +318,26 @@ class StateDB:
             )
         return cur.rowcount
 
-    def list_unlabeled(self, limit: int = 50, camera_id: str | None = None) -> list[dict]:
-        """Return unlabeled alerts (label_ts IS NULL) newest first — used
-        by the batch labeling page to walk a backlog. Historical (backfill)
-        rows are excluded — they lack the description/confidence context
-        needed to make an informed judgment."""
-        query = ("SELECT * FROM alerts WHERE label_ts IS NULL AND historical = 0")
+    def list_unlabeled(
+        self,
+        limit: int = 50,
+        camera_id: str | None = None,
+        scope: str = "historical",
+    ) -> list[dict]:
+        """Return unlabeled alerts (label_ts IS NULL) — the batch labeling
+        page walks this list. scope:
+          'historical' (default) → only backfilled/pre-tuning rows
+                                   (historical=1). Newest first inside
+                                   the historical pile.
+          'live'                 → only fresh VLM-fired rows (historical=0).
+          'all'                  → both, newest first."""
+        query = "SELECT * FROM alerts WHERE label_ts IS NULL"
         params: list = []
+        if scope == "historical":
+            query += " AND historical = 1"
+        elif scope == "live":
+            query += " AND historical = 0"
+        # scope='all' adds no filter
         if camera_id:
             query += " AND camera_id = ?"
             params.append(camera_id)
@@ -316,12 +346,14 @@ class StateDB:
         cur = self._conn.execute(query, params)
         return [self._row_to_dict(row) for row in cur.fetchall()]
 
-    def label_counts(self) -> dict:
-        """Per-verdict counts + total unlabeled — surfaced on the batch
-        labeling page header so operator sees progress."""
+    def label_counts(self, include_historical: bool = True) -> dict:
+        """Per-verdict counts + total unlabeled across ALL rows (or
+        live-only when include_historical=False). Historical rows count
+        toward training data now that we allow labeling them."""
+        where = "" if include_historical else " WHERE historical = 0"
         rows = self._conn.execute(
-            "SELECT COALESCE(label_verdict, 'unlabeled') AS v, COUNT(*) AS n "
-            "FROM alerts WHERE historical = 0 GROUP BY v"
+            f"SELECT COALESCE(label_verdict, 'unlabeled') AS v, COUNT(*) AS n "
+            f"FROM alerts{where} GROUP BY v"
         ).fetchall()
         return {r["v"]: r["n"] for r in rows}
 
