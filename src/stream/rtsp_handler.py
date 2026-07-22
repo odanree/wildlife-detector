@@ -31,7 +31,14 @@ def build_nvr_playback_url(
 
     speed: playback multiplier (1, 2, 4, 8) — appended as &speedpara=N.
     """
-    from src.stream.amcrest_api import find_recording_rtsp
+    # Optional Dahua RPC2 index lookup — if the helper module isn't
+    # shipped (public builds omit it), fall through to the time-based
+    # URL directly. Time-based works on stock Amcrest/Dahua firmware.
+    try:
+        from src.stream.amcrest_api import find_recording_rtsp  # type: ignore[import-not-found]
+    except ImportError:
+        def find_recording_rtsp(*_a, **_kw):  # type: ignore[no-redef]
+            return None
 
     host = os.getenv("AMCREST_HOST") or (re.search(r'@([^:/]+)', base_rtsp_url, re.I) and re.search(r'@([^:/]+)', base_rtsp_url).group(1)) or ""
     port = os.getenv("AMCREST_PORT", "554")
