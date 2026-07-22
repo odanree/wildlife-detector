@@ -1,0 +1,62 @@
+.header {
+  display: flex;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: 13px;
+  border-bottom: 1px solid var(--border-2);
+  background: var(--bg-3);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.title {
+  color: var(--text-hi);
+  text-decoration: none;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.nav {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+}
+
+.linkBtn {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 4px 10px;
+  border-radius: var(--r-md);
+  font-size: 12px;
+  text-decoration: none;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  position: relative;
+}
+.linkBtn:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+}
+.linkBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Active-route indicator — blue border + slight tint so operators
+   know which page they're on without reading the URL. */
+.linkBtnActive {
+  color: var(--accent-blue);
+  border-color: var(--accent-blue);
+  background: rgba(107, 221, 255, 0.08);
+}
+
+/* Right-side slot: page-specific controls (camera dropdown, filters,
+   close buttons). Pushed to the end by margin-left:auto so the
+   layout remains legible even with wrapped links. */
+.right {
+  margin-left: auto;
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  flex-wrap: wrap;
+}

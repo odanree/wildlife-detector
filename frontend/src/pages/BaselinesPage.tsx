@@ -1,5 +1,5 @@
-import { Link } from "react-router-dom";
 import { type BaselineMeta, type BaselineSlot, baselineImageUrl } from "../api/baseline";
+import { GlobalHeader } from "../components/GlobalHeader";
 import { useBaselineMeta } from "../hooks/useBaselineMeta";
 import { useCameras } from "../hooks/useCameras";
 import { fmtRelative } from "../util/time";
@@ -17,17 +17,13 @@ export function BaselinesPage() {
 
   return (
     <div className={styles.wrap}>
-      <header className={styles.header}>
-        <Link to="/" className={styles.title}>
-          wildlife-detector — baselines
-        </Link>
-        <span className={styles.blurb}>
-          {cameras.length} camera{cameras.length === 1 ? "" : "s"} · day + night per camera
-        </span>
-        <Link to="/" className={styles.closeBtn} aria-label="Back to live preview">
-          ×
-        </Link>
-      </header>
+      <GlobalHeader
+        right={
+          <span className={styles.blurb}>
+            {cameras.length} camera{cameras.length === 1 ? "" : "s"} · day + night per camera
+          </span>
+        }
+      />
       <div className={styles.grid}>
         {cameras.flatMap((camera) => [
           <BaselineCell key={`${camera}:day`} camera={camera} mode="day" />,
