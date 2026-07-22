@@ -68,13 +68,55 @@ export function AlertsPage() {
   }, [camera]);
 
   // Being on this page IS the "seen" event — stamp total + highest-id
-  // seen for the active camera filter. Also adopts the initial
-  // highlight-baseline on cold-start (never-visited case).
+  // seen. Two paths:
+  //
+  // 1. Filtered view (?camera=X): stamp X's watermark. Simple case,
+  //    same behavior as before.
+  // 2. Unfiltered view (all cameras): stamp EVERY known camera's
+  //    watermark so the dual-pane badge on the preview page clears
+  //    after this visit. Per-camera totals come from /api/alerts/counts
+  //    (the same batch endpoint the badge uses); per-camera maxIds
+  //    are computed from the current items view. Also stamps the
+  //    "all"-scope watermark for any cross-camera badge consumers.
   useEffect(() => {
     if (!data) return;
-    const maxId = items.reduce((m, a) => Math.max(m, a.id), 0);
-    if (initialSeenId === null) setInitialSeenId(maxId);
-    markAlertsSeen(camera || null, data.total, maxId);
+    const overallMaxId = items.reduce((m, a) => Math.max(m, a.id), 0);
+    if (initialSeenId === null) setInitialSeenId(overallMaxId);
+
+    if (camera) {
+      // Filtered view — stamp just this camera.
+      markAlertsSeen(camera, data.total, overallMaxId);
+      return;
+    }
+
+    // Unfiltered — mark every camera as seen based on per-camera totals.
+    // Also stamp the "all" scope so a cross-camera header badge zeros.
+    markAlertsSeen(null, data.total, overallMaxId);
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch("/api/alerts/counts");
+        if (!r.ok) return;
+        const counts = (await r.json()) as Record<string, number>;
+        if (cancelled) return;
+        // Per-camera max-id from what's in the current items list.
+        const perCamMaxId: Record<string, number> = {};
+        for (const a of items) {
+          if (!a.camera_id) continue;
+          const prev = perCamMaxId[a.camera_id] ?? 0;
+          if (a.id > prev) perCamMaxId[a.camera_id] = a.id;
+        }
+        for (const [cam, total] of Object.entries(counts)) {
+          markAlertsSeen(cam, total, perCamMaxId[cam]);
+        }
+      } catch {
+        // Silent — filtered-view watermark already stamped above,
+        // dual-pane badge just won't clear this cycle.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [data, items, initialSeenId, camera]);
 
   return (
