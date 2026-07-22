@@ -221,6 +221,15 @@ class StateDB:
         row = cur.fetchone()
         return self._row_to_dict(row) if row else None
 
+    def get_alert(self, alert_id: int) -> dict | None:
+        """Fetch a single alert by id. Used by the NVR playback endpoint
+        to look up ts + camera_id from an alert row."""
+        cur = self._conn.execute(
+            "SELECT * FROM alerts WHERE id = ? LIMIT 1", (int(alert_id),)
+        )
+        row = cur.fetchone()
+        return self._row_to_dict(row) if row else None
+
     def total_alerts(self, camera_id: str | None = None) -> int:
         """Total alert count. Optional camera_id filter so the /api/alerts
         response's `total` field matches the filter applied to `items` —

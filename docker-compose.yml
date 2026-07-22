@@ -261,6 +261,13 @@ services:
       PREVIEW_PORT: 8100
       STATE_DB_PATH: /app/data/state.db
       SNAPSHOT_DIR: /app/snapshots
+      # NVR playback channel per camera — used by /api/alerts/<id>/playback-url
+      # to build the rtsp:// URL that opens the alert's timestamp in VLC/mpv.
+      # Set to the channel each camera records to on the Amcrest NVR
+      # (192.168.1.148 per .env). Without these, the endpoint returns a
+      # 'note' warning and defaults to channel 1 (likely wrong).
+      NVR_CHANNEL_YARD: "5"
+      NVR_CHANNEL_ROOFTOP: "6"
     volumes:
       - ./data:/app/data
       - ./snapshots:/app/snapshots:ro
