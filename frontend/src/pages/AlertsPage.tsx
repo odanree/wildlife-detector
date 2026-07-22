@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import type { AlertRow } from "../api/alerts";
+import type { AlertRow, LabelVerdict } from "../api/alerts";
 import { AlertLightbox } from "../components/AlertLightbox";
+import { BulkLabelBar } from "../components/BulkLabelBar";
 import { GlobalHeader } from "../components/GlobalHeader";
+import { LabelPicker } from "../components/LabelPicker";
 import { ReplayButton } from "../components/ReplayButton";
 import { useAlerts } from "../hooks/useAlerts";
 import { useCameras } from "../hooks/useCameras";
@@ -37,6 +39,35 @@ export function AlertsPage() {
   const [grouped, setGrouped] = useState<boolean>(true);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
   const [openId, setOpenId] = useState<number | null>(null);
+
+  // Bulk-selection state — checkbox column + select-all in header lets
+  // operator mass-label N alerts with one Apply click (backend does the
+  // update in a single IN(?,?,?) transaction).
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
+  const clearSelection = () => setSelectedIds(new Set());
+  const toggleOne = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  // Local overlay of labels — writes go to the server via LabelPicker /
+  // BulkLabelBar, but the useAlerts polling refresh is on a 5s tick, so
+  // we mirror the last write locally to give an instant visual response.
+  // Merged onto the row via effectiveLabel() when rendering.
+  const [labelOverlay, setLabelOverlay] = useState<
+    Map<number, { verdict: LabelVerdict; species: string | null }>
+  >(() => new Map());
+  const applyLabelOverlay = (ids: number[], verdict: LabelVerdict, species: string | null) => {
+    setLabelOverlay((prev) => {
+      const next = new Map(prev);
+      for (const id of ids) next.set(id, { verdict, species });
+      return next;
+    });
+  };
 
   const camerasResp = useCameras();
   const { data, error, loading } = useAlerts(
@@ -204,24 +235,56 @@ export function AlertsPage() {
           prior session, they'll show up here.
         </div>
       ) : (
-        <table className={styles.table}>
-          <thead className={styles.thead}>
-            <tr>
-              <th className={styles.thSnap}>Snapshot</th>
-              <th className={styles.th}>When</th>
-              <th className={styles.th}>Species</th>
-              <th className={styles.th}>Conf</th>
-              <th className={styles.th}>Description</th>
-              <th className={styles.th}>Track</th>
-              <th className={styles.th}>Replay</th>
-            </tr>
-          </thead>
-          <tbody>
-            {groups.flatMap((g) =>
-              renderGroup(g, camera === "", setOpenId, initialSeenId ?? Number.POSITIVE_INFINITY),
-            )}
-          </tbody>
-        </table>
+        <>
+          {selectedIds.size > 0 && (
+            <BulkLabelBar
+              selectedIds={Array.from(selectedIds)}
+              onCleared={clearSelection}
+              onApplied={(verdict, species) =>
+                applyLabelOverlay(Array.from(selectedIds), verdict, species)
+              }
+            />
+          )}
+          <table className={styles.table}>
+            <thead className={styles.thead}>
+              <tr>
+                <th className={styles.th}>
+                  <input
+                    type="checkbox"
+                    aria-label="select all rows in view"
+                    checked={items.length > 0 && items.every((a) => selectedIds.has(a.id))}
+                    onChange={(e) => {
+                      if (e.target.checked) setSelectedIds(new Set(items.map((a) => a.id)));
+                      else clearSelection();
+                    }}
+                  />
+                </th>
+                <th className={styles.thSnap}>Snapshot</th>
+                <th className={styles.th}>When</th>
+                <th className={styles.th}>Label</th>
+                <th className={styles.th}>Species</th>
+                <th className={styles.th}>Conf</th>
+                <th className={styles.th}>Description</th>
+                <th className={styles.th}>Track</th>
+                <th className={styles.th}>Replay</th>
+              </tr>
+            </thead>
+            <tbody>
+              {groups.flatMap((g) =>
+                renderGroup(
+                  g,
+                  camera === "",
+                  setOpenId,
+                  initialSeenId ?? Number.POSITIVE_INFINITY,
+                  selectedIds,
+                  toggleOne,
+                  labelOverlay,
+                  (id, verdict, species) => applyLabelOverlay([id], verdict, species),
+                ),
+              )}
+            </tbody>
+          </table>
+        </>
       )}
       <footer className={styles.footer}>
         Ring buffer capacity 500 · rolls oldest first · JPEGs on disk backfilled at startup (marked{" "}
@@ -238,6 +301,10 @@ function renderGroup(
   showCameraBadge: boolean,
   onOpen: (id: number) => void,
   unreadThreshold: number,
+  selectedIds: Set<number>,
+  toggleOne: (id: number) => void,
+  labelOverlay: Map<number, { verdict: LabelVerdict; species: string | null }>,
+  onLabeled: (id: number, verdict: LabelVerdict, species: string | null) => void,
 ): JSX.Element[] {
   return [
     <Row
@@ -247,6 +314,10 @@ function renderGroup(
       groupSize={g.children.length + 1}
       onOpen={onOpen}
       isUnread={g.head.id > unreadThreshold}
+      isSelected={selectedIds.has(g.head.id)}
+      onToggleSelect={() => toggleOne(g.head.id)}
+      labelOverride={labelOverlay.get(g.head.id)}
+      onLabeled={(v, s) => onLabeled(g.head.id, v, s)}
     />,
   ];
 }
@@ -257,12 +328,20 @@ function Row({
   groupSize,
   onOpen,
   isUnread,
+  isSelected,
+  onToggleSelect,
+  labelOverride,
+  onLabeled,
 }: {
   alert: AlertRow;
   showCameraBadge: boolean;
   groupSize: number;
   onOpen: (id: number) => void;
   isUnread: boolean;
+  isSelected: boolean;
+  onToggleSelect: () => void;
+  labelOverride?: { verdict: LabelVerdict; species: string | null };
+  onLabeled: (verdict: LabelVerdict, species: string | null) => void;
 }): JSX.Element {
   const isRodent = RODENT_SPECIES.has(alert.species);
   const isHist = alert.historical;
@@ -272,8 +351,24 @@ function Row({
       ? `${styles.species} ${styles.speciesRodent}`
       : `${styles.species} ${styles.speciesOther}`;
   const confPct = alert.confidence != null ? `${Math.round(alert.confidence * 100)}%` : "—";
+  // Prefer local overlay (just-written) over the row's server-side value —
+  // useAlerts polls every 5s, so the overlay covers the gap.
+  const effVerdict: LabelVerdict = labelOverride
+    ? labelOverride.verdict
+    : (alert.label_verdict ?? null);
+  const effSpecies = labelOverride ? labelOverride.species : (alert.label_species ?? null);
   return (
-    <tr className={`${styles.row} ${isUnread ? styles.rowUnread : ""}`}>
+    <tr
+      className={`${styles.row} ${isUnread ? styles.rowUnread : ""} ${isSelected ? styles.rowSelected : ""}`}
+    >
+      <td className={styles.thumbCell}>
+        <input
+          type="checkbox"
+          aria-label={`select alert ${alert.id}`}
+          checked={isSelected}
+          onChange={onToggleSelect}
+        />
+      </td>
       <td className={styles.thumbCell}>
         {alert.snapshot ? (
           <button
@@ -296,6 +391,14 @@ function Row({
       <td className={styles.ts}>
         {fmtTs(alert.ts)}
         <span className={styles.rel}> {fmtRelative(alert.ts)}</span>
+      </td>
+      <td className={styles.track}>
+        <LabelPicker
+          alertId={alert.id}
+          initialVerdict={effVerdict}
+          initialSpecies={effSpecies}
+          onLabeled={onLabeled}
+        />
       </td>
       <td className={speciesCls}>
         {alert.species || "?"}

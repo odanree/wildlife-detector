@@ -121,6 +121,27 @@ class StateDB:
         # Camera-scoped queries need an index once we're multi-camera.
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_camera ON alerts(camera_id)")
 
+        # Human-in-the-loop labeling columns — supervised training data
+        # collection for a downstream binary pre-filter or LoRA fine-tune.
+        # label_verdict: 'correct' | 'incorrect' | 'unclear' | None (unlabeled)
+        # label_species: fine-grained tag ('real_rat', 'real_mouse',
+        #   'FP:insect', 'FP:reflection', 'FP:human', 'FP:noise', ...);
+        #   nullable — quick-verdict rows don't require the picker.
+        # label_notes:   free-form operator context.
+        # label_ts:      when the label was applied (for staleness / audit).
+        cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(alerts)")}
+        for col, ddl in [
+            ("label_verdict", "ALTER TABLE alerts ADD COLUMN label_verdict TEXT"),
+            ("label_species", "ALTER TABLE alerts ADD COLUMN label_species TEXT"),
+            ("label_notes",   "ALTER TABLE alerts ADD COLUMN label_notes TEXT"),
+            ("label_ts",      "ALTER TABLE alerts ADD COLUMN label_ts REAL"),
+        ]:
+            if col not in cols:
+                self._conn.execute(ddl)
+                logger.info("StateDB: added %s column", col)
+        # Index for the "unlabeled alerts" backlog query on the batch page.
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_label_ts ON alerts(label_ts)")
+
     # ── Writes (detector-side only) ─────────────────────────────────────────
 
     def append_alert(
@@ -229,6 +250,80 @@ class StateDB:
         )
         row = cur.fetchone()
         return self._row_to_dict(row) if row else None
+
+    def set_label(
+        self,
+        alert_id: int,
+        verdict: str | None,
+        species: str | None = None,
+        notes: str | None = None,
+    ) -> bool:
+        """Apply a human label to an alert row. Returns True if the row
+        was found and updated. Pass verdict=None to clear all label fields
+        (undo). label_ts is set to now() on any update."""
+        import time as _time
+        if verdict is None:
+            cur = self._conn.execute(
+                "UPDATE alerts SET label_verdict=NULL, label_species=NULL, label_notes=NULL, label_ts=NULL WHERE id=?",
+                (int(alert_id),),
+            )
+        else:
+            cur = self._conn.execute(
+                "UPDATE alerts SET label_verdict=?, label_species=?, label_notes=?, label_ts=? WHERE id=?",
+                (verdict, species, notes, _time.time(), int(alert_id)),
+            )
+        return cur.rowcount > 0
+
+    def set_labels_bulk(
+        self,
+        alert_ids: list[int],
+        verdict: str | None,
+        species: str | None = None,
+        notes: str | None = None,
+    ) -> int:
+        """Apply the same label to N alerts in one transaction. Returns
+        the count actually updated. Used by the mass-tag UI when operator
+        selects a batch of rows and applies one verdict."""
+        import time as _time
+        if not alert_ids:
+            return 0
+        placeholders = ",".join("?" * len(alert_ids))
+        if verdict is None:
+            cur = self._conn.execute(
+                f"UPDATE alerts SET label_verdict=NULL, label_species=NULL, label_notes=NULL, label_ts=NULL WHERE id IN ({placeholders})",
+                [int(x) for x in alert_ids],
+            )
+        else:
+            params = [verdict, species, notes, _time.time()] + [int(x) for x in alert_ids]
+            cur = self._conn.execute(
+                f"UPDATE alerts SET label_verdict=?, label_species=?, label_notes=?, label_ts=? WHERE id IN ({placeholders})",
+                params,
+            )
+        return cur.rowcount
+
+    def list_unlabeled(self, limit: int = 50, camera_id: str | None = None) -> list[dict]:
+        """Return unlabeled alerts (label_ts IS NULL) newest first — used
+        by the batch labeling page to walk a backlog. Historical (backfill)
+        rows are excluded — they lack the description/confidence context
+        needed to make an informed judgment."""
+        query = ("SELECT * FROM alerts WHERE label_ts IS NULL AND historical = 0")
+        params: list = []
+        if camera_id:
+            query += " AND camera_id = ?"
+            params.append(camera_id)
+        query += " ORDER BY ts DESC LIMIT ?"
+        params.append(int(limit))
+        cur = self._conn.execute(query, params)
+        return [self._row_to_dict(row) for row in cur.fetchall()]
+
+    def label_counts(self) -> dict:
+        """Per-verdict counts + total unlabeled — surfaced on the batch
+        labeling page header so operator sees progress."""
+        rows = self._conn.execute(
+            "SELECT COALESCE(label_verdict, 'unlabeled') AS v, COUNT(*) AS n "
+            "FROM alerts WHERE historical = 0 GROUP BY v"
+        ).fetchall()
+        return {r["v"]: r["n"] for r in rows}
 
     def total_alerts(self, camera_id: str | None = None) -> int:
         """Total alert count. Optional camera_id filter so the /api/alerts

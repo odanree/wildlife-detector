@@ -131,6 +131,15 @@
   background: rgba(255, 102, 102, 0.1);
 }
 
+/* Row is checkbox-selected → subtle blue background so operator can see
+   at a glance which rows will be affected by the BulkLabelBar action. */
+.rowSelected {
+  background: rgba(74, 111, 168, 0.15);
+}
+.rowSelected:hover {
+  background: rgba(74, 111, 168, 0.22);
+}
+
 .thumbCell {
   padding: var(--sp-2) var(--sp-3);
   width: 176px;
