@@ -676,17 +676,28 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 # rodent detection. Debounce at the call site, NOT via
                 # notifier's cooldown_seconds — otherwise every frame does
                 # a wasted _save_snapshot before being cooldown-rejected.
+                #
+                # Species tag is deliberately "human_heartbeat" (not
+                # "person") so the snapshot filename, alert row, and bbox
+                # overlay all read as a heuristic-triggered heartbeat, not
+                # a real YOLO/VLM classification of a human individual.
+                # Snapshot lands at snapshots/YYYY-MM-DD/human_heartbeat_*.jpg
+                # with the person bbox drawn + label "human_heartbeat 75%".
                 _now_h = time.time()
                 if _now_h - _last_human_alert_ts >= _HUMAN_ALERT_INTERVAL_S:
                     _p_bbox = _exclusion_bboxes[0]
+                    _human_desc = (
+                        f"[HEURISTIC] Human presence heartbeat — {len(_exclusion_bboxes)} "
+                        f"person bbox(es) in frame; whole-frame rodent exclusion active."
+                    )
                     _human_result = {
                         "wildlife_detected": True,
-                        "species":           "person",
+                        "species":           "human_heartbeat",
                         "is_rodent":         False,
                         "confidence":        0.75,
-                        "description":       f"Human activity heartbeat ({len(_exclusion_bboxes)} person bbox(es) in frame)",
+                        "description":       _human_desc,
                     }
-                    _hp = notifier.send("person", _human_result, frame, _p_bbox, yolo_conf=0.75)
+                    _hp = notifier.send("human_heartbeat", _human_result, frame, _p_bbox, yolo_conf=0.75)
                     _hp_ref = None
                     if _hp:
                         try:
@@ -694,9 +705,9 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         except Exception:
                             _hp_ref = _hp.name
                     _preview_stats.record_alert(
-                        species="person",
+                        species="human_heartbeat",
                         confidence=0.75,
-                        description=_human_result["description"],
+                        description=_human_desc,
                         snapshot=_hp_ref,
                         track_id=None,
                         yolo_conf=0.75,
