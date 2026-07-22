@@ -28,3 +28,6 @@ Thumbs.db
 .coverage
 htmlcov/
 docker-compose.override.yml
+
+# Session-local runtime monitoring artifacts (memory watch loops, etc.)
+*-memwatch.log
