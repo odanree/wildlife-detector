@@ -47,7 +47,21 @@ def build_nvr_playback_url(
     ch_m = re.search(r'channel=(\d+)', base_rtsp_url)
     ch   = str(nvr_channel) if nvr_channel else (ch_m.group(1) if ch_m else '1')
 
-    dt = datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone()
+    # Format the timestamp in the NVR's local timezone. Amcrest/Dahua
+    # /cam/playback expects starttime/endtime in the CAMERA's local
+    # clock, not UTC. Container runs in UTC by default so .astimezone()
+    # with no arg stays UTC — that ships timestamps 7-8h off from
+    # Pacific and the NVR returns no data. NVR_TZ env override defaults
+    # to America/Los_Angeles.
+    _nvr_tz_name = os.getenv("NVR_TZ", "America/Los_Angeles")
+    try:
+        from zoneinfo import ZoneInfo
+        _nvr_tz = ZoneInfo(_nvr_tz_name)
+    except Exception:
+        logger.warning("NVR_TZ='%s' invalid; falling back to UTC. Playback URL timestamps will be wrong if NVR clock isn't UTC.",
+                       _nvr_tz_name)
+        _nvr_tz = timezone.utc
+    dt = datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone(_nvr_tz)
     url = find_recording_rtsp(host, user, pwd, port, int(ch), dt, pre_roll_seconds)
 
     speed_suffix = f"&speedpara={speed}" if speed != 1 else ""
