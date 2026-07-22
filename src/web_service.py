@@ -452,16 +452,19 @@ def create_app(registry: DetectorRegistry) -> Flask:
         scope = (request.args.get("scope") or "").strip().lower() or None
         if scope not in (None, "historical", "live", "all"):
             scope = None
-        # label_filter=unlabeled|labeled|all — sifting flow: 'unlabeled'
-        # hides rows already voted on so operator can walk backlog fast.
+        # label_filter=unlabeled|labeled|correct|incorrect|unclear|all
+        # — the sifting + review flow: 'unlabeled' hides voted rows,
+        # 'correct'/'incorrect'/'unclear' isolates verdicts for reviewing
+        # your positive dataset or auditing FPs.
         lf = (request.args.get("label_filter") or "").strip().lower() or None
-        if lf not in (None, "unlabeled", "labeled", "all"):
+        _lf_valid = {"unlabeled", "labeled", "correct", "incorrect", "unclear"}
+        if lf not in ({None, "all"} | _lf_valid):
             lf = None
         items = _state.list_alerts(
             limit=limit, species=species_filter,
             camera_id=camera_filter,
             scope=scope if scope in ("historical", "live") else None,
-            label_filter=lf if lf in ("unlabeled", "labeled") else None,
+            label_filter=lf if lf in _lf_valid else None,
         )
         return jsonify({
             # Scope total to the same camera filter as items — otherwise
