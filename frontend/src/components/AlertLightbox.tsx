@@ -6,9 +6,10 @@ import {
   useRef,
   useState,
 } from "react";
-import type { AlertRow } from "../api/alerts";
+import type { AlertRow, LabelVerdict } from "../api/alerts";
 import { fmtTs } from "../util/time";
 import styles from "./AlertLightbox.module.css";
+import { LabelPicker } from "./LabelPicker";
 import { ReplayButton } from "./ReplayButton";
 
 const RODENT_SPECIES = new Set(["rat", "mouse"]);
@@ -23,6 +24,14 @@ interface AlertLightboxProps {
   openId: number | null;
   /** Setter — pass null to close, or an alert id to open. */
   setOpenId: (id: number | null) => void;
+  /** Local overlay of just-written labels — mirror of AlertsPage state so
+   *  the LabelPicker in this modal reflects labels applied via the table's
+   *  own picker or the BulkLabelBar between polling ticks. */
+  labelOverlay?: Map<number, { verdict: LabelVerdict; species: string | null }>;
+  /** Callback fired after a label write from within this modal — keeps
+   *  the parent's labelOverlay in sync so navigating back to the table
+   *  shows the label immediately, not after the next 5s poll. */
+  onLabeled?: (id: number, verdict: LabelVerdict, species: string | null) => void;
 }
 
 /**
@@ -41,7 +50,13 @@ interface AlertLightboxProps {
  *    each snapshot is a one-off view).
  *  - **Body scroll lock via cleanup**. Restored on unmount / close.
  */
-export function AlertLightbox({ items, openId, setOpenId }: AlertLightboxProps) {
+export function AlertLightbox({
+  items,
+  openId,
+  setOpenId,
+  labelOverlay,
+  onLabeled,
+}: AlertLightboxProps) {
   const navList = items.filter((a) => a.snapshot);
   const currentIdx = openId == null ? -1 : navList.findIndex((a) => a.id === openId);
   const current = currentIdx >= 0 ? navList[currentIdx] : null;
@@ -232,6 +247,26 @@ export function AlertLightbox({ items, openId, setOpenId }: AlertLightboxProps) 
               {fmtTs(current.ts)} · conf {confPct} · track #{current.track_id ?? "—"}
             </span>
             <ReplayButton alertId={current.id} size="md" />
+          </div>
+          <div className={styles.metaRow}>
+            {(() => {
+              // Prefer overlay (freshly-written) over the row's server-side
+              // label — same pattern as the table view. Keeps the picker in
+              // sync when the same alert was labeled from the table before
+              // being opened, or when the operator toggles labels within the
+              // modal itself.
+              const ov = labelOverlay?.get(current.id);
+              const effVerdict: LabelVerdict = ov ? ov.verdict : (current.label_verdict ?? null);
+              const effSpecies = ov ? ov.species : (current.label_species ?? null);
+              return (
+                <LabelPicker
+                  alertId={current.id}
+                  initialVerdict={effVerdict}
+                  initialSpecies={effSpecies}
+                  onLabeled={(v, s) => onLabeled?.(current.id, v, s)}
+                />
+              );
+            })()}
           </div>
           <div className={styles.desc}>{current.description ?? ""}</div>
         </div>
