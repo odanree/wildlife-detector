@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { GlobalHeader } from "../components/GlobalHeader";
 import { StatusBar } from "../components/StatusBar";
 import { useCameras } from "../hooks/useCameras";
 import styles from "./StatusDashboard.module.css";
@@ -18,15 +18,11 @@ export function StatusDashboard() {
 
   return (
     <div className={styles.wrap}>
-      <header className={styles.header}>
-        <Link to="/" className={styles.title}>
-          wildlife-detector — ops dashboard
-        </Link>
-        <span className={styles.blurb}>Per-camera resources, gate funnel, and VLM cost.</span>
-        <Link to="/" className={styles.closeBtn} aria-label="Back to shell">
-          ×
-        </Link>
-      </header>
+      <GlobalHeader
+        right={
+          <span className={styles.blurb}>Per-camera resources, gate funnel, and VLM cost.</span>
+        }
+      />
       <main className={styles.main}>
         {cameras.length === 0 && (
           <div className={styles.empty}>Waiting for /api/cameras roster…</div>

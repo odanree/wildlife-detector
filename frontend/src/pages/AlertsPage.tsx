@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import type { AlertRow } from "../api/alerts";
 import { AlertLightbox } from "../components/AlertLightbox";
+import { GlobalHeader } from "../components/GlobalHeader";
 import { useAlerts } from "../hooks/useAlerts";
 import { useCameras } from "../hooks/useCameras";
 import { markAlertsSeen, readLastSeenId } from "../hooks/useUnreadAlerts";
@@ -121,83 +122,76 @@ export function AlertsPage() {
 
   return (
     <div className={styles.wrap}>
-      <header className={styles.header}>
-        <Link to="/" className={styles.title}>
-          wildlife-detector — alerts
-        </Link>
-        <span className={styles.stat}>
-          total <b className={styles.b}>{data?.total ?? "–"}</b>
-        </span>
-        <span className={styles.stat}>
-          shown <b className={styles.b}>{items.length}</b>
-        </span>
-        <div className={styles.tools}>
-          <label className={styles.label}>
-            species
-            <select
-              className={styles.select}
-              value={species}
-              onChange={(e) => setSpecies(e.target.value)}
-            >
-              <option value="">all</option>
-              <option value="rat">rat</option>
-              <option value="mouse">mouse</option>
-              <option value="raccoon">raccoon</option>
-              <option value="opossum">opossum</option>
-              <option value="cat">cat</option>
-              <option value="dog">dog</option>
-              <option value="squirrel">squirrel</option>
-              <option value="bird">bird</option>
-              <option value="other">other</option>
-            </select>
-          </label>
-          <label className={styles.label}>
-            camera
-            <select
-              className={styles.select}
-              value={camera}
-              onChange={(e) => {
-                const v = e.target.value;
-                setCamera(v);
-                localStorage.setItem("alertsCameraFilter", v);
-                // Keep URL in sync so a copy-paste of the current URL
-                // reproduces the same filtered view (+ the header badge
-                // logic on other tabs reads the same scope).
-                const nextParams = new URLSearchParams(urlParams);
-                if (v) nextParams.set("camera", v);
-                else nextParams.delete("camera");
-                setUrlParams(nextParams, { replace: true });
-              }}
-            >
-              <option value="">all</option>
-              {(camerasResp.data?.cameras ?? []).map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className={styles.label}>
-            <input
-              type="checkbox"
-              checked={autoRefresh}
-              onChange={(e) => setAutoRefresh(e.target.checked)}
-            />{" "}
-            auto
-          </label>
-          <label className={styles.label}>
-            <input
-              type="checkbox"
-              checked={grouped}
-              onChange={(e) => setGrouped(e.target.checked)}
-            />{" "}
-            group
-          </label>
-          <Link to="/" className={styles.closeBtn} aria-label="Back to live preview">
-            ×
-          </Link>
-        </div>
-      </header>
+      <GlobalHeader
+        right={
+          <>
+            <span className={styles.stat}>
+              total <b className={styles.b}>{data?.total ?? "–"}</b>
+            </span>
+            <span className={styles.stat}>
+              shown <b className={styles.b}>{items.length}</b>
+            </span>
+            <label className={styles.label}>
+              species
+              <select
+                className={styles.select}
+                value={species}
+                onChange={(e) => setSpecies(e.target.value)}
+              >
+                <option value="">all</option>
+                <option value="rat">rat</option>
+                <option value="mouse">mouse</option>
+                <option value="raccoon">raccoon</option>
+                <option value="opossum">opossum</option>
+                <option value="cat">cat</option>
+                <option value="dog">dog</option>
+                <option value="squirrel">squirrel</option>
+                <option value="bird">bird</option>
+                <option value="other">other</option>
+              </select>
+            </label>
+            <label className={styles.label}>
+              camera
+              <select
+                className={styles.select}
+                value={camera}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setCamera(v);
+                  localStorage.setItem("alertsCameraFilter", v);
+                  const nextParams = new URLSearchParams(urlParams);
+                  if (v) nextParams.set("camera", v);
+                  else nextParams.delete("camera");
+                  setUrlParams(nextParams, { replace: true });
+                }}
+              >
+                <option value="">all</option>
+                {(camerasResp.data?.cameras ?? []).map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className={styles.label}>
+              <input
+                type="checkbox"
+                checked={autoRefresh}
+                onChange={(e) => setAutoRefresh(e.target.checked)}
+              />{" "}
+              auto
+            </label>
+            <label className={styles.label}>
+              <input
+                type="checkbox"
+                checked={grouped}
+                onChange={(e) => setGrouped(e.target.checked)}
+              />{" "}
+              group
+            </label>
+          </>
+        }
+      />
 
       {error && <div className={styles.error}>Error: {error.message}</div>}
 

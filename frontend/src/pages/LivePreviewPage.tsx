@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { type Rect, saveMasks } from "../api/masks";
 import { type Point, saveZone } from "../api/zone";
-import { AlertsNavLink } from "../components/AlertsNavLink";
 import { CameraPane, type ViewMode } from "../components/CameraPane";
+import { GlobalHeader } from "../components/GlobalHeader";
 import { type MaskMode, MaskOverlay } from "../components/MaskOverlay";
 import { type EditMode, ZoneOverlay } from "../components/ZoneOverlay";
 import { useCameras } from "../hooks/useCameras";
@@ -202,46 +202,36 @@ export function LivePreviewPage() {
 
   return (
     <div className={styles.wrap}>
-      <header className={styles.header}>
-        <Link to="/" className={styles.title}>
-          wildlife-detector — live
-        </Link>
-        <span className={styles.spacer} />
-        <select
-          className={styles.select}
-          value={primary}
-          onChange={(e) => setSearchParams({ camera: e.target.value })}
-          aria-label="Primary camera"
-        >
-          {cameras.length === 0 && <option value="">(loading)</option>}
-          {cameras.map((c) => (
-            <option key={c} value={c} disabled={c === secondary}>
-              {c}
-              {c === secondary ? " (secondary)" : ""}
-            </option>
-          ))}
-        </select>
-        {primary && (
-          <a
-            className={styles.linkBtn}
-            href={`/snapshot?camera=${encodeURIComponent(primary)}`}
-            download={`${primary}-snapshot.jpg`}
-            title="Download the current annotated frame as JPEG"
-          >
-            Snapshot
-          </a>
-        )}
-        <AlertsNavLink
-          className={styles.linkBtn}
-          cameras={[primary, secondary].filter((c): c is string => !!c)}
-        />
-        <Link to="/baselines" className={styles.linkBtn}>
-          Baselines →
-        </Link>
-        <Link to="/status" className={styles.linkBtn}>
-          Dashboard →
-        </Link>
-      </header>
+      <GlobalHeader
+        right={
+          <>
+            <select
+              className={styles.select}
+              value={primary}
+              onChange={(e) => setSearchParams({ camera: e.target.value })}
+              aria-label="Primary camera"
+            >
+              {cameras.length === 0 && <option value="">(loading)</option>}
+              {cameras.map((c) => (
+                <option key={c} value={c} disabled={c === secondary}>
+                  {c}
+                  {c === secondary ? " (secondary)" : ""}
+                </option>
+              ))}
+            </select>
+            {primary && (
+              <a
+                className={styles.linkBtn}
+                href={`/snapshot?camera=${encodeURIComponent(primary)}`}
+                download={`${primary}-snapshot.jpg`}
+                title="Download the current annotated frame as JPEG"
+              >
+                Snapshot
+              </a>
+            )}
+          </>
+        }
+      />
 
       {primary && (
         <div className={styles.editorToolbar}>
