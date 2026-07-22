@@ -278,6 +278,7 @@ class Stats:
         self._baseline_filtered = 0    # zone det skipped VLM (pixel-diff below threshold)
         self._vlm_calls = 0            # VLM invocation submitted
         self._vlm_rejected = 0         # VLM returned wildlife_detected=False
+        self._vlm_insect_classified = 0  # VLM species='insect' — count-only, no alert fires
         self._vlm_confirmed_session = 0  # VLM confirmed a wildlife event THIS session
                                         # (distinct from self._alerts which is DB-seeded lifetime total)
         # ── Token + cost tracking ─────────────────────────────────────────
@@ -325,6 +326,15 @@ class Stats:
     def record_vlm_rejected(self) -> None:
         with self._lock:
             self._vlm_rejected += 1
+
+    def record_vlm_insect(self) -> None:
+        """Count-only signal for VLM species='insect' verdicts. Insects
+        are classified but never fire alerts (moth/wasp/fly are the #1
+        night-time FP source for rodent detection; separating them from
+        the rodent pipeline keeps rat/mouse alerts clean without spamming
+        the alerts page with hundreds of moth rows)."""
+        with self._lock:
+            self._vlm_insect_classified += 1
 
     def record_vlm_tokens(self, model: str, input_tok: int, cache_read: int,
                           cache_create: int, output_tok: int) -> None:
@@ -455,6 +465,7 @@ class Stats:
                     "baseline_filtered": self._baseline_filtered,
                     "vlm_calls":         self._vlm_calls,
                     "vlm_rejected":      self._vlm_rejected,
+                    "vlm_insect":        self._vlm_insect_classified,
                     "vlm_confirmed":     self._vlm_confirmed_session,
                 },
                 # Session-lifetime VLM token + cost tracking. cache_hit_rate
