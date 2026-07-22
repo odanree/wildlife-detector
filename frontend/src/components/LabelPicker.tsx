@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { type LabelVerdict, setAlertLabel } from "../api/alerts";
 import styles from "./LabelPicker.module.css";
 
@@ -64,6 +64,18 @@ export function LabelPicker({
   const [species, setSpecies] = useState<string | null>(initialSpecies);
   const [showPicker, setShowPicker] = useState(showSpeciesDefault);
   const [busy, setBusy] = useState(false);
+
+  // Sync local state when parent's overlay updates the effective label —
+  // e.g. operator voted from the lightbox modal, or a bulk operation
+  // covered this row. useState only initializes on mount, so without
+  // this effect the row's picker would stay frozen at the mount-time
+  // value until the useAlerts poll (5s) shipped a fresh row and React
+  // recreated the component. Loose reference equality in deps is fine
+  // because parents build the overlay Map immutably (new Map on write).
+  useEffect(() => {
+    setVerdict(initialVerdict);
+    setSpecies(initialSpecies);
+  }, [initialVerdict, initialSpecies]);
 
   const apply = async (v: LabelVerdict, sp: string | null) => {
     setBusy(true);
