@@ -259,7 +259,11 @@ export function AlertLightbox({
               const effVerdict: LabelVerdict = ov ? ov.verdict : (current.label_verdict ?? null);
               const effSpecies = ov ? ov.species : (current.label_species ?? null);
               return (
+                // key={current.id} forces unmount+remount on navigation
+                // so useState re-initializes from initialVerdict — otherwise
+                // the previous alert's vote leaks visually onto the next.
                 <LabelPicker
+                  key={current.id}
                   alertId={current.id}
                   initialVerdict={effVerdict}
                   initialSpecies={effSpecies}
