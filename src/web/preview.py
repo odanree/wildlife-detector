@@ -653,6 +653,7 @@ class ZoneHolder:
         self._det_h = det_h
         self._polygon: list[tuple[int, int]] = []
         self._version = 0
+        self._last_mtime: float = 0.0
         self._reload_from_disk()
 
     def _reload_from_disk(self) -> None:
@@ -667,12 +668,33 @@ class ZoneHolder:
                 self._polygon = [(int(round(x * self._det_w)), int(round(y * self._det_h))) for x, y in raw]
             else:
                 self._polygon = [(int(x), int(y)) for x, y in raw]
+            try:
+                self._last_mtime = self._config_path.stat().st_mtime
+            except OSError:
+                self._last_mtime = 0.0
         except Exception:
             logger.exception("ZoneHolder: failed to load %s", self._config_path)
             self._polygon = []
 
     def snapshot(self) -> tuple[list[tuple[int, int]], int]:
+        """Return (polygon, version). Cheap mtime check on every call —
+        if the yaml on disk was modified by something OTHER than
+        set_polygon (a git checkout, a manual edit, a backup restore),
+        reload and bump the version so the pipeline hot-reload picks
+        up the change. Guards against 'file changed under us' desync
+        where in-memory polygon and on-disk yaml disagree."""
         with self._lock:
+            try:
+                mtime = self._config_path.stat().st_mtime
+                if mtime > self._last_mtime + 0.01:  # 10ms tolerance for FS quirks
+                    logger.info(
+                        "ZoneHolder: yaml mtime advanced (%.2f → %.2f), reloading",
+                        self._last_mtime, mtime,
+                    )
+                    self._reload_from_disk()
+                    self._version += 1
+            except OSError:
+                pass  # file gone temporarily during atomic-write swap — skip this tick
             return list(self._polygon), self._version
 
     def set_polygon(self, polygon: list[tuple[int, int]], persist: bool = True) -> None:
@@ -707,6 +729,13 @@ class ZoneHolder:
             with tmp.open("w", encoding="utf-8") as fh:
                 yaml.safe_dump(cfg, fh, sort_keys=False, default_flow_style=None)
             tmp.replace(self._config_path)
+            # Update mtime watermark AFTER our own write so snapshot()'s
+            # mtime check doesn't trigger a spurious reload for a
+            # change we just made in memory.
+            try:
+                self._last_mtime = self._config_path.stat().st_mtime
+            except OSError:
+                pass
             logger.info("ZoneHolder: persisted %d-vertex polygon to %s (format=%s)",
                         len(polygon), self._config_path,
                         "normalized" if self._det_w else "pixel")
@@ -745,6 +774,7 @@ class MaskHolder:
         self._camera_id = os.getenv("CAMERA_ID", "yard")
         self._masks: list[tuple[int, int, int, int]] = []
         self._version = 0
+        self._last_mtime: float = 0.0
         self._reload_from_disk()
 
     def _reload_from_disk(self) -> None:
@@ -771,12 +801,30 @@ class MaskHolder:
                 else:
                     out.append(tuple(int(v) for v in m))
             self._masks = out
+            try:
+                self._last_mtime = self._config_path.stat().st_mtime
+            except OSError:
+                self._last_mtime = 0.0
         except Exception:
             logger.exception("MaskHolder: failed to load %s", self._config_path)
             self._masks = []
 
     def snapshot(self) -> tuple[list[tuple[int, int, int, int]], int]:
+        """Same mtime-watch pattern as ZoneHolder.snapshot() — pick up
+        external yaml edits (git checkout, manual edit, backup restore)
+        so in-memory state doesn't drift from what's on disk."""
         with self._lock:
+            try:
+                mtime = self._config_path.stat().st_mtime
+                if mtime > self._last_mtime + 0.01:
+                    logger.info(
+                        "MaskHolder: yaml mtime advanced (%.2f → %.2f), reloading",
+                        self._last_mtime, mtime,
+                    )
+                    self._reload_from_disk()
+                    self._version += 1
+            except OSError:
+                pass  # atomic-write swap window — skip this tick
             return list(self._masks), self._version
 
     def set_masks(self, masks: list[list[int]], persist: bool = True) -> None:
@@ -818,6 +866,10 @@ class MaskHolder:
             with tmp.open("w", encoding="utf-8") as fh:
                 yaml.safe_dump(cfg, fh, sort_keys=False, default_flow_style=None)
             tmp.replace(self._config_path)
+            try:
+                self._last_mtime = self._config_path.stat().st_mtime
+            except OSError:
+                pass
             logger.info("MaskHolder: persisted %d masks (format=%s)",
                         len(masks), "normalized" if self._det_w else "pixel")
         except Exception:
