@@ -8,6 +8,10 @@ interface LabelPickerProps {
   initialSpecies: string | null;
   /** Called after a successful label write so parent can update local row state. */
   onLabeled: (verdict: LabelVerdict, species: string | null) => void;
+  /** When true, skip the 'tag…' toggle and always show the species dropdown
+   *  once a verdict is set. Use in the lightbox modal where the operator
+   *  wants species picking one-click away, not hidden behind a popover. */
+  showSpeciesDefault?: boolean;
 }
 
 /**
@@ -51,10 +55,11 @@ export function LabelPicker({
   initialVerdict,
   initialSpecies,
   onLabeled,
+  showSpeciesDefault = false,
 }: LabelPickerProps) {
   const [verdict, setVerdict] = useState<LabelVerdict>(initialVerdict);
   const [species, setSpecies] = useState<string | null>(initialSpecies);
-  const [showPicker, setShowPicker] = useState(false);
+  const [showPicker, setShowPicker] = useState(showSpeciesDefault);
   const [busy, setBusy] = useState(false);
 
   const apply = async (v: LabelVerdict, sp: string | null) => {
@@ -102,7 +107,7 @@ export function LabelPicker({
       >
         ?
       </button>
-      {verdict != null && (
+      {verdict != null && !showSpeciesDefault && (
         <button
           type="button"
           className={styles.detailBtn}
@@ -119,7 +124,10 @@ export function LabelPicker({
           onChange={(e) => {
             const v = e.target.value || null;
             apply(verdict, v);
-            setShowPicker(false);
+            // Only auto-close the popover when it's the manual-toggle mode
+            // — in showSpeciesDefault mode we keep the dropdown visible
+            // so operator can adjust the pick without re-opening.
+            if (!showSpeciesDefault) setShowPicker(false);
           }}
           disabled={busy}
         >
