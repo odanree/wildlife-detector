@@ -447,8 +447,22 @@ def create_app(registry: DetectorRegistry) -> Flask:
             limit = 200
         species_filter = (request.args.get("species") or "").lower().strip() or None
         camera_filter = (request.args.get("camera") or "").strip() or None
-        items = _state.list_alerts(limit=limit, species=species_filter,
-                                    camera_id=camera_filter)
+        # scope=historical|live|all — used by labeling workflow to focus
+        # on backfilled snapshots without live noise, or vice versa.
+        scope = (request.args.get("scope") or "").strip().lower() or None
+        if scope not in (None, "historical", "live", "all"):
+            scope = None
+        # label_filter=unlabeled|labeled|all — sifting flow: 'unlabeled'
+        # hides rows already voted on so operator can walk backlog fast.
+        lf = (request.args.get("label_filter") or "").strip().lower() or None
+        if lf not in (None, "unlabeled", "labeled", "all"):
+            lf = None
+        items = _state.list_alerts(
+            limit=limit, species=species_filter,
+            camera_id=camera_filter,
+            scope=scope if scope in ("historical", "live") else None,
+            label_filter=lf if lf in ("unlabeled", "labeled") else None,
+        )
         return jsonify({
             # Scope total to the same camera filter as items — otherwise
             # the header unread badge diffs a per-camera watermark against

@@ -39,6 +39,22 @@ export function AlertsPage() {
   const [grouped, setGrouped] = useState<boolean>(true);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
   const [openId, setOpenId] = useState<number | null>(null);
+  // Labeling-workflow filter: "historical" restricts to backfilled/pre-tuning
+  // rows so training-data collection focuses on the noisy old pile without
+  // getting mixed with today's cleaner live alerts. Persisted so page
+  // reloads don't yank the operator out of a labeling session.
+  const [scope, setScope] = useState<"historical" | "live" | "all">(() => {
+    const v = localStorage.getItem("alertsScope");
+    return v === "historical" || v === "live" ? v : "all";
+  });
+  // Sifting filter: 'unlabeled' hides rows already voted on so operator
+  // walks the backlog without re-reviewing their own work. Composes with
+  // scope — e.g. scope=historical + labelFilter=unlabeled = "un-voted
+  // slice of the old pile", the training-data-hunt workflow.
+  const [labelFilter, setLabelFilter] = useState<"unlabeled" | "labeled" | "all">(() => {
+    const v = localStorage.getItem("alertsLabelFilter");
+    return v === "unlabeled" || v === "labeled" ? v : "all";
+  });
 
   // Bulk-selection state — checkbox column + select-all in header lets
   // operator mass-label N alerts with one Apply click (backend does the
@@ -71,7 +87,12 @@ export function AlertsPage() {
 
   const camerasResp = useCameras();
   const { data, error, loading } = useAlerts(
-    { species: species || undefined, camera: camera || undefined },
+    {
+      species: species || undefined,
+      camera: camera || undefined,
+      scope: scope === "all" ? undefined : scope,
+      label_filter: labelFilter === "all" ? undefined : labelFilter,
+    },
     autoRefresh ? 5000 : 3600_000,
   );
 
@@ -203,6 +224,40 @@ export function AlertsPage() {
                     {c}
                   </option>
                 ))}
+              </select>
+            </label>
+            <label className={styles.label}>
+              show
+              <select
+                className={styles.select}
+                value={scope}
+                onChange={(e) => {
+                  const v = e.target.value as "historical" | "live" | "all";
+                  setScope(v);
+                  localStorage.setItem("alertsScope", v);
+                }}
+                title="historical = backfilled/pre-tuning pile for labeling; live = today's fresh VLM alerts; all = both"
+              >
+                <option value="all">all</option>
+                <option value="live">live only</option>
+                <option value="historical">historical only (labeling)</option>
+              </select>
+            </label>
+            <label className={styles.label}>
+              label
+              <select
+                className={styles.select}
+                value={labelFilter}
+                onChange={(e) => {
+                  const v = e.target.value as "unlabeled" | "labeled" | "all";
+                  setLabelFilter(v);
+                  localStorage.setItem("alertsLabelFilter", v);
+                }}
+                title="unlabeled = hide rows you've already voted on; labeled = only show rows you've labeled; all = both"
+              >
+                <option value="all">all</option>
+                <option value="unlabeled">unlabeled (sift for TPs)</option>
+                <option value="labeled">labeled</option>
               </select>
             </label>
             <label className={styles.label}>
