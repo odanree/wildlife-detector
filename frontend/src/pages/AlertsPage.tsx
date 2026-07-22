@@ -291,7 +291,13 @@ export function AlertsPage() {
         <span className={styles.badgeHist}>from disk</span> — confidence + description not
         persisted)
       </footer>
-      <AlertLightbox items={items} openId={openId} setOpenId={setOpenId} />
+      <AlertLightbox
+        items={items}
+        openId={openId}
+        setOpenId={setOpenId}
+        labelOverlay={labelOverlay}
+        onLabeled={(id, verdict, species) => applyLabelOverlay([id], verdict, species)}
+      />
     </div>
   );
 }
