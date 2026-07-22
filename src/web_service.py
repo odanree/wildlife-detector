@@ -468,6 +468,76 @@ def create_app(registry: DetectorRegistry) -> Flask:
             counts[cam] = _state.total_alerts(camera_id=cam)
         return jsonify(counts)
 
+    @app.get("/api/alerts/<int:alert_id>/playback-url")
+    def api_alert_playback(alert_id: int):
+        """Return an RTSP NVR playback URL for the alert's timestamp so the
+        operator can replay footage in VLC / mpv / any RTSP client. Uses
+        the same URL builder as the live-preview seek-to-datetime feature.
+
+        Query params:
+          pre_roll   seconds of context before the alert ts (default 15)
+          channel    override NVR channel; else uses NVR_CHANNEL_<CAMERA> env
+
+        Response: {url, camera_id, ts, channel, pre_roll_seconds, note?}
+        note surfaces caveats — e.g. "NVR channel not configured for camera".
+        RTSP URLs open natively in VLC / mpv on most desktop OSes when the
+        rtsp:// protocol handler is registered."""
+        alert = _state.get_alert(alert_id) if _state else None
+        if not alert:
+            return jsonify({"error": "alert not found"}), 404
+
+        camera_id = alert.get("camera_id") or ""
+        ts = float(alert.get("ts", 0.0))
+        if ts <= 0:
+            return jsonify({"error": "alert has no timestamp"}), 400
+
+        try:
+            pre_roll = int(request.args.get("pre_roll", "15"))
+        except ValueError:
+            pre_roll = 15
+        pre_roll = max(0, min(600, pre_roll))
+
+        # Per-camera NVR channel via env: NVR_CHANNEL_YARD=6, NVR_CHANNEL_ROOFTOP=8
+        # Falls back to URL-embedded channel then to '1'.
+        env_channel = os.environ.get(f"NVR_CHANNEL_{camera_id.upper()}")
+        try:
+            channel_override = int(request.args.get("channel") or env_channel or 0)
+        except ValueError:
+            channel_override = 0
+        channel: int | None = channel_override if channel_override > 0 else None
+
+        # Web container has AMCREST_HOST/USER/PASS in its env (env_file:
+        # .env in compose), so build_nvr_playback_url() gets host/creds
+        # from env — no need to look up the detector's RTSP url here.
+        # Empty base_url just makes the fallback regex extraction no-op.
+        base_url = ""
+
+        note = None
+        if not env_channel and channel_override == 0:
+            note = (f"NVR_CHANNEL_{camera_id.upper()} not set — playback URL may hit "
+                    f"the wrong channel or return no data. Set the env var to the "
+                    f"NVR channel this camera records to.")
+
+        from src.stream.rtsp_handler import build_nvr_playback_url
+        try:
+            url = build_nvr_playback_url(
+                timestamp=ts,
+                base_rtsp_url=base_url,
+                pre_roll_seconds=pre_roll,
+                nvr_channel=channel,
+            )
+        except Exception as exc:
+            return jsonify({"error": f"failed to build playback url: {exc}"}), 500
+
+        return jsonify({
+            "url":              url,
+            "camera_id":        camera_id,
+            "ts":               ts,
+            "channel":          channel,
+            "pre_roll_seconds": pre_roll,
+            "note":             note,
+        })
+
     @app.get("/snapshots/<path:filename>")
     def serve_snapshot(filename: str):
         # send_from_directory blocks ../ traversal safely.
