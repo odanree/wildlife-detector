@@ -72,7 +72,13 @@ export interface AlertsResponse {
 }
 
 export type AlertsScope = "historical" | "live" | "all";
-export type AlertsLabelFilter = "unlabeled" | "labeled" | "all";
+export type AlertsLabelFilter =
+  | "unlabeled"
+  | "labeled"
+  | "correct"
+  | "incorrect"
+  | "unclear"
+  | "all";
 
 export interface AlertsQuery {
   limit?: number;

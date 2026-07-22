@@ -51,9 +51,11 @@ export function AlertsPage() {
   // walks the backlog without re-reviewing their own work. Composes with
   // scope — e.g. scope=historical + labelFilter=unlabeled = "un-voted
   // slice of the old pile", the training-data-hunt workflow.
-  const [labelFilter, setLabelFilter] = useState<"unlabeled" | "labeled" | "all">(() => {
+  type LabelFilterVal = "unlabeled" | "labeled" | "correct" | "incorrect" | "unclear" | "all";
+  const [labelFilter, setLabelFilter] = useState<LabelFilterVal>(() => {
     const v = localStorage.getItem("alertsLabelFilter");
-    return v === "unlabeled" || v === "labeled" ? v : "all";
+    const valid: LabelFilterVal[] = ["unlabeled", "labeled", "correct", "incorrect", "unclear"];
+    return (valid as string[]).includes(v ?? "") ? (v as LabelFilterVal) : "all";
   });
 
   // Bulk-selection state — checkbox column + select-all in header lets
@@ -249,15 +251,18 @@ export function AlertsPage() {
                 className={styles.select}
                 value={labelFilter}
                 onChange={(e) => {
-                  const v = e.target.value as "unlabeled" | "labeled" | "all";
+                  const v = e.target.value as LabelFilterVal;
                   setLabelFilter(v);
                   localStorage.setItem("alertsLabelFilter", v);
                 }}
-                title="unlabeled = hide rows you've already voted on; labeled = only show rows you've labeled; all = both"
+                title="Filter by label state: unlabeled = still-to-vote; labeled = all voted; correct/incorrect/unclear = specific verdict"
               >
                 <option value="all">all</option>
                 <option value="unlabeled">unlabeled (sift for TPs)</option>
-                <option value="labeled">labeled</option>
+                <option value="labeled">labeled (any verdict)</option>
+                <option value="correct">correct only (positives)</option>
+                <option value="incorrect">incorrect only (FPs)</option>
+                <option value="unclear">unclear only</option>
               </select>
             </label>
             <label className={styles.label}>

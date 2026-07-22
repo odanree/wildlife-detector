@@ -245,6 +245,9 @@ class StateDB:
             clauses.append("label_ts IS NULL")
         elif label_filter == "labeled":
             clauses.append("label_ts IS NOT NULL")
+        elif label_filter in ("correct", "incorrect", "unclear"):
+            clauses.append("label_verdict = ?")
+            params.append(label_filter)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY ts DESC LIMIT ?"
