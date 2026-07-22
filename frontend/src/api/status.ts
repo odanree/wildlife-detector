@@ -22,6 +22,7 @@ export interface GateFunnel {
   baseline_filtered: number;
   vlm_calls: number;
   vlm_rejected: number;
+  vlm_insect?: number;
   vlm_confirmed: number;
 }
 

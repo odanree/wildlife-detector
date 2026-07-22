@@ -20,3 +20,13 @@
   font-family: var(--font-mono);
   font-size: 11px;
 }
+
+/* Insect counter is a side-channel signal, not part of the main funnel
+   flow — dim it so it doesn't visually compete with the rat/mouse hit
+   count. Only rendered when count > 0. */
+.insect {
+  color: var(--text-dim, #888);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-style: italic;
+}
