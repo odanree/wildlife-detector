@@ -959,29 +959,32 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         last_vlm_ts[det.track_id] = now
                         continue
 
-                # Night insect pre-filter (physical hard rail) — mammal fur
-                # absorbs IR, moth wings reflect it. A bbox whose mean pixel
-                # brightness exceeds threshold at night is physically-can't-
-                # be-a-mammal → classify as insect and skip VLM entirely.
-                # Deterministic, faster than a VLM call, and immune to the
-                # small-VLM failure mode where qwen hallucinates rodent
-                # anatomy on moth crops. Env-tunable via
-                # NIGHT_INSECT_BRIGHTNESS_MIN (default 130/255) — bump higher
-                # if legit low-light rodents are being flagged as insect.
-                if _baseline_np is not None and _baseline_cache[0][1] != "day":
-                    _bx1, _by1, _bx2, _by2 = det.bbox
-                    _bcrop = frame[max(0, _by1):_by2, max(0, _bx1):_bx2]
-                    if _bcrop.size > 0:
-                        _gray = cv2.cvtColor(_bcrop, cv2.COLOR_BGR2GRAY) if _bcrop.ndim == 3 else _bcrop
-                        _mean_brightness = float(_gray.mean())
-                        if _mean_brightness >= _NIGHT_INSECT_BRIGHTNESS_MIN:
-                            logger.info(
-                                "Night insect pre-filter: track=%d bbox=%s mean_brightness=%.0f >= %.0f → classify as insect, skip VLM",
-                                det.track_id, det.bbox, _mean_brightness, _NIGHT_INSECT_BRIGHTNESS_MIN,
-                            )
-                            _preview_stats.record_vlm_insect()
-                            last_vlm_ts[det.track_id] = now
-                            continue
+                # Insect pre-filter (physical hard rail) — mammal fur absorbs
+                # IR/light, moth wings reflect it. A bbox whose mean pixel
+                # brightness exceeds threshold is physically-can't-be-a-
+                # mammal → classify as insect, skip VLM. Deterministic,
+                # faster than a VLM call, immune to the small-VLM failure
+                # mode where qwen hallucinates rodent anatomy on moth crops.
+                # Runs regardless of day/night flag: rooftop under street/
+                # courtyard lighting stays in "day" baseline mode even at
+                # 2 AM local, so gating on mode==night misses the majority
+                # of overnight moth activity. Env-tunable via
+                # NIGHT_INSECT_BRIGHTNESS_MIN (name kept for continuity)
+                # — bump if legit pale-fur rodents are being flagged.
+                _bx1, _by1, _bx2, _by2 = det.bbox
+                _bcrop = frame[max(0, _by1):_by2, max(0, _bx1):_bx2]
+                if _bcrop.size > 0:
+                    _gray = cv2.cvtColor(_bcrop, cv2.COLOR_BGR2GRAY) if _bcrop.ndim == 3 else _bcrop
+                    _mean_brightness = float(_gray.mean())
+                    if _mean_brightness >= _NIGHT_INSECT_BRIGHTNESS_MIN:
+                        logger.info(
+                            "Insect pre-filter: track=%d bbox=%s mean_brightness=%.0f >= %.0f mode=%s → classify as insect, skip VLM",
+                            det.track_id, det.bbox, _mean_brightness, _NIGHT_INSECT_BRIGHTNESS_MIN,
+                            _baseline_cache[0][1] if _baseline_np is not None else "?",
+                        )
+                        _preview_stats.record_vlm_insect()
+                        last_vlm_ts[det.track_id] = now
+                        continue
 
                 last_vlm_ts[det.track_id] = now
                 # For camouflaged targets (raccoon in brush, rodent behind
