@@ -18,13 +18,32 @@
   max-width: 100%;
 }
 
+/* Viewport frame: bounds the zoomed/panned image so it can't spill
+   into the backdrop and cause page-level scroll or layout shift.
+   The img inside carries the transform; overflow:hidden clips
+   whatever goes beyond the frame. */
+.imgViewport {
+  position: relative;
+  max-width: 100%;
+  max-height: calc(100vh - 200px);
+  overflow: hidden;
+  border-radius: var(--r-md);
+  background: #000;
+}
+
 .img {
   display: block;
   max-width: 100%;
   max-height: calc(100vh - 200px);
   object-fit: contain;
-  border-radius: var(--r-md);
-  background: #000;
+  /* transform-origin + transition set inline for zoom/pan */
+  transition: transform 60ms ease-out;
+}
+
+.zoomBadge {
+  color: var(--text-lo);
+  font-size: 11px;
+  margin-left: var(--sp-1);
 }
 
 .meta {

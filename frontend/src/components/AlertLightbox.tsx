@@ -1,9 +1,19 @@
-import { useCallback, useEffect } from "react";
+import {
+  type MouseEvent as ReactMouseEvent,
+  type WheelEvent as ReactWheelEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import type { AlertRow } from "../api/alerts";
 import { fmtTs } from "../util/time";
 import styles from "./AlertLightbox.module.css";
 
 const RODENT_SPECIES = new Set(["rat", "mouse"]);
+const ZOOM_MIN = 1;
+const ZOOM_MAX = 8;
+const ZOOM_STEP = 0.25;
 
 interface AlertLightboxProps {
   /** All alerts currently visible in the table — the nav list. */
@@ -16,25 +26,21 @@ interface AlertLightboxProps {
 
 /**
  * Full-viewport modal for eyeballing a snapshot at full resolution.
- * Ports the vanilla-JS lightbox from preview.py into a React component
- * with three architectural improvements:
  *
- *  - **ID-based navigation, not index-based.** Old page tracked "current
- *    index in the visible list." When the 5s poll dropped in a new alert
- *    at position 0, the lightbox's index still pointed at the old
- *    position — silently shifting the viewer to a different snapshot.
- *    Anchoring on alert.id keeps the same crop in view across polls.
- *  - **Keyboard as command dispatch, not state mutation.** One effect
- *    owns the keydown handler; it translates keys into intent (close /
- *    prev / next) then delegates. Adding more shortcuts later is one
- *    switch case, not one useEffect per key.
- *  - **Body scroll lock via cleanup**. document.body.overflow is
- *    restored on unmount / close, not left "hidden" if the component
- *    dies mid-open.
+ *  - **ID-based navigation, not index-based.** Anchoring on alert.id
+ *    keeps the same crop in view across 5s polls (index-based would
+ *    silently shift when a new alert lands at position 0).
+ *  - **Keyboard as command dispatch.** One effect owns keydown,
+ *    translates keys → intent → delegate.
+ *  - **Wheel-to-zoom, click-drag-to-pan** on the snapshot img.
+ *    Zoom is cursor-anchored (pixel under cursor stays put); pan
+ *    resets when navigating to another snapshot or on double-click.
+ *    Lightweight local-state implementation (no useZoom hook because
+ *    the lightbox doesn't need per-camera localStorage persistence —
+ *    each snapshot is a one-off view).
+ *  - **Body scroll lock via cleanup**. Restored on unmount / close.
  */
 export function AlertLightbox({ items, openId, setOpenId }: AlertLightboxProps) {
-  // Filter to only items with snapshots — nothing to show without one,
-  // and prev/next should skip over them cleanly.
   const navList = items.filter((a) => a.snapshot);
   const currentIdx = openId == null ? -1 : navList.findIndex((a) => a.id === openId);
   const current = currentIdx >= 0 ? navList[currentIdx] : null;
@@ -49,6 +55,84 @@ export function AlertLightbox({ items, openId, setOpenId }: AlertLightboxProps) 
     },
     [currentIdx, navList, setOpenId],
   );
+
+  // ── Zoom + pan state ─────────────────────────────────────────────
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const imgRef = useRef<HTMLImageElement>(null);
+  const dragStartRef = useRef<{
+    mouseX: number;
+    mouseY: number;
+    panX: number;
+    panY: number;
+  } | null>(null);
+
+  // Reset zoom + pan when navigating to another snapshot (or closing).
+  // Different image → new content → user shouldn't inherit prior crop.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: openId IS the fire trigger; body only calls setters
+  useEffect(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, [openId]);
+
+  const resetZoom = useCallback(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, []);
+
+  // Cursor-anchored wheel zoom: keep the image pixel under the mouse
+  // fixed as zoom changes. Same math as the live-preview useZoom hook
+  // but self-contained (no CSS-var publishing, no localStorage).
+  const onWheel = useCallback((e: ReactWheelEvent<HTMLImageElement>) => {
+    e.preventDefault();
+    const img = imgRef.current;
+    if (!img) return;
+    setZoom((oldZoom) => {
+      const dir = e.deltaY < 0 ? 1 : -1;
+      const newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, oldZoom + dir * ZOOM_STEP));
+      if (newZoom === oldZoom) return oldZoom;
+      const rect = img.getBoundingClientRect();
+      const fracX = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0.5;
+      const fracY = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0.5;
+      const scale = newZoom / oldZoom;
+      const newW = rect.width * scale;
+      const newH = rect.height * scale;
+      setPan((p) => ({
+        x: p.x - fracX * (newW - rect.width),
+        y: p.y - fracY * (newH - rect.height),
+      }));
+      return newZoom;
+    });
+  }, []);
+
+  const onImgMouseDown = useCallback(
+    (e: ReactMouseEvent<HTMLImageElement>) => {
+      if (zoom <= 1) return; // no pan at rest scale
+      e.preventDefault();
+      dragStartRef.current = { mouseX: e.clientX, mouseY: e.clientY, panX: pan.x, panY: pan.y };
+    },
+    [zoom, pan.x, pan.y],
+  );
+
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      const start = dragStartRef.current;
+      if (!start) return;
+      setPan({
+        x: start.panX + (e.clientX - start.mouseX),
+        y: start.panY + (e.clientY - start.mouseY),
+      });
+    }
+    function onUp() {
+      dragStartRef.current = null;
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
 
   useEffect(() => {
     if (!current) return;
@@ -65,6 +149,10 @@ export function AlertLightbox({ items, openId, setOpenId }: AlertLightboxProps) 
         case "ArrowRight":
           go(1);
           break;
+        case "0":
+        case "Home":
+          resetZoom();
+          break;
       }
     }
     window.addEventListener("keydown", onKey);
@@ -72,7 +160,7 @@ export function AlertLightbox({ items, openId, setOpenId }: AlertLightboxProps) 
       window.removeEventListener("keydown", onKey);
       document.body.style.overflow = originalOverflow;
     };
-  }, [current, close, go]);
+  }, [current, close, go, resetZoom]);
 
   if (!current || !current.snapshot) return null;
 
@@ -83,16 +171,10 @@ export function AlertLightbox({ items, openId, setOpenId }: AlertLightboxProps) 
   const canNext = currentIdx < navList.length - 1;
 
   return (
-    // Backdrop uses a native <dialog>-style layout but implemented on a div
-    // because we need a click-to-close backdrop AND a controlled-open state.
-    // Native <dialog> requires imperative .showModal() from a ref, which
-    // fights React's declarative model. Backdrop-click-to-close is a bonus
-    // affordance; the primary close paths (× button, Esc key) are keyboard-
-    // accessible and covered by the useEffect above.
     // biome-ignore lint/a11y/useKeyWithClickEvents: primary close paths (× button, Esc) are keyboard-accessible; backdrop-click is a bonus
     <div
       className={styles.backdrop}
-      // biome-ignore lint/a11y/useSemanticElements: native <dialog> fights React's declarative model; see comment above
+      // biome-ignore lint/a11y/useSemanticElements: native <dialog> fights React's declarative model
       role="dialog"
       aria-modal="true"
       aria-label="alert snapshot viewer"
@@ -122,11 +204,25 @@ export function AlertLightbox({ items, openId, setOpenId }: AlertLightboxProps) 
         ›
       </button>
       <div className={styles.inner}>
-        <img
-          className={styles.img}
-          src={`/snapshots/${encodeURIComponent(current.snapshot)}`}
-          alt="alert snapshot"
-        />
+        {/* biome-ignore lint/a11y/useKeyWithClickEvents: img uses mouse-only affordances (wheel zoom, click-drag pan); reset via keyboard "0"/Home */}
+        <div className={styles.imgViewport}>
+          <img
+            ref={imgRef}
+            className={styles.img}
+            src={`/snapshots/${encodeURIComponent(current.snapshot)}`}
+            alt="alert snapshot"
+            onWheel={onWheel}
+            onMouseDown={onImgMouseDown}
+            onDoubleClick={resetZoom}
+            style={{
+              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+              cursor: zoom > 1 ? (dragStartRef.current ? "grabbing" : "grab") : "zoom-in",
+              transformOrigin: "top left",
+              userSelect: "none",
+            }}
+            draggable={false}
+          />
+        </div>
         <div className={styles.meta}>
           <div>
             <span className={speciesCls}>{current.species || "?"}</span>{" "}
@@ -137,6 +233,12 @@ export function AlertLightbox({ items, openId, setOpenId }: AlertLightboxProps) 
         </div>
         <div className={styles.pos}>
           {currentIdx + 1} / {navList.length}
+          {zoom > 1 && (
+            <span className={styles.zoomBadge}>
+              {" "}
+              · {zoom.toFixed(2)}× — double-click or "0" to reset
+            </span>
+          )}
         </div>
       </div>
     </div>
