@@ -517,6 +517,12 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     # was here" without spamming (one per interval, not per frame).
     _HUMAN_ALERT_INTERVAL_S = float(os.getenv("HUMAN_ALERT_INTERVAL_S", "300"))
     _last_human_alert_ts = 0.0
+    # Night insect brightness threshold — bbox mean grayscale above this
+    # value is classified as insect (moth wings reflect IR) rather than
+    # sent to VLM. 130/255 catches obvious wing-reflect FPs without
+    # touching low-conf mammal crops that are already dark. Bump higher
+    # if legit rodents get mis-flagged; lower if moths still slip through.
+    _NIGHT_INSECT_BRIGHTNESS_MIN = float(os.getenv("NIGHT_INSECT_BRIGHTNESS_MIN", "130"))
     vlm_pool = ThreadPoolExecutor(max_workers=_VLM_WORKERS, thread_name_prefix="vlm")
     logger.info("VLM pool: workers=%d max_inflight=%d max_alert_age=%.1fs",
                 _VLM_WORKERS, _VLM_MAX_INFLIGHT, _VLM_MAX_ALERT_AGE_S)
@@ -952,6 +958,30 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         # Still update last_vlm_ts so we don't retry every frame.
                         last_vlm_ts[det.track_id] = now
                         continue
+
+                # Night insect pre-filter (physical hard rail) — mammal fur
+                # absorbs IR, moth wings reflect it. A bbox whose mean pixel
+                # brightness exceeds threshold at night is physically-can't-
+                # be-a-mammal → classify as insect and skip VLM entirely.
+                # Deterministic, faster than a VLM call, and immune to the
+                # small-VLM failure mode where qwen hallucinates rodent
+                # anatomy on moth crops. Env-tunable via
+                # NIGHT_INSECT_BRIGHTNESS_MIN (default 130/255) — bump higher
+                # if legit low-light rodents are being flagged as insect.
+                if _baseline_np is not None and _baseline_cache[0][1] != "day":
+                    _bx1, _by1, _bx2, _by2 = det.bbox
+                    _bcrop = frame[max(0, _by1):_by2, max(0, _bx1):_bx2]
+                    if _bcrop.size > 0:
+                        _gray = cv2.cvtColor(_bcrop, cv2.COLOR_BGR2GRAY) if _bcrop.ndim == 3 else _bcrop
+                        _mean_brightness = float(_gray.mean())
+                        if _mean_brightness >= _NIGHT_INSECT_BRIGHTNESS_MIN:
+                            logger.info(
+                                "Night insect pre-filter: track=%d bbox=%s mean_brightness=%.0f >= %.0f → classify as insect, skip VLM",
+                                det.track_id, det.bbox, _mean_brightness, _NIGHT_INSECT_BRIGHTNESS_MIN,
+                            )
+                            _preview_stats.record_vlm_insect()
+                            last_vlm_ts[det.track_id] = now
+                            continue
 
                 last_vlm_ts[det.track_id] = now
                 # For camouflaged targets (raccoon in brush, rodent behind
