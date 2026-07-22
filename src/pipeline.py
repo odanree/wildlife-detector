@@ -777,6 +777,15 @@ def run(stream_url: str | None = None, video_path: str | None = None,
 
                 if not result.get("wildlife_detected", False):
                     _preview_stats.record_vlm_rejected()
+                    # Split the "rejected" bucket: real insect classifications
+                    # are informative signal, not noise — the analyzer forced
+                    # detected=false on species='insect' via the non-alertable
+                    # gate, but we still want a distinct counter for funnel
+                    # visibility ("moths flying tonight" vs "genuinely nothing").
+                    if str(result.get("species", "")).lower() == "insect":
+                        _preview_stats.record_vlm_insect()
+                        logger.info("VLM insect classified: track=%d conf=%.2f — count-only, no alert",
+                                    tid, result.get("confidence", 0.0))
                     # Record this bbox center for stationary-FP suppression —
                     # if new motion keeps firing at this same spot (blinking
                     # LED, camera IR emitter), we'll skip VLM entirely rather

@@ -71,7 +71,7 @@ _USER_PROMPT = (
     "with these exact keys:\n"
     "{\n"
     '  "wildlife_detected": <bool>,   // TRUE only if you can see a live rat or mouse with confidence ≥ 0.75\n'
-    '  "species":           <string>, // "rat" | "mouse" | "raccoon" | "opossum" | "cat" | "dog" | "squirrel" | "bird" | "other" | "none"\n'
+    '  "species":           <string>, // "rat" | "mouse" | "raccoon" | "opossum" | "cat" | "dog" | "squirrel" | "bird" | "lizard" | "insect" | "other" | "none"\n'
     '  "is_rodent":         <bool>,   // true only for rat or mouse\n'
     '  "confidence":        <0..1>,   // honest visual certainty; use < 0.5 for anything blurry, small, or ambiguous\n'
     '  "description":       <one short sentence naming what you see and why you chose your answer>\n'
@@ -124,7 +124,7 @@ _COMPARE_USER_PROMPT = (
     "Return JSON with these exact keys:\n"
     "{\n"
     '  "wildlife_detected": <bool>,   // TRUE only if a live, fully-visible rat/mouse\n'
-    '  "species":           <string>, // "rat" | "mouse" | "raccoon" | "opossum" | "cat" | "dog" | "squirrel" | "bird" | "other" | "none"\n'
+    '  "species":           <string>, // "rat" | "mouse" | "raccoon" | "opossum" | "cat" | "dog" | "squirrel" | "bird" | "lizard" | "insect" | "other" | "none"\n'
     '  "is_rodent":         <bool>,   // true only for rat or mouse\n'
     '  "confidence":        <0..1>,   // must be < 0.5 for any ambiguous case; < 0.3 if you use hedge words\n'
     '  "description":       <one factual sentence: what changed and where — NO hedging, NO guessing at hidden parts>\n'
@@ -167,22 +167,28 @@ _COMPARE_USER_PROMPT = (
     "         with the bright point sitting INSIDE that blob. If you can't\n"
     "         trace an outline around a dark shape holding the bright point,\n"
     "         the bright point is a moth or reflective debris and MUST be rejected.\n"
-    "       - **HARD REJECT: any elongated, streaky, pill-shaped, oblong, or\n"
-    "         irregular bright shape with soft edges is a moth in motion blur, NOT\n"
-    "         eyeshine.** Eyeshine points are TINY (~2-4 pixels), PIN-SHARP dots.\n"
-    "         Anything that's more than 8 pixels long in any direction, or has\n"
-    "         soft/blurred edges, or is elongated 2:1 or higher aspect — that is\n"
-    "         a moth or wing motion blur, period. This includes 'a small bright\n"
-    "         reflective streak'. Reject with confidence <0.3.\n"
-    "       - **HARD REJECT: a single isolated bright spot on an otherwise clean\n"
-    "         floor tile, with NO discernible dark body morphology.** The yard's\n"
-    "         #1 night-time FP is moth wings catching IR. Do NOT be tempted to\n"
+    "       - **CLASSIFY AS INSECT: any elongated, streaky, pill-shaped, oblong,\n"
+    "         or irregular bright shape with soft edges is a moth in motion blur,\n"
+    "         NOT eyeshine.** Eyeshine points are TINY (~2-4 pixels), PIN-SHARP\n"
+    "         dots. Anything that's more than 8 pixels long in any direction, or\n"
+    "         has soft/blurred edges, or is elongated 2:1 or higher aspect — that\n"
+    "         is a moth or wing motion blur, period. This includes 'a small bright\n"
+    "         reflective streak'. Return wildlife_detected=true, species='insect',\n"
+    "         is_rodent=false, confidence 0.7-0.85 with a description noting the\n"
+    "         wing-blur / streak / elongation. (Insect is a count-only category —\n"
+    "         classifying it as insect keeps it out of the rodent alert stream.)\n"
+    "       - **AMBIGUOUS SINGLE BRIGHT POINT: a single isolated bright spot on\n"
+    "         an otherwise clean floor tile, with NO discernible dark body\n"
+    "         morphology, is EITHER a moth wing OR an electronic reflector/LED.**\n"
+    "         If you can tell it's a wing (soft edges, faint streak) → species=\n"
+    "         'insect'. If it's pin-sharp with hard edges and no motion trace →\n"
+    "         reject as reflection/LED with species='none'. Do NOT be tempted to\n"
     "         call the surrounding darker floor 'a body' — a body has a discrete\n"
     "         outline distinguishable from the background.\n"
     "       - Motion blur streaks (elongated white shapes with soft edges) are\n"
     "         ALMOST ALWAYS flying insects. Rodents move too slowly to motion-blur\n"
-    "         at 15 fps. Any streak — no matter how faint — should trigger the\n"
-    "         moth rejection above.\n"
+    "         at 15 fps. Any streak — no matter how faint — should classify as\n"
+    "         species='insect' per the rule above.\n"
     "       - WIDELY-SPACED eyeshine (~4-8 cm apart on frame) + LARGER dark body\n"
     "         (bigger than a rat, distinct silhouette) = raccoon, opossum, or\n"
     "         cat. STILL a valid wildlife detection — return wildlife_detected=true\n"
@@ -201,10 +207,11 @@ _COMPARE_USER_PROMPT = (
     "     overhead crop for missing those features; they're geometrically\n"
     "     impossible from above.\n"
     "\n"
-    "     **HARD REJECT — FLYING INSECT AT OVERHEAD**: The #1 daytime FP at\n"
-    "     rooftop is a moth, wasp, or flying insect passing through the frame.\n"
-    "     Insects have DISTINCTIVE visual traits that mammals never share —\n"
-    "     reject ONLY when ALL THREE of these apply, in combination:\n"
+    "     **CLASSIFY AS INSECT — FLYING INSECT AT OVERHEAD**: The #1 daytime\n"
+    "     FP at rooftop is a moth, wasp, or flying insect passing through the\n"
+    "     frame. Insects have DISTINCTIVE visual traits that mammals never share\n"
+    "     — return wildlife_detected=true, species='insect', is_rodent=false,\n"
+    "     confidence 0.7-0.85 ONLY when ALL THREE of these apply, in combination:\n"
     "       1. Shape is BRIGHT or PALE (white/tan/light-grey), not a dark\n"
     "          silhouette. Real mammals from overhead are consistently dark\n"
     "          against lighter ground; moths reflect IR strongly.\n"
@@ -215,11 +222,11 @@ _COMPARE_USER_PROMPT = (
     "          it looks like it's floating on top of the surface rather than\n"
     "          sitting on it. Real mammals cast a small shadow directly under\n"
     "          them in overhead IR.\n"
-    "     ALL THREE must be present to reject as insect. A dark compact\n"
+    "     ALL THREE must be present to classify as insect. A dark compact\n"
     "     shape with crisp edges — even if small and lacking visible legs —\n"
     "     is a mammal (raccoon/cat/possum) at overhead, NOT a moth. Overhead\n"
     "     mammals routinely appear as 40-100 px dark blobs without countable\n"
-    "     legs; that is expected and MUST NOT be rejected as insect.\n"
+    "     legs; that is expected and MUST NOT be labeled as insect.\n"
     "\n"
     "     At overhead angle in IR footage, a real rat / mouse commonly appears as\n"
     "     one of the following legitimate silhouettes — treat ALL of these as\n"
@@ -643,12 +650,19 @@ def _parse_json(text: str) -> dict:
     return _FALLBACK.copy()
 
 
-_VALID_SPECIES = {"rat", "mouse", "raccoon", "opossum", "cat", "dog", "squirrel", "bird", "lizard", "other", "none"}
+_VALID_SPECIES = {"rat", "mouse", "raccoon", "opossum", "cat", "dog", "squirrel", "bird", "lizard", "insect", "other", "none"}
 _RODENT_SPECIES = {"rat", "mouse"}
-# Species that CAN trigger a wildlife_detected: true alert. "other" and "none"
-# never trigger; "cat/dog/bird/squirrel/lizard/etc." are acceptable when
-# clearly identified — the operator sees the species in the alerts UI.
+# Species that CAN trigger a wildlife_detected: true alert. "insect" is
+# DELIBERATELY EXCLUDED: moths/wasps/flies are the #1 nighttime FP source
+# for rodent detection, and classifying them separately (rather than
+# rejecting them) frees the rodent pipeline from their noise. But we do
+# NOT want a moth alert per night event — insect classification is a
+# count-only signal visible in DECISION log lines + funnel stats.
+# The normalize() gate at line 754 forces wildlife_detected=false for
+# non-alertable species, so no alert row is written for insects. That's
+# the count-only behavior by design.
 _ALERTABLE_SPECIES = {"rat", "mouse", "raccoon", "opossum", "cat", "dog", "squirrel", "bird", "lizard", "other"}
+_INSECT_SPECIES = {"insect"}
 
 # Hedge-word hard rail: if the VLM's own description contains any of these
 # tokens, we override wildlife_detected to False regardless of what the model
