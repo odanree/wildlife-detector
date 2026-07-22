@@ -301,12 +301,17 @@ export function AlertLightbox({
                 // key={current.id} forces unmount+remount on navigation
                 // so useState re-initializes from initialVerdict — otherwise
                 // the previous alert's vote leaks visually onto the next.
+                // showSpeciesDefault surfaces the species dropdown right
+                // next to the vote buttons instead of hiding it behind a
+                // 'tag…' toggle — the lightbox is the deliberate-inspection
+                // surface, so species picking should be zero-click away.
                 <LabelPicker
                   key={current.id}
                   alertId={current.id}
                   initialVerdict={effVerdict}
                   initialSpecies={effSpecies}
                   onLabeled={(v, s) => onLabeled?.(current.id, v, s)}
+                  showSpeciesDefault={true}
                 />
               );
             })()}
