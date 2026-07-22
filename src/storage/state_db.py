@@ -349,6 +349,45 @@ class StateDB:
         cur = self._conn.execute(query, params)
         return [self._row_to_dict(row) for row in cur.fetchall()]
 
+    def list_labeled_for_export(
+        self,
+        include_species: list[str] | None = None,
+        exclude_species: list[str] | None = None,
+        include_unclear: bool = False,
+        camera_id: str | None = None,
+        verdict: str | None = None,
+    ) -> list[dict]:
+        """Return all labeled rows (label_ts NOT NULL) suitable for training-
+        data export. Filters:
+          include_species / exclude_species: filter on the original detected
+            species (not label_species) — used to exclude 'human_heartbeat'
+            operational rows from the default export.
+          include_unclear: if False (default), skip verdict='unclear' rows
+            — those are labeled but explicitly ambiguous; don't inject
+            them into binary correct/incorrect splits.
+          camera_id / verdict: standard filters."""
+        query = "SELECT * FROM alerts WHERE label_ts IS NOT NULL"
+        params: list = []
+        if not include_unclear:
+            query += " AND (label_verdict != 'unclear' OR label_verdict IS NULL)"
+        if verdict:
+            query += " AND label_verdict = ?"
+            params.append(verdict)
+        if camera_id:
+            query += " AND camera_id = ?"
+            params.append(camera_id)
+        if include_species:
+            placeholders = ",".join("?" * len(include_species))
+            query += f" AND species IN ({placeholders})"
+            params.extend(include_species)
+        if exclude_species:
+            placeholders = ",".join("?" * len(exclude_species))
+            query += f" AND species NOT IN ({placeholders})"
+            params.extend(exclude_species)
+        query += " ORDER BY ts ASC"  # chronological — natural training-set order
+        cur = self._conn.execute(query, params)
+        return [self._row_to_dict(row) for row in cur.fetchall()]
+
     def label_counts(self, include_historical: bool = True) -> dict:
         """Per-verdict counts + total unlabeled across ALL rows (or
         live-only when include_historical=False). Historical rows count

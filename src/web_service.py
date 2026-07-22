@@ -504,6 +504,66 @@ def create_app(registry: DetectorRegistry) -> Flask:
             return jsonify({"error": "alert not found"}), 404
         return jsonify({"ok": True, "alert_id": alert_id, "verdict": verdict, "species": species})
 
+    @app.get("/api/labels/export.jsonl")
+    def api_labels_export():
+        """Export all labeled rows as JSONL (one JSON object per line) —
+        ready for training-set consumption. Default behavior excludes
+        operational rows the operator doesn't care about labeling:
+
+          - species='human_heartbeat' — human-presence signals, neither
+            wildlife nor a pipeline mistake. Filter with ?include_human=1
+            to opt in (audit-the-exclusion-mask flow).
+          - label_verdict='unclear' — explicitly-ambiguous rows. Filter
+            with ?include_unclear=1 to include.
+
+        Additional query params:
+          camera=yard|rooftop     — restrict to one camera
+          verdict=correct|incorrect — restrict to one verdict slice
+
+        Returns the file as attachment for `curl -o labels.jsonl` piping.
+        Each line contains: alert_id, snapshot (relative path under
+        snapshots/), snapshot_url, verdict, label_species, detected_species,
+        camera_id, ts, historical, confidence, description."""
+        if not _state:
+            return jsonify({"error": "state db unavailable"}), 503
+        camera = (request.args.get("camera") or "").strip() or None
+        verdict = (request.args.get("verdict") or "").strip() or None
+        if verdict not in (None, "correct", "incorrect"):
+            verdict = None
+        include_human = request.args.get("include_human", "0") == "1"
+        include_unclear = request.args.get("include_unclear", "0") == "1"
+        exclude = None if include_human else ["human_heartbeat"]
+        rows = _state.list_labeled_for_export(
+            exclude_species=exclude,
+            include_unclear=include_unclear,
+            camera_id=camera,
+            verdict=verdict,
+        )
+        # Build JSONL — one row per line so consumers can stream + line-split.
+        import json as _json
+        def _line(r):
+            snap = r.get("snapshot")
+            return _json.dumps({
+                "alert_id":         r.get("id"),
+                "snapshot":         snap,
+                "snapshot_url":     f"/snapshots/{snap}" if snap else None,
+                "verdict":          r.get("label_verdict"),
+                "label_species":    r.get("label_species"),
+                "detected_species": r.get("species"),
+                "camera_id":        r.get("camera_id"),
+                "ts":               r.get("ts"),
+                "historical":       bool(r.get("historical")),
+                "confidence":       r.get("confidence"),
+                "description":      r.get("description"),
+            }, separators=(",", ":"))
+        body = "\n".join(_line(r) for r in rows)
+        if body:
+            body += "\n"
+        response = app.response_class(body, mimetype="application/x-ndjson")
+        response.headers["Content-Disposition"] = "attachment; filename=labels.jsonl"
+        response.headers["X-Row-Count"] = str(len(rows))
+        return response
+
     @app.post("/api/labels/backfill-from-disk")
     def api_labels_backfill():
         """Re-import snapshot JPEGs from disk as historical alert rows so
