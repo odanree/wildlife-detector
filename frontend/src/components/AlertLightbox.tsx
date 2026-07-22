@@ -6,7 +6,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { setAlertLabel } from "../api/alerts";
 import type { AlertRow, LabelVerdict } from "../api/alerts";
 import { fmtTs } from "../util/time";
 import styles from "./AlertLightbox.module.css";
@@ -29,10 +28,13 @@ interface AlertLightboxProps {
    *  the LabelPicker in this modal reflects labels applied via the table's
    *  own picker or the BulkLabelBar between polling ticks. */
   labelOverlay?: Map<number, { verdict: LabelVerdict; species: string | null }>;
-  /** Callback fired after a label write from within this modal — keeps
-   *  the parent's labelOverlay in sync so navigating back to the table
-   *  shows the label immediately, not after the next 5s poll. */
-  onLabeled?: (id: number, verdict: LabelVerdict, species: string | null) => void;
+  /** IDs currently mid-write — disables LabelPicker buttons for those alerts. */
+  busyIds?: Set<number>;
+  /** Fully-owned label writer: parent updates overlay optimistically,
+   *  fires setAlertLabel, rolls back on error. The lightbox calls this
+   *  for both mouse-click votes (via LabelPicker.onChange) and keyboard
+   *  votes (Y/N/U handlers). */
+  writeLabel?: (id: number, verdict: LabelVerdict, species: string | null) => Promise<void>;
 }
 
 /**
@@ -56,7 +58,8 @@ export function AlertLightbox({
   openId,
   setOpenId,
   labelOverlay,
-  onLabeled,
+  busyIds,
+  writeLabel,
 }: AlertLightboxProps) {
   const navList = items.filter((a) => a.snapshot);
   const currentIdx = openId == null ? -1 : navList.findIndex((a) => a.id === openId);
@@ -155,22 +158,20 @@ export function AlertLightbox({
     if (!current) return;
     const originalOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    // Fast-vote: write label to backend + sync overlay so the visible
-    // LabelPicker updates, then auto-advance to the next alert. Auto-
-    // advance is the whole point of keyboard voting — you can label a
+    // Fast-vote: delegates to parent's writeLabel (single owner of state +
+    // side effect — optimistic overlay update, async server write, rollback
+    // on error). Auto-advance after dispatch so operator can label a
     // hundred rows in a few minutes without leaving the keyboard.
     const vote = (verdict: LabelVerdict) => {
       if (!current) return;
       const alertId = current.id;
-      setAlertLabel(alertId, verdict, null, null)
-        .then(() => {
-          onLabeled?.(alertId, verdict, null);
-          // Auto-advance if there's a next alert. Guard prevents wrap-around.
-          if (currentIdx < navList.length - 1) go(1);
-        })
-        .catch((e) => {
-          console.error("keyboard vote failed:", e);
-        });
+      // Fire-and-forget — writeLabel handles the optimistic update, so
+      // the LabelPicker in the CURRENT frame already re-renders via the
+      // overlay before we advance. Guards against wrap-around.
+      writeLabel?.(alertId, verdict, null).catch((e) => {
+        console.error("keyboard vote failed:", e);
+      });
+      if (currentIdx < navList.length - 1) go(1);
     };
     function onKey(e: KeyboardEvent): void {
       // Skip when focus is on a form control — otherwise typing in a
@@ -215,7 +216,7 @@ export function AlertLightbox({
       window.removeEventListener("keydown", onKey);
       document.body.style.overflow = originalOverflow;
     };
-  }, [current, close, go, resetZoom, currentIdx, navList.length, onLabeled]);
+  }, [current, close, go, resetZoom, currentIdx, navList.length, writeLabel]);
 
   if (!current || !current.snapshot) return null;
 
@@ -290,27 +291,20 @@ export function AlertLightbox({
           <div className={styles.metaRow}>
             {(() => {
               // Prefer overlay (freshly-written) over the row's server-side
-              // label — same pattern as the table view. Keeps the picker in
-              // sync when the same alert was labeled from the table before
-              // being opened, or when the operator toggles labels within the
-              // modal itself.
+              // label — same pattern as the table view. Both sources of
+              // truth are parent-owned; LabelPicker is fully controlled so
+              // there's no local state to sync when navigation changes the
+              // current alert or when the overlay updates from another
+              // click (table row, bulk bar, keyboard vote).
               const ov = labelOverlay?.get(current.id);
               const effVerdict: LabelVerdict = ov ? ov.verdict : (current.label_verdict ?? null);
               const effSpecies = ov ? ov.species : (current.label_species ?? null);
               return (
-                // key={current.id} forces unmount+remount on navigation
-                // so useState re-initializes from initialVerdict — otherwise
-                // the previous alert's vote leaks visually onto the next.
-                // showSpeciesDefault surfaces the species dropdown right
-                // next to the vote buttons instead of hiding it behind a
-                // 'tag…' toggle — the lightbox is the deliberate-inspection
-                // surface, so species picking should be zero-click away.
                 <LabelPicker
-                  key={current.id}
-                  alertId={current.id}
-                  initialVerdict={effVerdict}
-                  initialSpecies={effSpecies}
-                  onLabeled={(v, s) => onLabeled?.(current.id, v, s)}
+                  verdict={effVerdict}
+                  species={effSpecies}
+                  busy={busyIds?.has(current.id) ?? false}
+                  onChange={(v, s) => writeLabel?.(current.id, v, s)}
                   showSpeciesDefault={true}
                 />
               );
