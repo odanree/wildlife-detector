@@ -511,6 +511,12 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     _VLM_WORKERS = int(os.getenv("VLM_WORKERS", "4"))
     _VLM_MAX_INFLIGHT = int(os.getenv("VLM_MAX_INFLIGHT", "4"))
     _VLM_MAX_ALERT_AGE_S = float(os.getenv("VLM_MAX_ALERT_AGE_S", "10"))
+    # Human presence heartbeat — fire one alert every N seconds when a
+    # person is detected in frame. Whole-frame human-exclusion suppresses
+    # all rodent detections silently; this restores visibility of "human
+    # was here" without spamming (one per interval, not per frame).
+    _HUMAN_ALERT_INTERVAL_S = float(os.getenv("HUMAN_ALERT_INTERVAL_S", "300"))
+    _last_human_alert_ts = 0.0
     vlm_pool = ThreadPoolExecutor(max_workers=_VLM_WORKERS, thread_name_prefix="vlm")
     logger.info("VLM pool: workers=%d max_inflight=%d max_alert_age=%.1fs",
                 _VLM_WORKERS, _VLM_MAX_INFLIGHT, _VLM_MAX_ALERT_AGE_S)
@@ -665,6 +671,39 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         "whole-frame" if _WHOLE_FRAME_EXCLUSION else "per-bbox",
                         _dropped, len(_exclusion_bboxes),
                     )
+                # Human-presence heartbeat: emit one alert per interval so
+                # the operator knows when human activity is suppressing
+                # rodent detection. Debounce at the call site, NOT via
+                # notifier's cooldown_seconds — otherwise every frame does
+                # a wasted _save_snapshot before being cooldown-rejected.
+                _now_h = time.time()
+                if _now_h - _last_human_alert_ts >= _HUMAN_ALERT_INTERVAL_S:
+                    _p_bbox = _exclusion_bboxes[0]
+                    _human_result = {
+                        "wildlife_detected": True,
+                        "species":           "person",
+                        "is_rodent":         False,
+                        "confidence":        0.75,
+                        "description":       f"Human activity heartbeat ({len(_exclusion_bboxes)} person bbox(es) in frame)",
+                    }
+                    _hp = notifier.send("person", _human_result, frame, _p_bbox, yolo_conf=0.75)
+                    _hp_ref = None
+                    if _hp:
+                        try:
+                            _hp_ref = str(_hp.relative_to(_hp.parent.parent)).replace('\\', '/')
+                        except Exception:
+                            _hp_ref = _hp.name
+                    _preview_stats.record_alert(
+                        species="person",
+                        confidence=0.75,
+                        description=_human_result["description"],
+                        snapshot=_hp_ref,
+                        track_id=None,
+                        yolo_conf=0.75,
+                    )
+                    _last_human_alert_ts = _now_h
+                    logger.info("Human heartbeat alert fired (%d person bbox(es), next in %.0fs)",
+                                len(_exclusion_bboxes), _HUMAN_ALERT_INTERVAL_S)
 
             # Stationary-FP suppression — drop detections whose center is
             # within N pixels of a spot that VLM has already rejected M+ times
