@@ -25,12 +25,17 @@ export function GateFunnelChip({ camera }: GateFunnelChipProps) {
   const velRej = g.motion_velocity_rejected ?? 0;
   const perRej = g.motion_persistence_rejected ?? 0;
   const kinRej = velRej + perRej;
+  const insects = g.vlm_insect ?? 0;
   return (
     <Chip
       label="gate"
       title={`Motion → zone → baseline-passed → vlm → hit. Ratios show which stage filters the most; the drop between stages is the interesting signal.${
         kinRej > 0
           ? ` Kinematic pre-filter (before motion counter): velocity ×${velRej}, persistence ×${perRej}.`
+          : ""
+      }${
+        insects > 0
+          ? ` VLM classified ${insects} as insect (moth/wasp/fly) — count-only, no alert fires.`
           : ""
       }`}
     >
@@ -51,6 +56,12 @@ export function GateFunnelChip({ camera }: GateFunnelChipProps) {
       vlm <b className={styles.b}>{g.vlm_calls}</b>
       <span className={styles.arrow}>→</span>
       hit <b className={styles.hit}>{g.vlm_confirmed}</b>
+      {insects > 0 && (
+        <>
+          <span className={styles.arrow}>·</span>
+          <span className={styles.insect}>insect {insects}</span>
+        </>
+      )}
     </Chip>
   );
 }
