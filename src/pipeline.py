@@ -502,9 +502,22 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     # in our production data. Anything smaller is bugs, dust, or shadow-edge noise.
     _min_motion_bbox_px = int(os.getenv("MIN_MOTION_BBOX_PX", "22"))
 
-    vlm_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vlm")
-    # (future, snap_frame, bbox, yolo_conf, crop_bytes_sent_to_vlm)
-    vlm_jobs: dict[int, tuple[Future, np.ndarray, tuple, float, bytes]] = {}
+    # Load-shedding at the VLM ingress: bounded in-flight cap + drop-oldest
+    # eviction. Without this, sustained motion (real rodent flood OR
+    # human-in-frame FP storm) buffers hundreds of jobs in the executor
+    # queue, each pinning a frame.copy() (~2MB) and delaying alert.ts by
+    # minutes. Empirically measured queue reaching 670+ jobs / 64s lag
+    # before this fix.
+    _VLM_WORKERS = int(os.getenv("VLM_WORKERS", "4"))
+    _VLM_MAX_INFLIGHT = int(os.getenv("VLM_MAX_INFLIGHT", "4"))
+    _VLM_MAX_ALERT_AGE_S = float(os.getenv("VLM_MAX_ALERT_AGE_S", "10"))
+    vlm_pool = ThreadPoolExecutor(max_workers=_VLM_WORKERS, thread_name_prefix="vlm")
+    logger.info("VLM pool: workers=%d max_inflight=%d max_alert_age=%.1fs",
+                _VLM_WORKERS, _VLM_MAX_INFLIGHT, _VLM_MAX_ALERT_AGE_S)
+    # (future, snap_frame, bbox, yolo_conf, crop_bytes_sent_to_vlm, submit_ts)
+    # submit_ts tags job at submission so we can measure queue-age at harvest —
+    # deep queue means alerts fire N seconds after their triggering frame.
+    vlm_jobs: dict[int, tuple[Future, np.ndarray, tuple, float, bytes, float]] = {}
     last_vlm_ts: dict[int, float] = {}
     VLM_INTERVAL_S = float(os.getenv("VLM_INTERVAL_S", "2.0"))
     # Stationary-FP suppression: blinking indicator lights (LEDs, chargers,
@@ -614,6 +627,45 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             if osd_masks:
                 zone_dets = [d for d in zone_dets if not _in_any_mask(d.center, osd_masks)]
 
+            # Human-exclusion mask: YOLO ran alongside motion detection and
+            # separately captured any `person` bboxes (via detector's
+            # `exclusion_bboxes` property). Two modes:
+            #
+            #   1. Per-bbox (default): motion whose center falls inside a
+            #      human bbox is dropped. Handles shirt/hair flicker.
+            #
+            #   2. Whole-frame (HUMAN_EXCLUSION_WHOLE_FRAME=1, default on):
+            #      when ANY person is in frame, drop ALL rodent-candidate
+            #      motion in that frame. Empirically, a walking human
+            #      generates dozens of small peripheral shadow/IR-reflection
+            #      artifacts outside their body bbox that YOLO happily
+            #      classifies as mouse/rat at conf 0.85. Blast-radius scoped
+            #      to whole-frame prevents the FP flood + downstream VLM
+            #      queue pressure. Trade: rodent that actually crosses while
+            #      you're standing there won't fire — accepted given how
+            #      pathological the FP rate is when a human is present.
+            _exclusion_bboxes = detector.exclusion_bboxes
+            _WHOLE_FRAME_EXCLUSION = os.getenv("HUMAN_EXCLUSION_WHOLE_FRAME", "1") == "1"
+            if _exclusion_bboxes:
+                _pre = len(zone_dets)
+                if _WHOLE_FRAME_EXCLUSION:
+                    zone_dets = []
+                else:
+                    zone_dets = [
+                        d for d in zone_dets
+                        if not any(
+                            px1 <= d.center[0] <= px2 and py1 <= d.center[1] <= py2
+                            for (px1, py1, px2, py2) in _exclusion_bboxes
+                        )
+                    ]
+                _dropped = _pre - len(zone_dets)
+                if _dropped > 0:
+                    logger.info(
+                        "human-exclusion (%s): dropped %d dets (persons=%d)",
+                        "whole-frame" if _WHOLE_FRAME_EXCLUSION else "per-bbox",
+                        _dropped, len(_exclusion_bboxes),
+                    )
+
             # Stationary-FP suppression — drop detections whose center is
             # within N pixels of a spot that VLM has already rejected M+ times
             # recently. Blinking indicator lights (LED, IR emitter, reflective
@@ -645,7 +697,7 @@ def run(stream_url: str | None = None, video_path: str | None = None,
 
             # ── Harvest completed VLM jobs ──────────────────────────────────
             for tid in list(vlm_jobs.keys()):
-                fut, snap_fr, bbox, yolo_conf, crop_bytes = vlm_jobs[tid]
+                fut, snap_fr, bbox, yolo_conf, crop_bytes, submit_ts = vlm_jobs[tid]
                 if not fut.done():
                     continue
                 del vlm_jobs[tid]
@@ -656,9 +708,22 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     continue
 
                 _bw, _bh = bbox[2] - bbox[0], bbox[3] - bbox[1]
-                logger.info("DECISION track=%d species=%s rodent=%s conf=%.2f bbox=%s (%dx%d)",
+                _queue_age = time.time() - submit_ts
+                _inflight = len(vlm_jobs)
+                logger.info("DECISION track=%d species=%s rodent=%s conf=%.2f bbox=%s (%dx%d) vlm_queue_age=%.1fs inflight_after=%d",
                             tid, result.get("species"), result.get("is_rodent"),
-                            result.get("confidence", 0.0), bbox, _bw, _bh)
+                            result.get("confidence", 0.0), bbox, _bw, _bh, _queue_age, _inflight)
+
+                # Freshness deadline: discard alerts whose snapshot is too old
+                # to be actionable. Belt-and-suspenders with the ingress cap —
+                # if a job somehow slipped through and completed late, we'd
+                # rather drop it than fire a minutes-old alert with a stale
+                # snapshot. Load-bearing signal is silent success; log the
+                # drop so we know when we're falling behind.
+                if _queue_age > _VLM_MAX_ALERT_AGE_S:
+                    logger.warning("VLM stale-drop: track=%d queue_age=%.1fs > %.1fs (workers/inflight too small for load) — discarding alert",
+                                   tid, _queue_age, _VLM_MAX_ALERT_AGE_S)
+                    continue
 
                 if not result.get("wildlife_detected", False):
                     _preview_stats.record_vlm_rejected()
@@ -864,11 +929,29 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     logger.debug("VLM_SKIP_DAYTIME active — skipping VLM for track=%d", det.track_id)
                     last_vlm_ts[det.track_id] = now
                     continue
-                fut = vlm_pool.submit(vlm.analyze, _vlm_input, _is_daytime)
-                # Stash `crop` (the current-frame JPEG bytes actually sent to VLM)
-                # so a rejected verdict can save it for eyeballing.
-                vlm_jobs[det.track_id] = (fut, frame.copy(), det.bbox, det.confidence, crop)
-                _preview_stats.record_vlm_call()
+                # Ingress load-shedding: cap in-flight jobs, drop oldest
+                # unstarted future when the queue is full. Prefer freshness
+                # over completeness — an alert 30s late on a rodent that
+                # already left is worse than a missed detection during a
+                # motion storm we'd have false-positived anyway.
+                while len(vlm_jobs) >= _VLM_MAX_INFLIGHT:
+                    _oldest_tid = min(vlm_jobs.keys(), key=lambda t: vlm_jobs[t][5])
+                    _old_fut = vlm_jobs[_oldest_tid][0]
+                    if _old_fut.cancel():
+                        del vlm_jobs[_oldest_tid]
+                        logger.debug("VLM load-shed: cancelled oldest pending track=%d", _oldest_tid)
+                    else:
+                        # Already running — can't cancel. Skip THIS submission
+                        # rather than pile on more.
+                        logger.debug("VLM load-shed: queue full and oldest running; skipping track=%d",
+                                     det.track_id)
+                        break
+                else:
+                    fut = vlm_pool.submit(vlm.analyze, _vlm_input, _is_daytime)
+                    # Stash `crop` (the current-frame JPEG bytes actually sent to VLM)
+                    # so a rejected verdict can save it for eyeballing.
+                    vlm_jobs[det.track_id] = (fut, frame.copy(), det.bbox, det.confidence, crop, time.time())
+                    _preview_stats.record_vlm_call()
 
             # Evict gone tracks
             for tid in list(last_vlm_ts.keys()):

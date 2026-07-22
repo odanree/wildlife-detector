@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 
@@ -17,6 +18,23 @@ logger = logging.getLogger(__name__)
 _TRACKED_CLASSES: set[str] = {"cat", "dog", "bird"}
 _STATIONARY_EXEMPT: set[str] = set()
 _POSITION_SUPPRESS_CLASSES: set[str] = set()
+# Exclusion classes: YOLO detections we DON'T alert on but DO use as
+# a "region mask" to suppress downstream motion detections. Prevents
+# a person's shirt/hair flicker firing as "rodent" — a rat sitting
+# on someone's shoulder is orders of magnitude less likely than
+# a motion detector false positive over a human body.
+_EXCLUSION_CLASSES: set[str] = {"person"}
+# Guards against YOLO mis-classifying small wildlife as "person" at low
+# confidence — the exclusion mask would then suppress the rat's motion
+# alert (opposite of intent). Only record exclusion bboxes that meet
+# BOTH thresholds: high confidence + human-scale bbox size.
+#   - conf ≥ 0.70: real human detections score 0.85-0.95 on the yard/
+#     rooftop cameras; a rat-mis-as-person rarely clears 0.5.
+#   - area ≥ 3000 px²: a human at typical yard/rooftop framing is
+#     tens of thousands of px². A rat is ~500-1500 px². 3000 is safely
+#     above rat scale, below any plausible human scale.
+_EXCLUSION_MIN_CONF = float(os.getenv("EXCLUSION_MIN_CONF", "0.70"))
+_EXCLUSION_MIN_AREA_PX = int(os.getenv("EXCLUSION_MIN_AREA_PX", "3000"))
 
 
 @dataclass
@@ -104,6 +122,12 @@ class ObjectDetector:
         self._grid_first_seen: dict[tuple[int, int], float] = {}  # cell -> monotonic start time
         self._grid_blocked: set[tuple[int, int]] = set()          # permanently suppressed cells
 
+        # Exclusion bboxes from the last detect() call — YOLO detections
+        # of `_EXCLUSION_CLASSES` (person). Not returned as alertable
+        # detections; the pipeline reads them to suppress motion FPs that
+        # overlap a human body (e.g., shirt-flicker triggering "rodent").
+        self._last_exclusion_bboxes: list[tuple[int, int, int, int]] = []
+
         logger.info(
             "Detector ready — model=%s high=%.2f low=%.2f tracker=%s fp_grid=%dpx suppress_after=%.1fs",
             model_path, threshold, self._track_low_thresh, tracker_config,
@@ -126,6 +150,9 @@ class ObjectDetector:
 
         detections: list[Detection] = []
         frame_area = self._input_size[0] * self._input_size[1]
+        # Reset per-frame exclusion bboxes — persons from prior frames
+        # shouldn't mask this frame's motion (people move).
+        self._last_exclusion_bboxes = []
 
         if results[0].boxes.id is None:
             self._update_grid(set())   # no hits → reset all active streaks
@@ -140,6 +167,18 @@ class ObjectDetector:
             results[0].boxes.cls.cpu().numpy().astype(int),
         ):
             class_name = self._model.names[cls]
+            # Person / other exclusion classes → record bbox as region
+            # mask for downstream motion filtering, then skip (not an
+            # alertable detection). Guarded by high conf + min-area so
+            # a mis-classified rat (low conf, tiny bbox) doesn't get
+            # written into the exclusion mask and silently suppress
+            # its own real motion alert.
+            if class_name in _EXCLUSION_CLASSES:
+                if float(conf) >= _EXCLUSION_MIN_CONF:
+                    x1, y1, x2, y2 = map(int, box)
+                    if (x2 - x1) * (y2 - y1) >= _EXCLUSION_MIN_AREA_PX:
+                        self._last_exclusion_bboxes.append((x1, y1, x2, y2))
+                continue
             if class_name not in _TRACKED_CLASSES:
                 continue
 
@@ -261,11 +300,24 @@ class ObjectDetector:
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _class_ids(self) -> list[int]:
+        """COCO class ids to pass to YOLO's `classes=` filter. Union of
+        alertable tracked classes + exclusion classes (person). YOLO
+        won't waste inference cost on the other 76 COCO classes."""
+        wanted = _TRACKED_CLASSES | _EXCLUSION_CLASSES
         return [
             idx
             for idx, name in self._model.names.items()
-            if name in _TRACKED_CLASSES
+            if name in wanted
         ]
+
+    @property
+    def exclusion_bboxes(self) -> list[tuple[int, int, int, int]]:
+        """YOLO person-class bboxes from the last detect() call, in
+        detection-frame pixel space. Consumed by the pipeline to
+        suppress motion detections that overlap a human body — a
+        'rodent' appearing on someone's shirt/hair is almost always
+        a motion FP from clothing / hair movement, not a real rat."""
+        return list(self._last_exclusion_bboxes)
 
     def _grid_cell(self, center: tuple[int, int]) -> tuple[int, int]:
         return (center[0] // self._grid_cell_px, center[1] // self._grid_cell_px)

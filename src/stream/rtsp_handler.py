@@ -80,6 +80,8 @@ class RTSPHandler:
         self._stop = threading.Event()
         self._reconnect_delay = reconnect_delay
         self._thread: threading.Thread | None = None
+        # Rolling pickup-age samples for consumer-side lag telemetry
+        self._pickup_age_samples: list[float] = []
 
     @property
     def is_playback(self) -> bool:
@@ -117,11 +119,34 @@ class RTSPHandler:
             self._thread.join(timeout=8)
 
     def get_frame(self, timeout: float = 2.0):
-        """Return the latest frame or None on timeout."""
+        """Return the latest frame or None on timeout.
+
+        Frames carry a capture wall-clock; we strip it before returning
+        and periodically log the pickup-age. Age reflects time between
+        cap.read() and consumer pickup — high age means our queue is
+        holding stale frames (downstream bug); low age means any lag
+        the user sees is upstream (camera / network buffer).
+        """
         try:
-            return self._queue.get(timeout=timeout)
+            item = self._queue.get(timeout=timeout)
         except queue.Empty:
             return None
+        captured_ts, frame = item
+        age = time.time() - captured_ts
+        self._pickup_age_samples.append(age)
+        if len(self._pickup_age_samples) >= 100:
+            samples = sorted(self._pickup_age_samples)
+            n = len(samples)
+            logger.info(
+                "consumer-pickup-age: n=%d avg=%.0fms p50=%.0fms p95=%.0fms max=%.0fms",
+                n,
+                1000.0 * sum(samples) / n,
+                1000.0 * samples[n // 2],
+                1000.0 * samples[int(n * 0.95)],
+                1000.0 * samples[-1],
+            )
+            self._pickup_age_samples.clear()
+        return frame
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
@@ -132,6 +157,15 @@ class RTSPHandler:
 
     def _loop(self) -> None:
         cap = self._open_capture()
+        # Reader cadence instrumentation — logs fps + rapid-read ratio every
+        # 5s. If natural fps is ~30 and we see fps=60+ with rapid_pct high,
+        # we're burning FFmpeg-demuxer backlog (consumer-side backpressure);
+        # frames coming off cap.read() are stale. Confirms whether we need
+        # a grab-and-discard drain at this boundary.
+        m_win_start = time.monotonic()
+        m_last_read = m_win_start
+        m_frames = 0
+        m_rapid = 0
         while not self._stop.is_set():
             # Hot-swap URL (seek or go-live)
             with self._url_lock:
@@ -148,6 +182,23 @@ class RTSPHandler:
                 continue
 
             ok, frame = cap.read()
+            now = time.monotonic()
+            if ok:
+                m_frames += 1
+                if now - m_last_read < 0.010:
+                    m_rapid += 1
+                m_last_read = now
+                elapsed = now - m_win_start
+                if elapsed >= 5.0:
+                    fps = m_frames / elapsed
+                    rapid_pct = 100.0 * m_rapid / max(m_frames, 1)
+                    logger.info(
+                        "reader-cadence: fps=%.1f rapid=%.0f%% (rapid=<10ms between reads → FFmpeg-demuxer backlog)",
+                        fps, rapid_pct,
+                    )
+                    m_win_start = now
+                    m_frames = 0
+                    m_rapid = 0
             if not ok:
                 logger.warning("Stream read failed — reconnecting in %.0fs…", self._reconnect_delay)
                 cap.release()
@@ -161,6 +212,8 @@ class RTSPHandler:
                     self._queue.get_nowait()
                 except queue.Empty:
                     pass
-            self._queue.put(frame)
+            # Tag frame with capture wall-clock so the consumer can log age
+            # at pickup and prove where any lag is (upstream vs our queue).
+            self._queue.put((time.time(), frame))
 
         cap.release()
