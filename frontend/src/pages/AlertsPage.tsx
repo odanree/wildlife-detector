@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import type { AlertRow, LabelVerdict } from "../api/alerts";
+import { type AlertRow, type LabelVerdict, setAlertLabel } from "../api/alerts";
 import { AlertLightbox } from "../components/AlertLightbox";
 import { BulkLabelBar } from "../components/BulkLabelBar";
 import { GlobalHeader } from "../components/GlobalHeader";
@@ -72,10 +72,12 @@ export function AlertsPage() {
     });
   };
 
-  // Local overlay of labels — writes go to the server via LabelPicker /
-  // BulkLabelBar, but the useAlerts polling refresh is on a 5s tick, so
-  // we mirror the last write locally to give an instant visual response.
-  // Merged onto the row via effectiveLabel() when rendering.
+  // Local overlay of labels — writes go to the server via writeLabel below,
+  // but the useAlerts polling refresh is on a 5s tick, so we mirror the
+  // last write locally to give an instant visual response. Merged onto
+  // the row via effectiveLabel() when rendering. LabelPicker + lightbox
+  // are now fully controlled — this Map is the single source of truth
+  // for freshly-applied labels; the picker never keeps its own copy.
   const [labelOverlay, setLabelOverlay] = useState<
     Map<number, { verdict: LabelVerdict; species: string | null }>
   >(() => new Map());
@@ -85,6 +87,42 @@ export function AlertsPage() {
       for (const id of ids) next.set(id, { verdict, species });
       return next;
     });
+  };
+  // Per-row busy set — tracks in-flight server writes so the LabelPicker
+  // in that row disables its buttons while a request is pending. Prevents
+  // rapid-fire double-clicks from queueing multiple writes for one alert.
+  const [busyIds, setBusyIds] = useState<Set<number>>(() => new Set());
+  const setBusy = (id: number, on: boolean) => {
+    setBusyIds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+  // Single owner of label state + server write. Optimistic overlay update
+  // followed by async setAlertLabel; on failure, roll back the overlay to
+  // whatever it was before (or delete the key if we didn't have one).
+  // This is the API that LabelPicker's onChange callbacks pipe through —
+  // no other component should call setAlertLabel directly.
+  const writeLabel = async (alertId: number, verdict: LabelVerdict, species: string | null) => {
+    const prev = labelOverlay.get(alertId);
+    applyLabelOverlay([alertId], verdict, species);
+    setBusy(alertId, true);
+    try {
+      await setAlertLabel(alertId, verdict, species);
+    } catch (e) {
+      // Roll back overlay so UI reverts and operator knows the write failed.
+      setLabelOverlay((cur) => {
+        const next = new Map(cur);
+        if (prev) next.set(alertId, prev);
+        else next.delete(alertId);
+        return next;
+      });
+      alert(`Label failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(alertId, false);
+    }
   };
 
   const camerasResp = useCameras();
@@ -339,7 +377,8 @@ export function AlertsPage() {
                   selectedIds,
                   toggleOne,
                   labelOverlay,
-                  (id, verdict, species) => applyLabelOverlay([id], verdict, species),
+                  writeLabel,
+                  busyIds,
                 ),
               )}
             </tbody>
@@ -356,7 +395,8 @@ export function AlertsPage() {
         openId={openId}
         setOpenId={setOpenId}
         labelOverlay={labelOverlay}
-        onLabeled={(id, verdict, species) => applyLabelOverlay([id], verdict, species)}
+        busyIds={busyIds}
+        writeLabel={writeLabel}
       />
     </div>
   );
@@ -370,7 +410,8 @@ function renderGroup(
   selectedIds: Set<number>,
   toggleOne: (id: number) => void,
   labelOverlay: Map<number, { verdict: LabelVerdict; species: string | null }>,
-  onLabeled: (id: number, verdict: LabelVerdict, species: string | null) => void,
+  writeLabel: (id: number, verdict: LabelVerdict, species: string | null) => Promise<void>,
+  busyIds: Set<number>,
 ): JSX.Element[] {
   return [
     <Row
@@ -383,7 +424,8 @@ function renderGroup(
       isSelected={selectedIds.has(g.head.id)}
       onToggleSelect={() => toggleOne(g.head.id)}
       labelOverride={labelOverlay.get(g.head.id)}
-      onLabeled={(v, s) => onLabeled(g.head.id, v, s)}
+      writeLabel={writeLabel}
+      busy={busyIds.has(g.head.id)}
     />,
   ];
 }
@@ -397,7 +439,8 @@ function Row({
   isSelected,
   onToggleSelect,
   labelOverride,
-  onLabeled,
+  writeLabel,
+  busy,
 }: {
   alert: AlertRow;
   showCameraBadge: boolean;
@@ -407,7 +450,8 @@ function Row({
   isSelected: boolean;
   onToggleSelect: () => void;
   labelOverride?: { verdict: LabelVerdict; species: string | null };
-  onLabeled: (verdict: LabelVerdict, species: string | null) => void;
+  writeLabel: (id: number, verdict: LabelVerdict, species: string | null) => Promise<void>;
+  busy: boolean;
 }): JSX.Element {
   const isRodent = RODENT_SPECIES.has(alert.species);
   const isHist = alert.historical;
@@ -460,10 +504,10 @@ function Row({
       </td>
       <td className={styles.track}>
         <LabelPicker
-          alertId={alert.id}
-          initialVerdict={effVerdict}
-          initialSpecies={effSpecies}
-          onLabeled={onLabeled}
+          verdict={effVerdict}
+          species={effSpecies}
+          busy={busy}
+          onChange={(v, s) => writeLabel(alert.id, v, s)}
         />
       </td>
       <td className={speciesCls}>
