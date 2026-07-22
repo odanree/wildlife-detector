@@ -537,6 +537,7 @@ def create_app(registry: DetectorRegistry) -> Flask:
         camera     = _pick("camera")
         hour_start = _pick("hour_start", cast=int)
         hour_end   = _pick("hour_end", cast=int)
+        tz         = _pick("tz", default="America/Los_Angeles")
         # Prefer preview.py's initialized _snapshot_dir; fall back to the
         # SNAPSHOT_DIR env used elsewhere in this service. The web
         # container's preview.init flow doesn't always run before HTTP
@@ -557,6 +558,7 @@ def create_app(registry: DetectorRegistry) -> Flask:
             camera_id=camera,
             hour_start=hour_start,
             hour_end=hour_end,
+            tz=tz,
         )
         return jsonify({
             "inserted":   n,
@@ -565,6 +567,7 @@ def create_app(registry: DetectorRegistry) -> Flask:
             "camera":     camera,
             "hour_start": hour_start,
             "hour_end":   hour_end,
+            "tz":         tz,
         })
 
     @app.post("/api/alerts/label-bulk")

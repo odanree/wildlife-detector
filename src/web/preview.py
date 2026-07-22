@@ -566,6 +566,7 @@ class AlertLog:
         camera_id: str | None = None,
         hour_start: int | None = None,
         hour_end: int | None = None,
+        tz: str = "America/Los_Angeles",
     ) -> int:
         """Walk snapshots/ (recursively) and INSERT OR IGNORE each JPEG into
         alerts as a historical row. Idempotent — INSERT OR IGNORE keys off
@@ -576,16 +577,33 @@ class AlertLog:
                                snapshot directory (snapshots/YYYY-MM-DD/*.jpg).
           camera_id: 'yard' default (historical filename schema predates
                      multi-camera). Pass explicitly for rooftop-era files.
-          hour_start / hour_end: local-hour filter, inclusive/exclusive.
-                     Wrap-around supported (e.g. 20 → 6 = 8 PM to 6 AM).
-                     Rodents are nocturnal, so nighttime-only backfill
-                     drops daytime shadow/moth FPs from the labeling pile.
+          hour_start / hour_end: hour-of-day filter, inclusive / exclusive.
+                     Interpreted in `tz` (default America/Los_Angeles).
+                     Wrap-around supported (e.g. 22 → 5 = 10 PM to 5 AM).
+                     The filename's HH is UTC (the container writes
+                     datetime.now() in a UTC container), so we convert
+                     to `tz` before comparing — otherwise a 22-05 filter
+                     targets the WRONG window (UTC≠PDT).
+          tz:        IANA timezone name; the hour_start/hour_end range is
+                     compared against the file's local hour in this zone.
         """
         if self._state is None or not snapshot_dir.exists():
             return 0
         pattern = re.compile(r'^([a-z_]+)_(\d{8})_(\d{6})\.jpg$', re.IGNORECASE)
         rows: list[dict] = []
         scanned = 0
+        # Filename time is UTC (containers save datetime.now() in UTC).
+        # Operator specifies hour_start/hour_end in LOCAL time (default
+        # America/Los_Angeles) — the whole point of nighttime filtering
+        # is nocturnal rodent activity in the property's local clock.
+        try:
+            from zoneinfo import ZoneInfo
+            _utc = ZoneInfo("UTC")
+            _local = ZoneInfo(tz)
+        except Exception:
+            logger.warning("backfill tz='%s' invalid; falling back to UTC comparison", tz)
+            _utc = None
+            _local = None
 
         def hour_in_range(hour: int) -> bool:
             if hour_start is None and hour_end is None:
@@ -615,14 +633,27 @@ class AlertLog:
                 relpath = str(f.relative_to(snapshot_dir)).replace('\\', '/')
             except ValueError:
                 continue
-            # Hour filter — reject files whose HH doesn't fall in the range.
+            # Hour filter — reject files whose local hour (converted from
+            # the filename's UTC time) doesn't fall in the range.
             if hour_start is not None or hour_end is not None:
                 try:
-                    file_hour = int(hms[:2])
+                    file_hour_utc = int(hms[:2])
                 except (IndexError, ValueError):
                     continue
-                if not hour_in_range(file_hour):
-                    continue
+                if _utc is not None and _local is not None:
+                    # Reconstruct the UTC datetime, convert to local zone,
+                    # then take that local hour for the range check.
+                    from datetime import datetime as _dt
+                    try:
+                        dt_utc = _dt.strptime(f"{date}_{hms}", "%Y%m%d_%H%M%S").replace(tzinfo=_utc)
+                        local_hour = dt_utc.astimezone(_local).hour
+                    except ValueError:
+                        continue
+                    if not hour_in_range(local_hour):
+                        continue
+                else:
+                    if not hour_in_range(file_hour_utc):
+                        continue
             rows.append({
                 "ts":          ts,
                 "species":     event_type,     # e.g. "rodent" — no species detail available
