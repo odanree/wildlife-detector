@@ -269,7 +269,6 @@ export function AlertLightbox({
         ›
       </button>
       <div className={styles.inner}>
-        {/* biome-ignore lint/a11y/useKeyWithClickEvents: img uses mouse-only affordances (wheel zoom, click-drag pan); reset via keyboard "0"/Home */}
         <div className={styles.imgViewport}>
           <img
             ref={imgRef}
