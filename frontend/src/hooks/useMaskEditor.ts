@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { type Rect, saveMasks } from "../api/masks";
 import type { MaskMode } from "../components/MaskOverlay";
 import { useMasks } from "./useMasks";
@@ -42,13 +42,15 @@ export function useMaskEditor(camera: string): MaskEditorApi {
 
   const serverMasks = masksData?.masks ?? [];
 
-  // Cancel editing on camera change — otherwise operator would silently
-  // be editing a stale mask set. Reset saveErr too.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: camera IS the trigger; body only calls setters.
-  useEffect(() => {
+  // Cancel editing on camera change via adjust-state-during-rendering
+  // (React docs' "You Might Not Need an Effect"). Sentinel state avoids
+  // the sync-via-effect pattern the ESLint plugin flags as tier-1.
+  const [prevCamera, setPrevCamera] = useState(camera);
+  if (camera !== prevCamera) {
+    setPrevCamera(camera);
     setMode("idle");
     setSaveErr(null);
-  }, [camera]);
+  }
 
   const enterEdit = useCallback(() => {
     setWorkingMasks(masksData?.masks ?? []);
