@@ -6,6 +6,17 @@ import { fetchAlerts } from "../api/alerts";
 const SEEN_KEY_BASE = "alertsLastSeenTotal";
 const SEEN_ID_KEY_BASE = "alertsLastSeenId";
 
+/** Custom event fired on the same tab that just called markAlertsSeen,
+ *  because the browser's native `storage` event only fires in OTHER tabs.
+ *  useUnreadAlerts listens to both — this one for same-tab reactivity,
+ *  the storage event for cross-tab sync. Detail carries the camera key
+ *  and the new total so listeners don't have to re-read localStorage. */
+const SEEN_UPDATED_EVENT = "wildlife-detector:alerts-seen-updated";
+interface SeenUpdatedDetail {
+  camera: string; // "all" or camera_id — the localStorage key suffix
+  total: number;
+}
+
 function seenKey(camera?: string | null): string {
   return `${SEEN_KEY_BASE}:${camera || "all"}`;
 }
@@ -184,12 +195,26 @@ export function useUnreadAlerts(
     }
     window.addEventListener("storage", onStorage);
 
+    // Same-tab sync: `storage` events don't fire in the tab that wrote
+    // localStorage. AlertsPage calls markAlertsSeen() during its
+    // effect chain and expects the badge in THIS tab's header to
+    // update. The custom event fills that gap — same shape as
+    // onStorage but for the same tab.
+    const watchedCameras = new Set(cams);
+    function onSeenUpdated(e: Event) {
+      const detail = (e as CustomEvent<SeenUpdatedDetail>).detail;
+      if (!detail || !watchedCameras.has(detail.camera)) return;
+      setSeens((prev) => ({ ...prev, [detail.camera]: detail.total }));
+    }
+    window.addEventListener(SEEN_UPDATED_EVENT, onSeenUpdated);
+
     return () => {
       cancelled = true;
       controller.abort();
       es?.close();
       if (fallbackHandle != null) window.clearInterval(fallbackHandle);
       window.removeEventListener("storage", onStorage);
+      window.removeEventListener(SEEN_UPDATED_EVENT, onSeenUpdated);
     };
   }, [camsKey, intervalMs]);
 
@@ -254,6 +279,12 @@ export function markAlertsSeen(
     if (highestId != null) {
       localStorage.setItem(seenIdKey(camera), String(highestId));
     }
+    // Same-tab notification — the native `storage` event won't fire on
+    // this tab, only on other tabs. Custom event fills that gap so the
+    // header badge updates immediately when the operator visits the
+    // alerts page.
+    const detail: SeenUpdatedDetail = { camera: camera || "all", total };
+    window.dispatchEvent(new CustomEvent(SEEN_UPDATED_EVENT, { detail }));
   } catch {
     /* ignore */
   }
