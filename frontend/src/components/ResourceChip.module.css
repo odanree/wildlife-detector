@@ -12,3 +12,13 @@
   color: var(--text-dim);
   margin: 0 6px;
 }
+
+/* FPS below ~8 in the pipeline — amber tint peripheral-warning without
+   being alarmist. Threshold picked to keep the persistence gate happy
+   (2-frame tracks at 8fps = 250ms window = still resolves rodent
+   crossings before the motion track expires). */
+.warn {
+  color: var(--accent-warn, #d0aa5a);
+  font-weight: 600;
+  margin: 0 2px;
+}
