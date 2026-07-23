@@ -176,8 +176,11 @@ def create_app() -> Flask:
         b = preview.get_baseline()
         if b is None:
             return jsonify({"error": "baseline not initialized"}), 503
-        mode = (request.args.get("mode") or request.get_json(silent=True) or {}).get("mode") \
-               if isinstance(request.get_json(silent=True), dict) else request.args.get("mode")
+        # Query-string wins, JSON body falls back. Prior version had a
+        # broken precedence expression that called `.get("mode")` on a
+        # bare string when both were supplied → AttributeError. Also
+        # called get_json twice per request. Issue #31.
+        mode = request.args.get("mode") or (request.get_json(silent=True) or {}).get("mode")
         b.clear(mode=mode)
         return jsonify({"ok": True, **b.snapshot()})
 
