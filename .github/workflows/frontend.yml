@@ -53,6 +53,90 @@ jobs:
       - name: TypeScript typecheck
         run: bun run typecheck
 
+  antipattern-lint:
+    # Tier-1 counter: runs eslint-plugin-react-you-might-not-need-an-effect
+    # against PR head AND base, posts a PR comment when the delta > 0.
+    # Failing behavior: the job itself never fails (comments are the
+    # signal). If you want CI to block on regressions, flip the last
+    # `continue-on-error` to false.
+    #
+    # Only meaningful on PRs — pushes to main go through the counts
+    # workflow (.github/workflows/antipattern-counts.yml) which records
+    # the merged count to .audit/counts.jsonl for the time-series.
+    name: react anti-pattern delta
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: |
+          if [ -f bun.lock ]; then
+            bun install --frozen-lockfile
+          else
+            bun install
+          fi
+      - name: Count anti-patterns on PR head
+        id: head_count
+        run: |
+          count=$(bun run lint:antipatterns:count 2>/dev/null || echo 0)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "PR head: $count you-might-not-need-an-effect findings"
+      - name: Checkout base branch
+        run: |
+          git fetch origin ${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}
+          git checkout refs/remotes/origin/${{ github.base_ref }} -- src eslint.config.js package.json 2>/dev/null || true
+      - name: Count anti-patterns on base branch
+        id: base_count
+        run: |
+          # If base doesn't have eslint.config.js yet (first PR introducing
+          # this workflow), treat base count as 0 so the delta reflects
+          # everything the PR is introducing.
+          if [ ! -f eslint.config.js ]; then
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo "Base branch has no eslint.config.js — treating base count as 0"
+          else
+            count=$(bun run lint:antipatterns:count 2>/dev/null || echo 0)
+            echo "count=$count" >> "$GITHUB_OUTPUT"
+            echo "Base: $count findings"
+          fi
+      - name: Comment on delta increase
+        if: steps.head_count.outputs.count > steps.base_count.outputs.count
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const head = ${{ steps.head_count.outputs.count }};
+            const base = ${{ steps.base_count.outputs.count }};
+            const delta = head - base;
+            const body = [
+              '### Anti-pattern regression detected',
+              '',
+              `This PR adds **${delta}** new \`react-you-might-not-need-an-effect\` finding${delta === 1 ? '' : 's'}.`,
+              '',
+              `| Ref | Count |`,
+              `|---|---|`,
+              `| Base (\`${{ github.base_ref }}\`) | ${base} |`,
+              `| PR head | ${head} |`,
+              `| **Delta** | **+${delta}** |`,
+              '',
+              'Run \`bun run lint:antipatterns\` locally to see the offending lines and fix shape. See #36 for the pattern class and PR #29 for the canonical fix shape.',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
   build:
     name: vite build
     runs-on: ubuntu-latest

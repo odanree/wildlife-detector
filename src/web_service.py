@@ -25,9 +25,11 @@ Environment:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import signal
+import time
 import sys
 import threading
 from logging.handlers import RotatingFileHandler
@@ -835,6 +837,44 @@ def create_app(registry: DetectorRegistry) -> Flask:
         params = {"mode": request.args.get("mode")} if request.args.get("mode") else None
         result, status_code = detector.post_command("/internal/baseline/clear", params=params)
         return jsonify(result), status_code
+
+    # ── Tier-3 anti-pattern instrumentation: React Profiler sink ───────────
+    #
+    # Receives batched slow-commit events from the frontend's <Profiler>
+    # wrapping (see frontend/src/util/perfSink.ts). Appends to a JSONL
+    # file so we can attribute perf regressions to specific deploys via
+    # the git SHA baked into the frontend at build time.
+    #
+    # Pattern: production-side telemetry sink with append-only durable
+    # storage. Deliberately dumb — no per-event auth, no aggregation
+    # in-line, no schema validation beyond "it must be JSON with events".
+    # A downstream aggregator (offline / cron) reads the JSONL and
+    # produces the SLO dashboard. Kept dumb so the hot path stays fast
+    # and the sink never becomes the bottleneck.
+    _PERF_LOG_PATH = Path(os.getenv("PERF_LOG_PATH", "data/perf-profile.jsonl"))
+    _PERF_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    @app.post("/api/perf/profile")
+    def post_perf_profile():
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"error": "expected JSON object"}), 400
+        events = body.get("events")
+        if not isinstance(events, list) or not events:
+            return jsonify({"ok": True, "wrote": 0})
+        sha = body.get("sha", "unknown")
+        ua = body.get("ua", "")
+        received_at = time.time()
+        try:
+            with _PERF_LOG_PATH.open("a", encoding="utf-8") as f:
+                for ev in events:
+                    f.write(
+                        json.dumps({"sha": sha, "ua": ua, "t": received_at, "ev": ev}) + "\n"
+                    )
+        except OSError as exc:
+            logger.warning("perf sink write failed: %s", exc)
+            return jsonify({"error": "sink unavailable"}), 503
+        return jsonify({"ok": True, "wrote": len(events)})
 
     return app
 

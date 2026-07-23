@@ -1,5 +1,18 @@
-import { defineConfig } from "vite";
+import { execSync } from "node:child_process";
 import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
+
+// Bake the current git SHA into the bundle so the tier-3 profiler sink
+// can attribute each perf event to the deploy that produced it. Falls
+// back to "dev" if git isn't available at build time (e.g. inside a
+// container without .git). See frontend/src/util/perfSink.ts.
+const commitSha = (() => {
+  try {
+    return execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
+  } catch {
+    return "dev";
+  }
+})();
 
 // Flask serves the built bundle under /react/* (see src/web/preview.py).
 // `base` must match so absolute asset URLs in index.html resolve correctly
@@ -9,6 +22,9 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   base: "/react/",
+  define: {
+    __COMMIT_SHA__: JSON.stringify(commitSha),
+  },
   build: {
     outDir: "dist",
     emptyOutDir: true,
