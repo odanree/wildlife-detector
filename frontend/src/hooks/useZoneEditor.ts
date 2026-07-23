@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { type Point, saveZone } from "../api/zone";
 import type { EditMode } from "../components/ZoneOverlay";
 import { polygonIsSimple } from "../util/polygon";
@@ -62,14 +62,17 @@ export function useZoneEditor(camera: string): ZoneEditorApi {
 
   const serverPolygon = zoneData?.polygon ?? [];
 
-  // Cancel editing on camera change — otherwise operator would silently
-  // be editing a stale polygon. Reset saveErr too so a prior camera's
-  // error doesn't linger on the new one.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: camera IS the trigger; body only calls setters.
-  useEffect(() => {
+  // Cancel editing on camera change via adjust-state-during-rendering.
+  // React docs' "You Might Not Need an Effect" — set the sentinel state
+  // during render, then setState fires and React re-renders with the
+  // fresh mode. No subscribing effect → no tier-1 anti-pattern from the
+  // ESLint plugin.
+  const [prevCamera, setPrevCamera] = useState(camera);
+  if (camera !== prevCamera) {
+    setPrevCamera(camera);
     setMode("idle");
     setSaveErr(null);
-  }, [camera]);
+  }
 
   const enterDraw = useCallback(() => {
     setWorkingPolygon([]);
