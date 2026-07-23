@@ -1,37 +1,41 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { type Rect, saveMasks } from "../api/masks";
-import { type Point, saveZone } from "../api/zone";
 import { CameraPane, type ViewMode } from "../components/CameraPane";
 import { GlobalHeader } from "../components/GlobalHeader";
 import { type MaskMode, MaskOverlay } from "../components/MaskOverlay";
 import { type EditMode, ZoneOverlay } from "../components/ZoneOverlay";
 import { useCameras } from "../hooks/useCameras";
 import { useDetectionSize } from "../hooks/useDetectionSize";
-import { useMasks } from "../hooks/useMasks";
+import { useMaskEditor } from "../hooks/useMaskEditor";
+import { useSecondaryPane } from "../hooks/useSecondaryPane";
 import { useStatus } from "../hooks/useStatus";
-import { useZone } from "../hooks/useZone";
-import { polygonIsSimple } from "../util/polygon";
+import { useZoneEditor } from "../hooks/useZoneEditor";
 import styles from "./LivePreviewPage.module.css";
 
-const SECONDARY_STORAGE_KEY = "livePreview.secondaryCamera";
-
 /**
- * Live streaming preview. This page is now a thin orchestrator on top
- * of two <CameraPane> instances. Editor state (zone + mask) stays here
- * because the editor toolbar always targets the *primary* pane and its
- * mutual-exclusivity invariant lives above both panes.
+ * Live streaming preview — layout + <CameraPane> composition. State
+ * ownership is delegated to three focused hooks:
  *
- * Architecture calls:
+ *   - useSecondaryPane: opt-in dual-pane state + persistence.
+ *   - useZoneEditor(primary): zone-polygon FSM + save.
+ *   - useMaskEditor(primary): OSD-mask FSM + save.
+ *
+ * Was 460 LOC + 10 useState + 5 useEffect before #34; now ~180 LOC
+ * + 1 useState + 0 useEffect (excluding the hooks' own internals).
+ *
+ * Mutual-exclusion invariant between zone + mask editors lives HERE
+ * (one level up from both hooks) — before calling `zone.enterDraw()`,
+ * the page calls `mask.cancel()` and vice versa. Keeps cross-hook
+ * coordination out of the individual hooks and centralised in the
+ * layer that already owns both. If a third editor ever lands, extract
+ * useEditorRegistry then; for now YAGNI.
+ *
+ * Architecture calls (unchanged from before):
  *   - **Component-level bulkhead** — <CameraPane> owns its own zoom,
- *     view-mode, alert-flash, and baseline controls. A bug in one pane
- *     can't corrupt the other's state.
+ *     view-mode, alert-flash, and baseline controls. Isolated failures.
  *   - **URL as source of truth for primary, localStorage for secondary.**
- *     Primary camera is bookmarkable (shared context). Secondary is a
- *     per-viewer preference (opt-in via "+ Add pane" toggle).
- *   - **Promote swap = state re-parenting.** Secondary's "↑ Promote"
- *     swaps the two camera IDs; the editors follow whichever camera
- *     ends up primary. useZone/useMasks re-poll on the id change.
+ *   - **Promote swap = state re-parenting.** The URL update flips
+ *     primary; useZoneEditor / useMaskEditor re-init on the id change.
  */
 export function LivePreviewPage() {
   const { data: camerasData } = useCameras();
@@ -40,172 +44,42 @@ export function LivePreviewPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const primary = searchParams.get("camera") ?? defaultCam;
 
-  // Secondary camera opt-in — persisted per-viewer. null = pane closed.
-  const [secondary, setSecondaryState] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem(SECONDARY_STORAGE_KEY);
-    } catch {
-      return null;
-    }
-  });
-  // Single-writer wrapper: every mutation of `secondary` goes through
-  // this. The localStorage sync lives in the mutation, not in a
-  // subscribing effect — writing via effect is the "effect-as-event-
-  // handler" anti-pattern (React docs: "You Might Not Need an Effect").
-  // Handler-owned side effects also give clearer stack traces when the
-  // write throws (quota, disabled storage, etc.).
-  const setSecondary = useCallback((v: string | null) => {
-    setSecondaryState(v);
-    try {
-      if (v) localStorage.setItem(SECONDARY_STORAGE_KEY, v);
-      else localStorage.removeItem(SECONDARY_STORAGE_KEY);
-    } catch {
-      // localStorage quota or disabled — the pane still works this session.
-    }
-  }, []);
-  // If the persisted secondary collides with primary (e.g. user swapped
-  // in another tab), close it — same camera on both panes is a UX bug.
-  useEffect(() => {
-    if (secondary && secondary === primary) setSecondary(null);
-  }, [primary, secondary, setSecondary]);
+  const pane = useSecondaryPane(cameras, primary);
+  const zone = useZoneEditor(primary);
+  const mask = useMaskEditor(primary);
 
   // View mode is keyed by camera (not pane slot) so it follows a
-  // camera across a promote-swap. Session-only — not persisted across
-  // reloads so re-opening the page always starts on the Live stream.
+  // camera across a promote-swap. Session-only.
   const [viewModes, setViewModes] = useState<Record<string, ViewMode>>({});
   const setViewModeFor = (camera: string) => (mode: ViewMode) =>
     setViewModes((prev) => ({ ...prev, [camera]: mode }));
 
-  // Editors target the primary camera. detW/detH come from primary's status,
-  // with useDetectionSize's cache filling the gap during a camera-change so
-  // ZoneOverlay/MaskOverlay viewBox coords don't briefly render at the
-  // 1280×720 fallback aspect.
+  // Editors target the primary camera. detW/detH come from primary's
+  // status with useDetectionSize's cache filling the gap during a
+  // camera-change so overlay viewBox coords don't briefly render at
+  // the 1280×720 fallback aspect.
   const { data: primaryStatus } = useStatus(primary || undefined);
   const [detW, detH] = useDetectionSize(primary, primaryStatus?.detection_size);
 
-  // ── Zone editor state ──
-  const { data: zoneData, refresh: refreshZone } = useZone(primary);
-  const [zoneMode, setZoneMode] = useState<EditMode>("idle");
-  const [workingPolygon, setWorkingPolygon] = useState<Point[]>([]);
-  const [zoneSaving, setZoneSaving] = useState(false);
-  const [zoneErr, setZoneErr] = useState<string | null>(null);
-  useEffect(() => {
-    if (zoneMode === "idle" && zoneData) setWorkingPolygon(zoneData.polygon);
-  }, [zoneData, zoneMode]);
+  // Displayed polygons/masks: server value when idle, working value
+  // otherwise. Replaces the H4 sync-via-effect the audit flagged.
+  const displayedPolygon = zone.mode === "idle" ? zone.serverPolygon : zone.workingPolygon;
+  const displayedMasks = mask.mode === "idle" ? mask.serverMasks : mask.workingMasks;
 
-  // ── Mask editor state (vanilla-parity: single edit mode) ──
-  const { data: masksData, refresh: refreshMasks } = useMasks(primary);
-  const [maskMode, setMaskMode] = useState<MaskMode>("idle");
-  const [workingMasks, setWorkingMasks] = useState<Rect[]>([]);
-  const [maskSaving, setMaskSaving] = useState(false);
-  const [maskErr, setMaskErr] = useState<string | null>(null);
-  useEffect(() => {
-    if (maskMode === "idle" && masksData) setWorkingMasks(masksData.masks);
-  }, [masksData, maskMode]);
-
-  // Any change to the primary camera cancels both editors — otherwise
-  // the operator would silently be editing a stale polygon/rect set.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: primary IS the fire trigger; body only calls setters
-  useEffect(() => {
-    setZoneMode("idle");
-    setMaskMode("idle");
-  }, [primary]);
-
-  const displayedPolygon = zoneMode === "idle" ? (zoneData?.polygon ?? []) : workingPolygon;
-  const displayedMasks = maskMode === "idle" ? (masksData?.masks ?? []) : workingMasks;
-
-  // ── Editor mutual exclusivity ──
-  function enterZoneDraw() {
-    if (maskMode !== "idle") cancelMaskEdit();
-    setWorkingPolygon([]);
-    setZoneMode("draw");
-    setZoneErr(null);
-  }
-  function enterZoneTweak() {
-    if (maskMode !== "idle") cancelMaskEdit();
-    setWorkingPolygon(zoneData?.polygon ?? []);
-    setZoneMode("tweak");
-    setZoneErr(null);
-  }
-  function cancelZoneEdit() {
-    setZoneMode("idle");
-    setWorkingPolygon(zoneData?.polygon ?? []);
-    setZoneErr(null);
-  }
-  function onZoneDrawClose() {
-    setZoneMode("tweak");
-  }
-  async function doZoneSave() {
-    if (workingPolygon.length < 3 || zoneSaving) return;
-    // Guard against self-intersecting polygons: SVG strokes vertex order,
-    // so the closing edge V(n-1)→V0 can slice through the interior when
-    // a vertex is placed inside the outline, and the shape reads as "two
-    // zones" in the editor. Cheaper to block the save than to teach every
-    // user to think about winding order.
-    if (!polygonIsSimple(workingPolygon)) {
-      setZoneErr(
-        "self-intersecting — one edge crosses another. Move vertices so the outline doesn't cross itself.",
-      );
-      return;
-    }
-    setZoneSaving(true);
-    setZoneErr(null);
-    try {
-      await saveZone(primary, workingPolygon);
-      refreshZone();
-      setZoneMode("idle");
-    } catch (e) {
-      setZoneErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setZoneSaving(false);
-    }
-  }
-
-  function enterMaskEdit() {
-    if (zoneMode !== "idle") cancelZoneEdit();
-    setWorkingMasks(masksData?.masks ?? []);
-    setMaskMode("edit");
-    setMaskErr(null);
-  }
-  function cancelMaskEdit() {
-    setMaskMode("idle");
-    setWorkingMasks(masksData?.masks ?? []);
-    setMaskErr(null);
-  }
-  async function doMaskSave() {
-    if (maskSaving) return;
-    setMaskSaving(true);
-    setMaskErr(null);
-    try {
-      await saveMasks(primary, workingMasks);
-      refreshMasks();
-      setMaskMode("idle");
-    } catch (e) {
-      setMaskErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setMaskSaving(false);
-    }
-  }
-
-  // ── Secondary-pane orchestration ──
-  const canAddSecondary = cameras.length >= 2 && !secondary;
-  function addSecondaryPane() {
-    const next = cameras.find((c) => c !== primary);
-    if (next) setSecondary(next);
-  }
-  function removeSecondaryPane() {
-    setSecondary(null);
-  }
-  function selectSecondaryCamera(c: string) {
-    if (c === primary) return;
-    setSecondary(c);
-  }
-  function promoteSecondary() {
-    if (!secondary) return;
-    const oldPrimary = primary;
-    setSearchParams({ camera: secondary });
-    setSecondary(oldPrimary);
-  }
+  // Mutual-exclusion enforced at the page layer — before entering an
+  // editor mode, cancel the other. Only one editor active at a time.
+  const enterZoneDraw = () => {
+    mask.cancel();
+    zone.enterDraw();
+  };
+  const enterZoneTweak = () => {
+    mask.cancel();
+    zone.enterTweak();
+  };
+  const enterMaskEdit = () => {
+    zone.cancel();
+    mask.enterEdit();
+  };
 
   return (
     <div className={styles.wrap}>
@@ -220,9 +94,9 @@ export function LivePreviewPage() {
             >
               {cameras.length === 0 && <option value="">(loading)</option>}
               {cameras.map((c) => (
-                <option key={c} value={c} disabled={c === secondary}>
+                <option key={c} value={c} disabled={c === pane.secondary}>
                   {c}
-                  {c === secondary ? " (secondary)" : ""}
+                  {c === pane.secondary ? " (secondary)" : ""}
                 </option>
               ))}
             </select>
@@ -244,32 +118,32 @@ export function LivePreviewPage() {
         <div className={styles.editorToolbar}>
           <span className={styles.editorScope}>editing: primary</span>
           <ZoneEditorButtons
-            mode={zoneMode}
-            vertexCount={workingPolygon.length}
-            isSimple={polygonIsSimple(workingPolygon)}
-            saving={zoneSaving}
-            saveErr={zoneErr}
+            mode={zone.mode}
+            vertexCount={zone.workingPolygon.length}
+            isSimple={zone.isSimple}
+            saving={zone.saving}
+            saveErr={zone.saveErr}
             onDraw={enterZoneDraw}
             onTweak={enterZoneTweak}
-            onSave={doZoneSave}
-            onCancel={cancelZoneEdit}
+            onSave={zone.save}
+            onCancel={zone.cancel}
           />
           <MaskEditorButtons
-            mode={maskMode}
-            count={workingMasks.length}
-            saving={maskSaving}
-            saveErr={maskErr}
+            mode={mask.mode}
+            count={mask.workingMasks.length}
+            saving={mask.saving}
+            saveErr={mask.saveErr}
             onEdit={enterMaskEdit}
-            onSave={doMaskSave}
-            onCancel={cancelMaskEdit}
+            onSave={mask.save}
+            onCancel={mask.cancel}
           />
           <span className={styles.spacer} />
-          {secondary ? null : (
+          {pane.secondary ? null : (
             <button
               type="button"
               className={styles.linkBtn}
-              onClick={addSecondaryPane}
-              disabled={!canAddSecondary}
+              onClick={pane.add}
+              disabled={!pane.canAdd}
               title={
                 cameras.length < 2
                   ? "Need at least two cameras to open a secondary pane"
@@ -290,7 +164,7 @@ export function LivePreviewPage() {
             camera={primary}
             isPrimary
             cameras={cameras}
-            otherPaneCamera={secondary ?? undefined}
+            otherPaneCamera={pane.secondary ?? undefined}
             viewMode={viewModes[primary] ?? "live"}
             onViewModeChange={setViewModeFor(primary)}
           >
@@ -298,29 +172,29 @@ export function LivePreviewPage() {
               baseW={detW}
               baseH={detH}
               polygon={displayedPolygon}
-              mode={zoneMode}
-              onChange={setWorkingPolygon}
-              onClose={onZoneDrawClose}
+              mode={zone.mode}
+              onChange={zone.setWorkingPolygon}
+              onClose={zone.closeDrawing}
             />
             <MaskOverlay
               baseW={detW}
               baseH={detH}
               masks={displayedMasks}
-              mode={maskMode}
-              onChange={setWorkingMasks}
+              mode={mask.mode}
+              onChange={mask.setWorkingMasks}
             />
           </CameraPane>
-          {secondary && (
+          {pane.secondary && (
             <CameraPane
-              camera={secondary}
+              camera={pane.secondary}
               isPrimary={false}
               cameras={cameras}
               otherPaneCamera={primary}
-              onSelectCamera={selectSecondaryCamera}
-              onPromote={promoteSecondary}
-              onRemove={removeSecondaryPane}
-              viewMode={viewModes[secondary] ?? "live"}
-              onViewModeChange={setViewModeFor(secondary)}
+              onSelectCamera={pane.select}
+              onPromote={pane.promote}
+              onRemove={pane.remove}
+              viewMode={viewModes[pane.secondary] ?? "live"}
+              onViewModeChange={setViewModeFor(pane.secondary)}
             />
           )}
         </div>
