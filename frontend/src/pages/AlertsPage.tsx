@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { type AlertRow, type LabelVerdict, setAlertLabel } from "../api/alerts";
 import { AlertLightbox } from "../components/AlertLightbox";
@@ -81,49 +81,69 @@ export function AlertsPage() {
   const [labelOverlay, setLabelOverlay] = useState<
     Map<number, { verdict: LabelVerdict; species: string | null }>
   >(() => new Map());
-  const applyLabelOverlay = (ids: number[], verdict: LabelVerdict, species: string | null) => {
-    setLabelOverlay((prev) => {
-      const next = new Map(prev);
-      for (const id of ids) next.set(id, { verdict, species });
-      return next;
-    });
-  };
+  const applyLabelOverlay = useCallback(
+    (ids: number[], verdict: LabelVerdict, species: string | null) => {
+      setLabelOverlay((prev) => {
+        const next = new Map(prev);
+        for (const id of ids) next.set(id, { verdict, species });
+        return next;
+      });
+    },
+    [],
+  );
   // Per-row busy set — tracks in-flight server writes so the LabelPicker
   // in that row disables its buttons while a request is pending. Prevents
   // rapid-fire double-clicks from queueing multiple writes for one alert.
   const [busyIds, setBusyIds] = useState<Set<number>>(() => new Set());
-  const setBusy = (id: number, on: boolean) => {
-    setBusyIds((prev) => {
-      const next = new Set(prev);
-      if (on) next.add(id);
-      else next.delete(id);
-      return next;
-    });
-  };
   // Single owner of label state + server write. Optimistic overlay update
   // followed by async setAlertLabel; on failure, roll back the overlay to
   // whatever it was before (or delete the key if we didn't have one).
   // This is the API that LabelPicker's onChange callbacks pipe through —
   // no other component should call setAlertLabel directly.
-  const writeLabel = async (alertId: number, verdict: LabelVerdict, species: string | null) => {
-    const prev = labelOverlay.get(alertId);
-    applyLabelOverlay([alertId], verdict, species);
-    setBusy(alertId, true);
-    try {
-      await setAlertLabel(alertId, verdict, species);
-    } catch (e) {
-      // Roll back overlay so UI reverts and operator knows the write failed.
+  //
+  // Stable via useCallback with empty deps: the body only touches setState
+  // functions (guaranteed-stable by React) and reads current-overlay via
+  // functional update, not the closure-captured labelOverlay. That
+  // stability matters — writeLabel is passed as a prop into every Row
+  // (up to 500) and into AlertLightbox's keydown-effect deps; a fresh
+  // closure per render would churn a window listener every 5s poll tick.
+  const writeLabel = useCallback(
+    async (alertId: number, verdict: LabelVerdict, species: string | null) => {
+      // Capture previous value via functional update so we can roll back
+      // on server error without depending on closure-captured overlay.
+      let prev: { verdict: LabelVerdict; species: string | null } | undefined;
       setLabelOverlay((cur) => {
+        prev = cur.get(alertId);
         const next = new Map(cur);
-        if (prev) next.set(alertId, prev);
-        else next.delete(alertId);
+        next.set(alertId, { verdict, species });
         return next;
       });
-      alert(`Label failed: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setBusy(alertId, false);
-    }
-  };
+      setBusyIds((cur) => {
+        const next = new Set(cur);
+        next.add(alertId);
+        return next;
+      });
+      try {
+        await setAlertLabel(alertId, verdict, species);
+      } catch (e) {
+        // Roll back overlay so UI reverts and operator knows the write failed.
+        setLabelOverlay((cur) => {
+          const next = new Map(cur);
+          if (prev) next.set(alertId, prev);
+          else next.delete(alertId);
+          return next;
+        });
+        alert(`Label failed: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        setBusyIds((cur) => {
+          const next = new Set(cur);
+          next.delete(alertId);
+          return next;
+        });
+      }
+    },
+    [],
+  );
 
   const camerasResp = useCameras();
   const { data, error, loading } = useAlerts(
@@ -157,9 +177,16 @@ export function AlertsPage() {
   const [initialSeenId, setInitialSeenId] = useState<number | null>(() =>
     readLastSeenId(camera || null),
   );
-  useEffect(() => {
+  // Re-snapshot the watermark when camera filter changes. Adjust-state-
+  // during-rendering pattern from React docs' "You Might Not Need an
+  // Effect" — no subscribing effect, no dual source of truth. React sees
+  // the setState call during render, bails out of the current render,
+  // and re-renders with the fresh initialSeenId.
+  const [prevCameraForSeen, setPrevCameraForSeen] = useState<string>(camera);
+  if (camera !== prevCameraForSeen) {
+    setPrevCameraForSeen(camera);
     setInitialSeenId(readLastSeenId(camera || null));
-  }, [camera]);
+  }
 
   // Being on this page IS the "seen" event — stamp total + highest-id
   // seen. Two paths:
@@ -172,27 +199,39 @@ export function AlertsPage() {
   //    (the same batch endpoint the badge uses); per-camera maxIds
   //    are computed from the current items view. Also stamps the
   //    "all"-scope watermark for any cross-camera badge consumers.
+  // Alerts-seen ledger: local writes on every tick (cheap), but the
+  // /api/alerts/counts fetch fires only once per camera-filter change.
+  // Prior version fired counts on every deps change → every 5s poll
+  // tick, adding an unnecessary HTTP round-trip per active operator
+  // for the operator's entire session. Guard with a ref keyed on the
+  // current filter — camera swap invalidates the guard inline (no
+  // separate reset effect needed).
+  const countsFetchedForRef = useRef<string | null>(null);
   useEffect(() => {
     if (!data) return;
     const overallMaxId = items.reduce((m, a) => Math.max(m, a.id), 0);
     if (initialSeenId === null) setInitialSeenId(overallMaxId);
 
     if (camera) {
-      // Filtered view — stamp just this camera.
+      // Filtered view — stamp just this camera. Cheap local write; runs
+      // every tick so newly-arrived alerts get stamped as seen too.
       markAlertsSeen(camera, data.total, overallMaxId);
       return;
     }
 
-    // Unfiltered — mark every camera as seen based on per-camera totals.
-    // Also stamp the "all" scope so a cross-camera header badge zeros.
+    // Unfiltered — cheap local writes every tick, expensive counts fetch
+    // once per filter-state (invalidates when the operator toggles the
+    // camera filter and comes back).
     markAlertsSeen(null, data.total, overallMaxId);
-    let cancelled = false;
+    const key = "unfiltered";
+    if (countsFetchedForRef.current === key) return;
+    countsFetchedForRef.current = key;
+    const controller = new AbortController();
     (async () => {
       try {
-        const r = await fetch("/api/alerts/counts");
+        const r = await fetch("/api/alerts/counts", { signal: controller.signal });
         if (!r.ok) return;
         const counts = (await r.json()) as Record<string, number>;
-        if (cancelled) return;
         // Per-camera max-id from what's in the current items list.
         const perCamMaxId: Record<string, number> = {};
         for (const a of items) {
@@ -203,15 +242,26 @@ export function AlertsPage() {
         for (const [cam, total] of Object.entries(counts)) {
           markAlertsSeen(cam, total, perCamMaxId[cam]);
         }
-      } catch {
+      } catch (e) {
+        if (e instanceof DOMException && e.name === "AbortError") return;
         // Silent — filtered-view watermark already stamped above,
         // dual-pane badge just won't clear this cycle.
       }
     })();
     return () => {
-      cancelled = true;
+      controller.abort();
     };
+    // camera IS in deps: switching from filtered → unfiltered must let
+    // the guard-check re-run with a fresh key. We compare inside via
+    // countsFetchedForRef, so no double-fetch.
   }, [data, items, initialSeenId, camera]);
+
+  // Invalidate the counts-fetched guard when camera filter changes so a
+  // camera-swap → back-to-unfiltered actually re-runs the counts fetch.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `camera` is the intentional trigger — body doesn't read it, just resets the guard on change.
+  useEffect(() => {
+    countsFetchedForRef.current = null;
+  }, [camera]);
 
   return (
     <div className={styles.wrap}>

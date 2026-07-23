@@ -3,6 +3,7 @@ import {
   type WheelEvent as ReactWheelEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -61,8 +62,16 @@ export function AlertLightbox({
   busyIds,
   writeLabel,
 }: AlertLightboxProps) {
-  const navList = items.filter((a) => a.snapshot);
-  const currentIdx = openId == null ? -1 : navList.findIndex((a) => a.id === openId);
+  // Memoized so `go` + the keydown-effect deps stay stable across parent
+  // re-renders (AlertsPage polls every 5s → `items` array reference
+  // changes → without useMemo, `navList` was fresh every render, `go`
+  // fresh every render, and the window keydown listener churned on each
+  // tick. See issue #32.)
+  const navList = useMemo(() => items.filter((a) => a.snapshot), [items]);
+  const currentIdx = useMemo(
+    () => (openId == null ? -1 : navList.findIndex((a) => a.id === openId)),
+    [navList, openId],
+  );
   const current = currentIdx >= 0 ? navList[currentIdx] : null;
 
   const close = useCallback(() => setOpenId(null), [setOpenId]);
@@ -260,7 +269,6 @@ export function AlertLightbox({
         ›
       </button>
       <div className={styles.inner}>
-        {/* biome-ignore lint/a11y/useKeyWithClickEvents: img uses mouse-only affordances (wheel zoom, click-drag pan); reset via keyboard "0"/Home */}
         <div className={styles.imgViewport}>
           <img
             ref={imgRef}

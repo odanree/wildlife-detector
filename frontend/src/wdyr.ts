@@ -12,8 +12,8 @@
 // Pattern: dev-mode runtime probe (as opposed to CI-time static lint
 // or prod-time telemetry sink). Cheap because it never runs in prod.
 
-import React from "react";
 import whyDidYouRender from "@welldone-software/why-did-you-render";
+import React from "react";
 
 whyDidYouRender(React, {
   // Track every function component. The library is smart enough to

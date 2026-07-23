@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { type Rect, saveMasks } from "../api/masks";
 import { type Point, saveZone } from "../api/zone";
@@ -41,26 +41,33 @@ export function LivePreviewPage() {
   const primary = searchParams.get("camera") ?? defaultCam;
 
   // Secondary camera opt-in — persisted per-viewer. null = pane closed.
-  const [secondary, setSecondary] = useState<string | null>(() => {
+  const [secondary, setSecondaryState] = useState<string | null>(() => {
     try {
       return localStorage.getItem(SECONDARY_STORAGE_KEY);
     } catch {
       return null;
     }
   });
-  useEffect(() => {
+  // Single-writer wrapper: every mutation of `secondary` goes through
+  // this. The localStorage sync lives in the mutation, not in a
+  // subscribing effect — writing via effect is the "effect-as-event-
+  // handler" anti-pattern (React docs: "You Might Not Need an Effect").
+  // Handler-owned side effects also give clearer stack traces when the
+  // write throws (quota, disabled storage, etc.).
+  const setSecondary = useCallback((v: string | null) => {
+    setSecondaryState(v);
     try {
-      if (secondary) localStorage.setItem(SECONDARY_STORAGE_KEY, secondary);
+      if (v) localStorage.setItem(SECONDARY_STORAGE_KEY, v);
       else localStorage.removeItem(SECONDARY_STORAGE_KEY);
     } catch {
       // localStorage quota or disabled — the pane still works this session.
     }
-  }, [secondary]);
+  }, []);
   // If the persisted secondary collides with primary (e.g. user swapped
   // in another tab), close it — same camera on both panes is a UX bug.
   useEffect(() => {
     if (secondary && secondary === primary) setSecondary(null);
-  }, [primary, secondary]);
+  }, [primary, secondary, setSecondary]);
 
   // View mode is keyed by camera (not pane slot) so it follows a
   // camera across a promote-swap. Session-only — not persisted across
