@@ -1,0 +1,84 @@
+# Post-merge anti-pattern counter — one row per commit-to-main, appended
+# to .audit/counts.jsonl. Gives us a time-series to graph the effective-
+# ness of the tier-1 lint gate over time.
+#
+# Pattern: append-only durable ledger + bot-authored commit. The bot's
+# commit itself skips CI (paths-ignore) so we don't recurse. If you
+# want a chart, `jq` the JSONL locally or wire it into any external
+# dashboard — the file is the API.
+#
+# Tier-2 (why-did-you-render) counts don't live here — that runs in the
+# browser at dev time and has no CI signal. Tier-3 (React Profiler) data
+# lives in data/perf-profile.jsonl on the running detector, not in the
+# repo — see src/web_service.py's POST /api/perf/profile sink.
+
+name: antipattern-counts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/antipattern-counts.yml"
+      # Note: NO 'paths-ignore' for .audit/** — we want any manual edit
+      # to counts.jsonl to trigger a re-check so the ledger stays honest.
+      # The bot commit itself uses [skip ci] in the message to break the
+      # loop; see the commit step below.
+
+concurrency:
+  group: antipattern-counts
+  cancel-in-progress: false
+
+jobs:
+  count-and-log:
+    name: append count row
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install deps
+        working-directory: frontend
+        run: |
+          if [ -f bun.lock ]; then
+            bun install --frozen-lockfile
+          else
+            bun install
+          fi
+      - name: Count anti-patterns
+        id: count
+        working-directory: frontend
+        run: |
+          count=$(bun run lint:antipatterns:count 2>/dev/null || echo 0)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+      - name: Append row to .audit/counts.jsonl
+        run: |
+          mkdir -p .audit
+          ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          sha=$(git rev-parse --short HEAD)
+          # One-row-per-commit ledger. tier2 and tier3 columns are
+          # placeholders — tier2 has no CI signal, tier3 is aggregated
+          # separately from the running detector's perf sink.
+          row=$(printf '{"ts":"%s","sha":"%s","tier1_you_might_not_need_effect":%s}' \
+                "$ts" "$sha" "${{ steps.count.outputs.count }}")
+          echo "$row" >> .audit/counts.jsonl
+          echo "Appended: $row"
+      - name: Commit updated ledger
+        run: |
+          if git diff --quiet .audit/counts.jsonl; then
+            echo "No changes to counts.jsonl — skipping commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .audit/counts.jsonl
+          # [skip ci] on the message so this bot commit doesn't re-trigger
+          # the workflow. The counts.jsonl file is auto-managed; humans
+          # should never hand-edit it.
+          git commit -m "chore(audit): tier-1 count ${{ steps.count.outputs.count }} for ${GITHUB_SHA:0:7} [skip ci]"
+          git push

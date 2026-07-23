@@ -9,6 +9,8 @@
     "preview": "bun x vite preview",
     "lint": "biome check src",
     "lint:fix": "biome check --write src",
+    "lint:antipatterns": "bun x eslint src --config eslint.config.js",
+    "lint:antipatterns:count": "bun x eslint src --config eslint.config.js --format json | node -e \"let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const r=JSON.parse(d);console.log(r.reduce((n,f)=>n+f.messages.length,0))})\"",
     "format": "biome format --write src",
     "typecheck": "tsc -b --pretty"
   },
@@ -21,7 +23,11 @@
     "@biomejs/biome": "^1.9.4",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "@typescript-eslint/parser": "^8.0.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "@welldone-software/why-did-you-render": "^8.0.3",
+    "eslint": "^9.0.0",
+    "eslint-plugin-react-you-might-not-need-an-effect": "^0.4.0",
     "typescript": "~5.6.3",
     "vite": "^5.4.11"
   }
