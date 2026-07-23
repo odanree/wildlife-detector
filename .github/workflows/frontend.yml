@@ -10,6 +10,8 @@
 name: frontend
 
 on:
+  # Manual escape hatch — see antipattern-counts.yml for rationale.
+  workflow_dispatch:
   push:
     branches: [main]
     paths:

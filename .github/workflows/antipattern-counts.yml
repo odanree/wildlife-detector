@@ -15,6 +15,10 @@
 name: antipattern-counts
 
 on:
+  # Manual escape hatch. Useful for backfilling the ledger, or for
+  # verifying the workflow when push triggers are stuck (billing
+  # propagation, org policy, etc.). Anyone with write access can fire it.
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
