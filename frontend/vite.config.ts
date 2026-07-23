@@ -19,7 +19,14 @@ const commitSha = (() => {
 // in the deployed container. Local `vite dev` uses the plugin proxy to
 // forward /api/* + /status + /snapshots to the Flask backend on :8100 so
 // components can call the real API during development.
-export default defineConfig({
+//
+// `mode` is 'development' for `vite dev`, 'production' for `vite build`.
+// We swap the JSX import source ONLY in dev so wdyr can patch the JSX
+// runtime that components actually call (React 18 + automatic transform
+// compiles <Foo/> to _jsx() from react/jsx-runtime — bypasses any patch
+// on React.createElement, which is why wdyr's init log fires but no
+// render output shows. See frontend/src/wdyr.ts).
+export default defineConfig(() => ({
   plugins: [react()],
   base: "/react/",
   define: {
@@ -39,4 +46,4 @@ export default defineConfig({
       "/stream.mjpg": "http://localhost:8100",
     },
   },
-});
+}));
