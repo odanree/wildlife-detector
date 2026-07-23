@@ -31,6 +31,14 @@ export function CostChip({ camera }: CostChipProps) {
     );
   if (!data) return null;
 
+  // Local backends (Ollama, llama.cpp, etc.) don't incur $ cost and
+  // don't use Anthropic prompt caching — the $ + cache% fields are
+  // meaningless noise for them. Hide the chip entirely; the operator
+  // knows they're on local because they configured it.
+  const backend = (data.backend ?? "").toLowerCase();
+  const isLocal = backend === "ollama" || backend.startsWith("llama") || backend.includes("local");
+  if (isLocal) return null;
+
   const cost = data.vlm_cost;
   if (!cost) {
     return (
