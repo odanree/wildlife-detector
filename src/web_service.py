@@ -28,6 +28,7 @@ import argparse
 import json
 import logging
 import os
+import queue
 import signal
 import time
 import sys
@@ -178,6 +179,86 @@ _DATA_DIR = Path("data")
 _DETECTION_CFG = Path("config/detection.yaml")
 
 
+# ── SSE counts pub-sub ─────────────────────────────────────────────────
+# Server-side polls the DB at _COUNTS_POLL_INTERVAL_S and pushes to N
+# subscribers over persistent SSE connections. Client tabs no longer
+# individually poll /api/alerts/counts every 5s.
+#
+# Fixed server-side cost regardless of client count — DB is queried
+# once per interval, result fanned out. Bounded per-subscriber queues
+# (maxsize=8) drop old updates rather than block the poller if a slow
+# client falls behind.
+_COUNTS_POLL_INTERVAL_S = float(os.getenv("COUNTS_POLL_INTERVAL_S", "3"))
+_counts_cache: dict[str, int] = {}
+_counts_lock = threading.Lock()
+_counts_subscribers: list["queue.Queue[dict]"] = []
+
+
+def _new_counts_subscriber() -> "queue.Queue[dict]":
+    q: "queue.Queue[dict]" = queue.Queue(maxsize=8)
+    with _counts_lock:
+        _counts_subscribers.append(q)
+    return q
+
+
+def _drop_counts_subscriber(q: "queue.Queue[dict]") -> None:
+    with _counts_lock:
+        try:
+            _counts_subscribers.remove(q)
+        except ValueError:
+            pass
+
+
+def _publish_counts(counts: dict[str, int]) -> None:
+    """Fan-out a counts snapshot to all live subscribers. Best-effort:
+    subscribers with full queues get their oldest message dropped so the
+    poller never blocks on a slow client."""
+    msg = {"type": "counts", "counts": counts}
+    with _counts_lock:
+        for q in list(_counts_subscribers):
+            try:
+                q.put_nowait(msg)
+            except queue.Full:
+                # Drop oldest to make room — slow client falls further
+                # behind on rapid changes but doesn't stall the poller.
+                try:
+                    q.get_nowait()
+                    q.put_nowait(msg)
+                except (queue.Empty, queue.Full):
+                    pass
+
+
+def _start_counts_poller(state, camera_ids_fn) -> threading.Thread:
+    """Daemon thread that polls per-camera counts from the DB and
+    publishes to SSE subscribers only when they change. Started once
+    at app init; no cleanup needed (daemon).
+
+    state: StateDB instance (has total_alerts method).
+    camera_ids_fn: callable returning current list of camera_ids (function
+      rather than a captured list so a future dynamic-camera-set change
+      is picked up without restarting the poller)."""
+    def _loop():
+        global _counts_cache
+        while True:
+            try:
+                new_counts = {
+                    cam: state.total_alerts(camera_id=cam)
+                    for cam in camera_ids_fn()
+                }
+                with _counts_lock:
+                    changed = new_counts != _counts_cache
+                    if changed:
+                        _counts_cache = new_counts
+                if changed:
+                    _publish_counts(new_counts)
+            except Exception:
+                logger.exception("counts-poller: iteration failed")
+            time.sleep(_COUNTS_POLL_INTERVAL_S)
+    t = threading.Thread(target=_loop, name="counts-poller", daemon=True)
+    t.start()
+    return t
+
+
 def _baseline_paths(camera_id: str) -> tuple[Path, Path]:
     """Return (day_path, night_path) for a given camera. Yard uses the legacy
     'baseline_{day,night}.jpg' names (no camera in the stem) for backwards
@@ -295,6 +376,13 @@ def create_app(registry: DetectorRegistry) -> Flask:
     from src.web import preview
     from src.storage.state_db import StateDB
     _state = StateDB(os.getenv("STATE_DB_PATH", "data/state.db"))
+
+    # Kick off the counts SSE poller — fixed-cost DB reader that pushes
+    # to all EventSource subscribers instead of each tab polling
+    # /api/alerts/counts individually every 5s. Daemon thread; no
+    # shutdown handling needed.
+    _start_counts_poller(_state, lambda: registry.camera_ids)
+    logger.info("counts-poller: started (interval=%.1fs)", _COUNTS_POLL_INTERVAL_S)
 
     app = Flask(__name__)
 
@@ -486,6 +574,63 @@ def create_app(registry: DetectorRegistry) -> Flask:
         for cam in registry.camera_ids:
             counts[cam] = _state.total_alerts(camera_id=cam)
         return jsonify(counts)
+
+    # ── Counts SSE — push, not poll ───────────────────────────────────
+    # Server-side polls the DB every _COUNTS_POLL_INTERVAL_S and fans
+    # out to N subscribers over one persistent SSE connection each.
+    # Replaces the previous per-tab setInterval on useUnreadAlerts, which
+    # generated 1 HTTP request per tab per poll interval. Now the DB is
+    # polled at a fixed rate regardless of connected clients, and clients
+    # get pushed updates only when counts actually change.
+    #
+    # Pub-sub via queue.Queue per subscriber — thread-safe, bounded
+    # (maxsize=8 drops old updates rather than blocking the poller if a
+    # slow client falls behind). Same shape the RTSP handler already
+    # uses for frame fan-out.
+    @app.get("/api/alerts/events")
+    def api_alerts_events():
+        """Server-sent events stream for alert counts + new-alert
+        notifications. Emits SSE `data:` frames with JSON payloads.
+
+        Frame types:
+          {"type": "counts", "counts": {"yard": N, "rooftop": M}}
+              — sent on connect (initial state) and whenever the DB-
+              polled counts change.
+          ": keepalive"  (SSE comment line) — sent every 25s so idle
+              connections don't get killed by upstream proxies / LB
+              idle timeouts.
+
+        Client (EventSource) auto-reconnects on disconnect."""
+        from flask import stream_with_context
+        def stream():
+            import json as _json
+            q: "queue.Queue[dict]" = _new_counts_subscriber()
+            try:
+                # Initial snapshot — bring the fresh subscriber up to date
+                # without waiting for the next change event.
+                with _counts_lock:
+                    initial = dict(_counts_cache)
+                yield f"data: {_json.dumps({'type': 'counts', 'counts': initial})}\n\n"
+                while True:
+                    try:
+                        # 25s heartbeat — under nginx / caddy 30s idle default.
+                        msg = q.get(timeout=25.0)
+                        yield f"data: {_json.dumps(msg)}\n\n"
+                    except queue.Empty:
+                        yield ": keepalive\n\n"
+            except GeneratorExit:
+                # Client disconnected — clean up subscriber.
+                pass
+            finally:
+                _drop_counts_subscriber(q)
+        return Response(
+            stream_with_context(stream()),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",  # tell nginx not to buffer
+            },
+        )
 
     @app.post("/api/alerts/<int:alert_id>/label")
     def api_alert_label(alert_id: int):

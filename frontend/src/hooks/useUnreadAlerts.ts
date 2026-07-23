@@ -65,46 +65,111 @@ export function useUnreadAlerts(
     setTotals({});
   }, [camsKey]);
 
+  // Server-pushed counts via SSE — one persistent EventSource connection
+  // per tab. Replaces the previous per-tab setInterval that hit
+  // /api/alerts/counts every intervalMs. Server-side polls the DB at a
+  // fixed rate and fans out to all subscribers only on change, so DB
+  // load is O(1) regardless of connected tabs and no HTTP requests
+  // clutter DevTools per tick.
+  //
+  // The `all`-only single-camera case is a UI convention (no explicit
+  // camera list → cross-camera pseudo-scope). SSE always returns
+  // per-camera counts; we sum manually for the "all" case below.
+  //
+  // Cross-tab watermark sync stays on the `storage` event — that's a
+  // browser-native pub-sub across same-origin tabs; nothing to do with
+  // SSE.
   // biome-ignore lint/correctness/useExhaustiveDependencies: cams identity tracked via camsKey
   useEffect(() => {
     let cancelled = false;
+    // AbortController only used for the fallback fetch path if SSE fails.
     const controller = new AbortController();
 
-    async function tick(): Promise<void> {
-      try {
-        const newTotals =
-          cams.length === 1 && cams[0] === "all"
-            ? await fetchAllTotal(controller.signal)
-            : await fetchCountsForCameras(cams, controller.signal);
-        if (cancelled) return;
-        setTotals(newTotals);
-        // Cold-start per camera: adopt current total as seen on first
-        // sighting so we don't show 99+ for historical alerts.
-        setSeens((prev) => {
-          const next: Record<string, number | null> = { ...prev };
-          let mutated = false;
-          for (const c of cams) {
-            if (next[c] === null && newTotals[c] != null) {
-              try {
-                localStorage.setItem(seenKey(c), String(newTotals[c]));
-              } catch {
-                /* ignore */
-              }
-              next[c] = newTotals[c];
-              mutated = true;
+    // Cold-start helper — mutates seens map in place if the given
+    // counts snapshot fills in a null watermark for a camera we care
+    // about. Called from both the SSE onmessage handler and the
+    // fetch-fallback handler so the logic doesn't duplicate.
+    function coldStartSeens(newTotals: Record<string, number>): void {
+      setSeens((prev) => {
+        const next: Record<string, number | null> = { ...prev };
+        let mutated = false;
+        for (const c of cams) {
+          if (next[c] === null && newTotals[c] != null) {
+            try {
+              localStorage.setItem(seenKey(c), String(newTotals[c]));
+            } catch {
+              /* ignore */
             }
+            next[c] = newTotals[c];
+            mutated = true;
           }
-          return mutated ? next : prev;
-        });
-      } catch (e) {
-        if (cancelled) return;
-        if (e instanceof DOMException && e.name === "AbortError") return;
-        // Silent — header badge failure isn't worth surfacing.
-      }
+        }
+        return mutated ? next : prev;
+      });
     }
 
-    void tick();
-    const handle = window.setInterval(tick, intervalMs);
+    // Normalize server-side counts (all cameras) to the shape this
+    // hook publishes (subset filtered to `cams`, "all" as sum).
+    function projectCounts(serverCounts: Record<string, number>): Record<string, number> {
+      if (cams.length === 1 && cams[0] === "all") {
+        return { all: Object.values(serverCounts).reduce((s, n) => s + n, 0) };
+      }
+      const out: Record<string, number> = {};
+      for (const c of cams) out[c] = serverCounts[c] ?? 0;
+      return out;
+    }
+
+    // Try SSE first — the modern path. If EventSource is unavailable or
+    // errors, fall back to one-shot fetch per intervalMs (the pre-SSE
+    // behavior) so the badge still updates.
+    let es: EventSource | null = null;
+    let fallbackHandle: number | null = null;
+
+    function startFallbackPolling(): void {
+      async function tick(): Promise<void> {
+        try {
+          const raw =
+            cams.length === 1 && cams[0] === "all"
+              ? await fetchAllTotal(controller.signal)
+              : await fetchCountsForCameras(cams, controller.signal);
+          if (cancelled) return;
+          setTotals(raw);
+          coldStartSeens(raw);
+        } catch (e) {
+          if (cancelled) return;
+          if (e instanceof DOMException && e.name === "AbortError") return;
+          // Silent — header badge failure isn't worth surfacing.
+        }
+      }
+      void tick();
+      fallbackHandle = window.setInterval(tick, intervalMs);
+    }
+
+    if (typeof EventSource !== "undefined") {
+      es = new EventSource("/api/alerts/events");
+      es.onmessage = (ev) => {
+        if (cancelled) return;
+        try {
+          const msg = JSON.parse(ev.data) as { type?: string; counts?: Record<string, number> };
+          if (msg.type !== "counts" || !msg.counts) return;
+          const projected = projectCounts(msg.counts);
+          setTotals(projected);
+          coldStartSeens(projected);
+        } catch {
+          /* malformed frame — skip */
+        }
+      };
+      es.onerror = () => {
+        // Auto-reconnect is EventSource's job for transient errors; only
+        // fall back to polling if the connection outright fails (state
+        // stays CLOSED). We check on next tick.
+        if (es && es.readyState === EventSource.CLOSED && fallbackHandle === null) {
+          startFallbackPolling();
+        }
+      };
+    } else {
+      startFallbackPolling();
+    }
 
     // Cross-tab sync: any tab stamping a watermark for one of our
     // cameras should update our seen state so the badge stays honest.
@@ -122,7 +187,8 @@ export function useUnreadAlerts(
     return () => {
       cancelled = true;
       controller.abort();
-      window.clearInterval(handle);
+      es?.close();
+      if (fallbackHandle != null) window.clearInterval(fallbackHandle);
       window.removeEventListener("storage", onStorage);
     };
   }, [camsKey, intervalMs]);
