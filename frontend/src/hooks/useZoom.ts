@@ -57,7 +57,17 @@ export function useZoom(cameraId: string, options: UseZoomOptions) {
   const panXRef = useRef(0);
   const panYRef = useRef(0);
 
+  // Reset zoom + pan when key changes (camera swap mid-lifetime). Skip
+  // the very first run — useState initializer already read localStorage
+  // at mount, and firing this effect on mount would cause an extra
+  // render and clobber any zoom set between mount and first paint. Ref
+  // guard is cheaper than adding a `key={cameraId}` prop on every caller.
+  const didMountRef = useRef(false);
   useEffect(() => {
+    if (!didMountRef.current) {
+      didMountRef.current = true;
+      return;
+    }
     const saved = localStorage.getItem(key);
     setZoom(saved ? clamp(Number.parseFloat(saved), min, max) : 1.0);
     panXRef.current = 0;
