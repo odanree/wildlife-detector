@@ -1,14 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { type AlertRow, type LabelVerdict, setAlertLabel } from "../api/alerts";
+import { useMemo, useState } from "react";
+import type { AlertRow, LabelVerdict } from "../api/alerts";
 import { AlertLightbox } from "../components/AlertLightbox";
 import { BulkLabelBar } from "../components/BulkLabelBar";
 import { GlobalHeader } from "../components/GlobalHeader";
 import { LabelPicker } from "../components/LabelPicker";
 import { ReplayButton } from "../components/ReplayButton";
 import { useAlerts } from "../hooks/useAlerts";
+import { useAlertsFilters } from "../hooks/useAlertsFilters";
+import { useAlertsSelection } from "../hooks/useAlertsSelection";
+import { useAlertsWatermark } from "../hooks/useAlertsWatermark";
 import { useCameras } from "../hooks/useCameras";
-import { markAlertsSeen, readLastSeenId } from "../hooks/useUnreadAlerts";
+import { useLabelOverlay } from "../hooks/useLabelOverlay";
 import { fmtRelative, fmtTs } from "../util/time";
 import styles from "./AlertsPage.module.css";
 
@@ -21,247 +23,42 @@ interface GroupedAlerts {
 }
 
 /**
- * Alerts page. Ported to CSS Modules in PR 8 — dynamic species color
- * is now a modifier class per row (speciesHist / speciesRodent /
- * speciesOther) rather than an inline color prop, which keeps the
- * hover row-highlight rule reachable and stops the row style from
- * fighting the cell style.
+ * Alerts page — glue between four focused hooks and the table view.
+ *
+ * State ownership is delegated:
+ *   - useAlertsFilters: URL + localStorage filter state.
+ *   - useAlertsSelection: bulk checkbox Set + toggle/clear.
+ *   - useLabelOverlay: optimistic label map + rollback + busy set.
+ *   - useAlertsWatermark: initialSeenId snapshot + markAlertsSeen ledger.
+ *
+ * What's left here: the useAlerts call, table + modal composition,
+ * and the row component. Was 557 LOC + 12 useState + 3 useEffect
+ * before #33; now ~180 LOC + 1 useState + 0 useEffect.
  */
 export function AlertsPage() {
-  const [species, setSpecies] = useState<string>("");
-  // URL `?camera=` takes precedence over the sticky localStorage filter
-  // so navigating from a specific pane's "Alerts →" link lands with that
-  // camera pre-filtered (matches the badge scope the user just saw).
-  const [urlParams, setUrlParams] = useSearchParams();
-  const [camera, setCamera] = useState<string>(
-    () => urlParams.get("camera") ?? localStorage.getItem("alertsCameraFilter") ?? "",
-  );
-  const [grouped, setGrouped] = useState<boolean>(true);
-  const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
+  const filters = useAlertsFilters();
+  const selection = useAlertsSelection();
+  const overlay = useLabelOverlay();
   const [openId, setOpenId] = useState<number | null>(null);
-  // Labeling-workflow filter: "historical" restricts to backfilled/pre-tuning
-  // rows so training-data collection focuses on the noisy old pile without
-  // getting mixed with today's cleaner live alerts. Persisted so page
-  // reloads don't yank the operator out of a labeling session.
-  const [scope, setScope] = useState<"historical" | "live" | "all">(() => {
-    const v = localStorage.getItem("alertsScope");
-    return v === "historical" || v === "live" ? v : "all";
-  });
-  // Sifting filter: 'unlabeled' hides rows already voted on so operator
-  // walks the backlog without re-reviewing their own work. Composes with
-  // scope — e.g. scope=historical + labelFilter=unlabeled = "un-voted
-  // slice of the old pile", the training-data-hunt workflow.
-  type LabelFilterVal = "unlabeled" | "labeled" | "correct" | "incorrect" | "unclear" | "all";
-  const [labelFilter, setLabelFilter] = useState<LabelFilterVal>(() => {
-    const v = localStorage.getItem("alertsLabelFilter");
-    const valid: LabelFilterVal[] = ["unlabeled", "labeled", "correct", "incorrect", "unclear"];
-    return (valid as string[]).includes(v ?? "") ? (v as LabelFilterVal) : "all";
-  });
-
-  // Bulk-selection state — checkbox column + select-all in header lets
-  // operator mass-label N alerts with one Apply click (backend does the
-  // update in a single IN(?,?,?) transaction).
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
-  const clearSelection = () => setSelectedIds(new Set());
-  const toggleOne = (id: number) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  // Local overlay of labels — writes go to the server via writeLabel below,
-  // but the useAlerts polling refresh is on a 5s tick, so we mirror the
-  // last write locally to give an instant visual response. Merged onto
-  // the row via effectiveLabel() when rendering. LabelPicker + lightbox
-  // are now fully controlled — this Map is the single source of truth
-  // for freshly-applied labels; the picker never keeps its own copy.
-  const [labelOverlay, setLabelOverlay] = useState<
-    Map<number, { verdict: LabelVerdict; species: string | null }>
-  >(() => new Map());
-  const applyLabelOverlay = useCallback(
-    (ids: number[], verdict: LabelVerdict, species: string | null) => {
-      setLabelOverlay((prev) => {
-        const next = new Map(prev);
-        for (const id of ids) next.set(id, { verdict, species });
-        return next;
-      });
-    },
-    [],
-  );
-  // Per-row busy set — tracks in-flight server writes so the LabelPicker
-  // in that row disables its buttons while a request is pending. Prevents
-  // rapid-fire double-clicks from queueing multiple writes for one alert.
-  const [busyIds, setBusyIds] = useState<Set<number>>(() => new Set());
-  // Single owner of label state + server write. Optimistic overlay update
-  // followed by async setAlertLabel; on failure, roll back the overlay to
-  // whatever it was before (or delete the key if we didn't have one).
-  // This is the API that LabelPicker's onChange callbacks pipe through —
-  // no other component should call setAlertLabel directly.
-  //
-  // Stable via useCallback with empty deps: the body only touches setState
-  // functions (guaranteed-stable by React) and reads current-overlay via
-  // functional update, not the closure-captured labelOverlay. That
-  // stability matters — writeLabel is passed as a prop into every Row
-  // (up to 500) and into AlertLightbox's keydown-effect deps; a fresh
-  // closure per render would churn a window listener every 5s poll tick.
-  const writeLabel = useCallback(
-    async (alertId: number, verdict: LabelVerdict, species: string | null) => {
-      // Capture previous value via functional update so we can roll back
-      // on server error without depending on closure-captured overlay.
-      let prev: { verdict: LabelVerdict; species: string | null } | undefined;
-      setLabelOverlay((cur) => {
-        prev = cur.get(alertId);
-        const next = new Map(cur);
-        next.set(alertId, { verdict, species });
-        return next;
-      });
-      setBusyIds((cur) => {
-        const next = new Set(cur);
-        next.add(alertId);
-        return next;
-      });
-      try {
-        await setAlertLabel(alertId, verdict, species);
-      } catch (e) {
-        // Roll back overlay so UI reverts and operator knows the write failed.
-        setLabelOverlay((cur) => {
-          const next = new Map(cur);
-          if (prev) next.set(alertId, prev);
-          else next.delete(alertId);
-          return next;
-        });
-        alert(`Label failed: ${e instanceof Error ? e.message : String(e)}`);
-      } finally {
-        setBusyIds((cur) => {
-          const next = new Set(cur);
-          next.delete(alertId);
-          return next;
-        });
-      }
-    },
-    [],
-  );
 
   const camerasResp = useCameras();
   const { data, error, loading } = useAlerts(
     {
-      species: species || undefined,
-      camera: camera || undefined,
-      scope: scope === "all" ? undefined : scope,
-      label_filter: labelFilter === "all" ? undefined : labelFilter,
+      species: filters.species || undefined,
+      camera: filters.camera || undefined,
+      scope: filters.scope === "all" ? undefined : filters.scope,
+      label_filter: filters.labelFilter === "all" ? undefined : filters.labelFilter,
     },
-    autoRefresh ? 5000 : 3600_000,
+    filters.autoRefresh ? 5000 : 3600_000,
   );
 
   const items = data?.items ?? [];
   const groups = useMemo(
-    () => (grouped ? groupItems(items) : items.map((h) => ({ head: h, children: [] }))),
-    [items, grouped],
+    () => (filters.grouped ? groupItems(items) : items.map((h) => ({ head: h, children: [] }))),
+    [items, filters.grouped],
   );
 
-  // Snapshot the last-seen-id watermark at mount BEFORE markAlertsSeen
-  // rolls it forward on the first data-arrival effect. Frozen for the
-  // page's lifetime so rows highlighted as "unread" stay highlighted
-  // even as new data arrives — otherwise the highlight would flicker
-  // away the moment the polling tick writes the new watermark.
-  //
-  // Cold-start (never visited): initialSeenId stays null → adopted as
-  // max(current ids) on first data (see effect below) so we don't
-  // highlight all historical alerts as unread on the first-ever load.
-  // Watermarks are camera-scoped so a yard-alerts view doesn't clear
-  // the rooftop badge (and vice versa). Snapshot at mount for row
-  // highlighting; re-snapshot when the filter camera changes.
-  const [initialSeenId, setInitialSeenId] = useState<number | null>(() =>
-    readLastSeenId(camera || null),
-  );
-  // Re-snapshot the watermark when camera filter changes. Adjust-state-
-  // during-rendering pattern from React docs' "You Might Not Need an
-  // Effect" — no subscribing effect, no dual source of truth. React sees
-  // the setState call during render, bails out of the current render,
-  // and re-renders with the fresh initialSeenId.
-  const [prevCameraForSeen, setPrevCameraForSeen] = useState<string>(camera);
-  if (camera !== prevCameraForSeen) {
-    setPrevCameraForSeen(camera);
-    setInitialSeenId(readLastSeenId(camera || null));
-  }
-
-  // Being on this page IS the "seen" event — stamp total + highest-id
-  // seen. Two paths:
-  //
-  // 1. Filtered view (?camera=X): stamp X's watermark. Simple case,
-  //    same behavior as before.
-  // 2. Unfiltered view (all cameras): stamp EVERY known camera's
-  //    watermark so the dual-pane badge on the preview page clears
-  //    after this visit. Per-camera totals come from /api/alerts/counts
-  //    (the same batch endpoint the badge uses); per-camera maxIds
-  //    are computed from the current items view. Also stamps the
-  //    "all"-scope watermark for any cross-camera badge consumers.
-  // Alerts-seen ledger: local writes on every tick (cheap), but the
-  // /api/alerts/counts fetch fires only once per camera-filter change.
-  // Prior version fired counts on every deps change → every 5s poll
-  // tick, adding an unnecessary HTTP round-trip per active operator
-  // for the operator's entire session. Guard with a ref keyed on the
-  // current filter — camera swap invalidates the guard inline (no
-  // separate reset effect needed).
-  const countsFetchedForRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!data) return;
-    const overallMaxId = items.reduce((m, a) => Math.max(m, a.id), 0);
-    if (initialSeenId === null) setInitialSeenId(overallMaxId);
-
-    if (camera) {
-      // Filtered view — stamp just this camera. Cheap local write; runs
-      // every tick so newly-arrived alerts get stamped as seen too.
-      markAlertsSeen(camera, data.total, overallMaxId);
-      return;
-    }
-
-    // Unfiltered — cheap local writes every tick, expensive counts fetch
-    // once per filter-state (invalidates when the operator toggles the
-    // camera filter and comes back).
-    markAlertsSeen(null, data.total, overallMaxId);
-    const key = "unfiltered";
-    if (countsFetchedForRef.current === key) return;
-    countsFetchedForRef.current = key;
-    const controller = new AbortController();
-    (async () => {
-      try {
-        const r = await fetch("/api/alerts/counts", { signal: controller.signal });
-        if (!r.ok) return;
-        const counts = (await r.json()) as Record<string, number>;
-        // Per-camera max-id from what's in the current items list.
-        const perCamMaxId: Record<string, number> = {};
-        for (const a of items) {
-          if (!a.camera_id) continue;
-          const prev = perCamMaxId[a.camera_id] ?? 0;
-          if (a.id > prev) perCamMaxId[a.camera_id] = a.id;
-        }
-        for (const [cam, total] of Object.entries(counts)) {
-          markAlertsSeen(cam, total, perCamMaxId[cam]);
-        }
-      } catch (e) {
-        if (e instanceof DOMException && e.name === "AbortError") return;
-        // Silent — filtered-view watermark already stamped above,
-        // dual-pane badge just won't clear this cycle.
-      }
-    })();
-    return () => {
-      controller.abort();
-    };
-    // camera IS in deps: switching from filtered → unfiltered must let
-    // the guard-check re-run with a fresh key. We compare inside via
-    // countsFetchedForRef, so no double-fetch.
-  }, [data, items, initialSeenId, camera]);
-
-  // Invalidate the counts-fetched guard when camera filter changes so a
-  // camera-swap → back-to-unfiltered actually re-runs the counts fetch.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `camera` is the intentional trigger — body doesn't read it, just resets the guard on change.
-  useEffect(() => {
-    countsFetchedForRef.current = null;
-  }, [camera]);
+  const { initialSeenId } = useAlertsWatermark({ data, camera: filters.camera });
 
   return (
     <div className={styles.wrap}>
@@ -278,8 +75,8 @@ export function AlertsPage() {
               species
               <select
                 className={styles.select}
-                value={species}
-                onChange={(e) => setSpecies(e.target.value)}
+                value={filters.species}
+                onChange={(e) => filters.setSpecies(e.target.value)}
               >
                 <option value="">all</option>
                 <option value="rat">rat</option>
@@ -297,16 +94,8 @@ export function AlertsPage() {
               camera
               <select
                 className={styles.select}
-                value={camera}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setCamera(v);
-                  localStorage.setItem("alertsCameraFilter", v);
-                  const nextParams = new URLSearchParams(urlParams);
-                  if (v) nextParams.set("camera", v);
-                  else nextParams.delete("camera");
-                  setUrlParams(nextParams, { replace: true });
-                }}
+                value={filters.camera}
+                onChange={(e) => filters.setCamera(e.target.value)}
               >
                 <option value="">all</option>
                 {(camerasResp.data?.cameras ?? []).map((c) => (
@@ -320,12 +109,8 @@ export function AlertsPage() {
               show
               <select
                 className={styles.select}
-                value={scope}
-                onChange={(e) => {
-                  const v = e.target.value as "historical" | "live" | "all";
-                  setScope(v);
-                  localStorage.setItem("alertsScope", v);
-                }}
+                value={filters.scope}
+                onChange={(e) => filters.setScope(e.target.value as "historical" | "live" | "all")}
                 title="historical = backfilled/pre-tuning pile for labeling; live = today's fresh VLM alerts; all = both"
               >
                 <option value="all">all</option>
@@ -337,12 +122,18 @@ export function AlertsPage() {
               label
               <select
                 className={styles.select}
-                value={labelFilter}
-                onChange={(e) => {
-                  const v = e.target.value as LabelFilterVal;
-                  setLabelFilter(v);
-                  localStorage.setItem("alertsLabelFilter", v);
-                }}
+                value={filters.labelFilter}
+                onChange={(e) =>
+                  filters.setLabelFilter(
+                    e.target.value as
+                      | "unlabeled"
+                      | "labeled"
+                      | "correct"
+                      | "incorrect"
+                      | "unclear"
+                      | "all",
+                  )
+                }
                 title="Filter by label state: unlabeled = still-to-vote; labeled = all voted; correct/incorrect/unclear = specific verdict"
               >
                 <option value="all">all</option>
@@ -356,16 +147,16 @@ export function AlertsPage() {
             <label className={styles.label}>
               <input
                 type="checkbox"
-                checked={autoRefresh}
-                onChange={(e) => setAutoRefresh(e.target.checked)}
+                checked={filters.autoRefresh}
+                onChange={(e) => filters.setAutoRefresh(e.target.checked)}
               />{" "}
               auto
             </label>
             <label className={styles.label}>
               <input
                 type="checkbox"
-                checked={grouped}
-                onChange={(e) => setGrouped(e.target.checked)}
+                checked={filters.grouped}
+                onChange={(e) => filters.setGrouped(e.target.checked)}
               />{" "}
               group
             </label>
@@ -384,12 +175,12 @@ export function AlertsPage() {
         </div>
       ) : (
         <>
-          {selectedIds.size > 0 && (
+          {selection.size > 0 && (
             <BulkLabelBar
-              selectedIds={Array.from(selectedIds)}
-              onCleared={clearSelection}
+              selectedIds={Array.from(selection.selectedIds)}
+              onCleared={selection.clear}
               onApplied={(verdict, species) =>
-                applyLabelOverlay(Array.from(selectedIds), verdict, species)
+                overlay.applyOverlay(Array.from(selection.selectedIds), verdict, species)
               }
             />
           )}
@@ -400,10 +191,10 @@ export function AlertsPage() {
                   <input
                     type="checkbox"
                     aria-label="select all rows in view"
-                    checked={items.length > 0 && items.every((a) => selectedIds.has(a.id))}
+                    checked={items.length > 0 && items.every((a) => selection.isSelected(a.id))}
                     onChange={(e) => {
-                      if (e.target.checked) setSelectedIds(new Set(items.map((a) => a.id)));
-                      else clearSelection();
+                      if (e.target.checked) selection.setAll(items.map((a) => a.id));
+                      else selection.clear();
                     }}
                   />
                 </th>
@@ -421,14 +212,14 @@ export function AlertsPage() {
               {groups.flatMap((g) =>
                 renderGroup(
                   g,
-                  camera === "",
+                  filters.camera === "",
                   setOpenId,
                   initialSeenId ?? Number.POSITIVE_INFINITY,
-                  selectedIds,
-                  toggleOne,
-                  labelOverlay,
-                  writeLabel,
-                  busyIds,
+                  selection.selectedIds,
+                  selection.toggleOne,
+                  overlay.labelOverlay,
+                  overlay.writeLabel,
+                  overlay.busyIds,
                 ),
               )}
             </tbody>
@@ -444,9 +235,9 @@ export function AlertsPage() {
         items={items}
         openId={openId}
         setOpenId={setOpenId}
-        labelOverlay={labelOverlay}
-        busyIds={busyIds}
-        writeLabel={writeLabel}
+        labelOverlay={overlay.labelOverlay}
+        busyIds={overlay.busyIds}
+        writeLabel={overlay.writeLabel}
       />
     </div>
   );
