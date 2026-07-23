@@ -866,6 +866,17 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     _baseline_cache = (_cache_key, _decode_baseline(_b_bytes, det_w, det_h))
                     logger.info("Baseline switched to %s slot (v=%d)", _b_mode, _b_ver)
 
+            # Compute per-frame daytime flag ONCE, before the for-det loop.
+            # Previously assigned inside the loop after the YOLO fast-path
+            # read it — the first daytime iteration after restart hit an
+            # UnboundLocalError (issue #30). Reads at
+            # `if det.track_id < 1000 and not _is_daytime` still work
+            # correctly; the guard now sees a consistent value all frame.
+            # None when baseline isn't loaded yet (early startup); the
+            # `not None` truthiness check downstream treats None as
+            # falsy, which matches the pre-fix "night" default.
+            _is_daytime = _baseline_cache[0][1] == "day" if _baseline_cache[1] is not None else None
+
             # ── Submit new VLM jobs for zone detections ─────────────────────
             for det in zone_dets:
                 if det.track_id in vlm_jobs:
@@ -1011,8 +1022,9 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     if _baseline_crop:
                         _vlm_input = [_baseline_crop, crop]   # order: baseline first, current second
                 # Pass day/night context so analyzer can apply time-of-day rules
-                # (e.g. daytime rodent skepticism gate).
-                _is_daytime = _baseline_cache[0][1] == "day" if _baseline_cache[1] is not None else None
+                # (e.g. daytime rodent skepticism gate). `_is_daytime` is
+                # hoisted to per-frame above the for-det loop — see comment
+                # near baseline-cache refresh + issue #30.
                 # Optional daytime VLM bypass — rats are nocturnal; skip Claude
                 # cost during the sun-and-shadow hours. Set VLM_SKIP_DAYTIME=1
                 # in .env to enable. Motion + zone still tracked; only VLM stage
