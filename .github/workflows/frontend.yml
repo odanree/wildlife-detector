@@ -57,10 +57,13 @@ jobs:
 
   antipattern-lint:
     # Tier-1 counter: runs eslint-plugin-react-you-might-not-need-an-effect
-    # against PR head AND base, posts a PR comment when the delta > 0.
-    # Failing behavior: the job itself never fails (comments are the
-    # signal). If you want CI to block on regressions, flip the last
-    # `continue-on-error` to false.
+    # against PR head AND base, HARD-FAILS the check on any delta > 0
+    # (and posts a PR comment with the diff). Prior version was
+    # comment-only and let PR #43 through with +4 findings unnoticed.
+    #
+    # Numeric-compare via bash `-gt` — GitHub Actions template `>`
+    # compares strings, so "9" > "13" would return true. Bash `-gt`
+    # is numeric.
     #
     # Only meaningful on PRs — pushes to main go through the counts
     # workflow (.github/workflows/antipattern-counts.yml) which records
@@ -90,7 +93,12 @@ jobs:
       - name: Count anti-patterns on PR head
         id: head_count
         run: |
-          count=$(bun run lint:antipatterns:count 2>/dev/null || echo 0)
+          # `bun run` prefixes stdout with the invoked-script line
+          # ($ bun x eslint ...). Take the LAST line so the count is
+          # clean numeric — prior version captured multi-line and broke
+          # the numeric compare below (silently letting regressions
+          # through — see PR that added this comment).
+          count=$(bun run lint:antipatterns:count 2>/dev/null | tail -n 1 || echo 0)
           echo "count=$count" >> "$GITHUB_OUTPUT"
           echo "PR head: $count you-might-not-need-an-effect findings"
       - name: Checkout base branch
@@ -107,12 +115,29 @@ jobs:
             echo "count=0" >> "$GITHUB_OUTPUT"
             echo "Base branch has no eslint.config.js — treating base count as 0"
           else
-            count=$(bun run lint:antipatterns:count 2>/dev/null || echo 0)
+            count=$(bun run lint:antipatterns:count 2>/dev/null | tail -n 1 || echo 0)
             echo "count=$count" >> "$GITHUB_OUTPUT"
             echo "Base: $count findings"
           fi
+      - name: Fail on delta increase
+        # HARD FAIL when the PR adds tier-1 findings. Prior version only
+        # posted a comment (continue-on-error implicit via lack of a
+        # failing step), which let PR #43 through with +4 findings
+        # unnoticed. Bash-arithmetic compare so "16" > "13" numerically,
+        # not lexically.
+        run: |
+          head=${{ steps.head_count.outputs.count }}
+          base=${{ steps.base_count.outputs.count }}
+          echo "Head: $head, Base: $base"
+          if [ "$head" -gt "$base" ]; then
+            delta=$((head - base))
+            echo "::error::Anti-pattern regression: PR adds $delta new react-you-might-not-need-an-effect finding(s). Base=$base Head=$head"
+            echo "Run 'bun run lint:antipatterns' locally to see offending lines. See #36 for the pattern class + PR #29 for the canonical fix shape."
+            exit 1
+          fi
+          echo "OK — no regression (delta ≤ 0)."
       - name: Comment on delta increase
-        if: steps.head_count.outputs.count > steps.base_count.outputs.count
+        if: failure() && steps.head_count.outputs.count > steps.base_count.outputs.count
         uses: actions/github-script@v7
         with:
           script: |
