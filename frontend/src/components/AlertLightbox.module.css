@@ -103,32 +103,34 @@
   font-family: var(--font-mono, monospace);
 }
 
-/* Prev/next preview strip — mini thumbnails on either side of the
-   current index counter. Purpose is rapid-vote pacing: operator sees
+/* Prev/next preview strip — 3 thumbnails each side + current position
+   counter in the middle. Purpose is rapid-vote pacing: operator sees
    when a camera transition is coming up and slows down before the
-   muscle-memory vote lands on the wrong mental model. */
+   muscle-memory vote lands on the wrong mental model. 3-slot window
+   gives ~3-alert look-ahead lead time. */
 .previewStrip {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: var(--sp-3, 12px);
+  gap: var(--sp-1, 4px);
   margin-bottom: var(--sp-2, 8px);
+  flex-wrap: wrap;
 }
 
 .previewSlot {
   background: transparent;
   border: 1px solid var(--border-3, #333);
   border-radius: var(--r-sm, 4px);
-  padding: 4px;
+  padding: 3px;
   cursor: pointer;
   color: var(--text-md, #aaa);
-  font-size: 10px;
+  font-size: 9px;
   font-family: var(--font-mono, monospace);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
-  min-width: 90px;
+  gap: 2px;
+  min-width: 68px;
   transition: border-color 0.1s;
 }
 
@@ -179,21 +181,21 @@
 }
 
 .previewThumb {
-  width: 80px;
-  height: 45px;
+  width: 60px;
+  height: 34px;
   object-fit: cover;
   border-radius: 2px;
   display: block;
 }
 
 .previewPlaceholder {
-  width: 80px;
-  height: 45px;
+  width: 60px;
+  height: 34px;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--text-lo, #888);
-  font-size: 14px;
+  font-size: 12px;
 }
 
 .closeBtn {

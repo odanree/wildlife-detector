@@ -288,29 +288,66 @@ export function AlertLightbox({
           />
         </div>
         <div className={styles.meta}>
-          {/* Prev/next preview strip — thumbnails + camera badges for
-              the alerts on either side of the current one. Purpose is
-              rapid-vote pacing: operator glances at the strip to see
-              when a camera transition (rooftop → yard etc.) is coming
-              up and slows down before muscle-memory-voting through the
-              transition on the wrong mental model. Click to jump. */}
+          {/* Preview strip — 3 alerts each side + current position.
+              Purpose is rapid-vote pacing: operator glances at the
+              strip to see when a camera transition (rooftop → yard
+              etc.) is coming up and slows down before muscle-memory-
+              voting through it on the wrong mental model. 3-slot
+              window gives ~3-alert look-ahead lead time. Click any
+              thumb to jump.
+
+              Camera-change highlight uses **transition-boundary
+              marking**: each slot compares to its NEIGHBOR (not to
+              current), so only the actual transition point flashes
+              amber instead of every alert after a transition. E.g.
+              current=rooftop, next3=[rooftop, yard, yard] → only [+2]
+              flashes; [+3] stays calm because it matches its own
+              neighbor. Direct answer to "where should I slow down?" */}
           <div className={styles.previewStrip}>
-            <PreviewThumb
-              alert={currentIdx > 0 ? navList[currentIdx - 1] : null}
-              label="prev"
-              cameraChangeFrom={current.camera_id}
-              onClick={canPrev ? () => go(-1) : undefined}
-            />
+            {[-3, -2, -1].map((offset) => {
+              const i = currentIdx + offset;
+              const alert = i >= 0 && i < navList.length ? navList[i] : null;
+              const neighbor = i + 1 >= 0 && i + 1 < navList.length ? navList[i + 1] : current;
+              return (
+                <PreviewThumb
+                  key={offset}
+                  alert={alert}
+                  label={`${offset}`}
+                  cameraChangeFrom={neighbor?.camera_id}
+                  onClick={
+                    alert && offset === -1
+                      ? () => go(-1)
+                      : alert
+                        ? () => setOpenId(alert.id)
+                        : undefined
+                  }
+                />
+              );
+            })}
             <span className={styles.pos}>
               {currentIdx + 1} / {navList.length}
               {zoom > 1 && <span className={styles.zoomBadge}> · {zoom.toFixed(2)}×</span>}
             </span>
-            <PreviewThumb
-              alert={currentIdx < navList.length - 1 ? navList[currentIdx + 1] : null}
-              label="next"
-              cameraChangeFrom={current.camera_id}
-              onClick={canNext ? () => go(1) : undefined}
-            />
+            {[1, 2, 3].map((offset) => {
+              const i = currentIdx + offset;
+              const alert = i >= 0 && i < navList.length ? navList[i] : null;
+              const neighbor = i - 1 >= 0 && i - 1 < navList.length ? navList[i - 1] : current;
+              return (
+                <PreviewThumb
+                  key={offset}
+                  alert={alert}
+                  label={`+${offset}`}
+                  cameraChangeFrom={neighbor?.camera_id}
+                  onClick={
+                    alert && offset === 1
+                      ? () => go(1)
+                      : alert
+                        ? () => setOpenId(alert.id)
+                        : undefined
+                  }
+                />
+              );
+            })}
           </div>
           <div className={styles.metaRow}>
             <span>
@@ -366,7 +403,13 @@ function PreviewThumb({
   onClick,
 }: {
   alert: AlertRow | null;
-  label: "prev" | "next";
+  /** Free-form offset label — "prev"/"next" or "-3"/"+2" etc. Shown in
+   *  the corner so operator can tell which slot is where at a glance. */
+  label: string;
+  /** camera_id to compare THIS slot's alert against. Different →
+   *  amber transition-boundary highlight. In the multi-slot strip,
+   *  this is the neighbor (n±1), not `current`, so only the actual
+   *  transition point flashes rather than every alert after it. */
   cameraChangeFrom: string | undefined;
   onClick?: () => void;
 }): JSX.Element {
