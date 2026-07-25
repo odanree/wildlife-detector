@@ -124,13 +124,13 @@
   padding: 3px;
   cursor: pointer;
   color: var(--text-md, #aaa);
-  font-size: 9px;
+  font-size: 10px;
   font-family: var(--font-mono, monospace);
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  min-width: 68px;
+  min-width: 78px;
   transition: border-color 0.1s;
 }
 
@@ -181,16 +181,16 @@
 }
 
 .previewThumb {
-  width: 60px;
-  height: 34px;
+  width: 69px;
+  height: 39px;
   object-fit: cover;
   border-radius: 2px;
   display: block;
 }
 
 .previewPlaceholder {
-  width: 60px;
-  height: 34px;
+  width: 69px;
+  height: 39px;
   display: flex;
   align-items: center;
   justify-content: center;
