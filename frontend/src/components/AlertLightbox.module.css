@@ -114,23 +114,24 @@
   justify-content: center;
   gap: var(--sp-1, 4px);
   margin-bottom: var(--sp-2, 8px);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
 }
 
 .previewSlot {
   background: transparent;
   border: 1px solid var(--border-3, #333);
   border-radius: var(--r-sm, 4px);
-  padding: 3px;
+  padding: 2px;
   cursor: pointer;
   color: var(--text-md, #aaa);
-  font-size: 11px;
+  font-size: 10px;
   font-family: var(--font-mono, monospace);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
-  min-width: 150px;
+  gap: 2px;
+  min-width: 104px;
   transition: border-color 0.1s;
 }
 
@@ -181,7 +182,7 @@
 }
 
 .previewThumb {
-  height: 80px;
+  height: 55px;
   width: auto;
   aspect-ratio: 16 / 9;
   object-fit: cover;
@@ -190,13 +191,13 @@
 }
 
 .previewPlaceholder {
-  height: 80px;
-  width: 142px;
+  height: 55px;
+  width: 98px;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--text-lo, #888);
-  font-size: 14px;
+  font-size: 12px;
 }
 
 .closeBtn {
