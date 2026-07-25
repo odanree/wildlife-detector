@@ -92,6 +92,108 @@
   color: var(--text-lo);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.hintLine {
+  color: var(--text-lo);
+  font-size: 11px;
+  text-align: center;
+  margin-top: var(--sp-1, 4px);
+  font-family: var(--font-mono, monospace);
+}
+
+/* Prev/next preview strip — mini thumbnails on either side of the
+   current index counter. Purpose is rapid-vote pacing: operator sees
+   when a camera transition is coming up and slows down before the
+   muscle-memory vote lands on the wrong mental model. */
+.previewStrip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3, 12px);
+  margin-bottom: var(--sp-2, 8px);
+}
+
+.previewSlot {
+  background: transparent;
+  border: 1px solid var(--border-3, #333);
+  border-radius: var(--r-sm, 4px);
+  padding: 4px;
+  cursor: pointer;
+  color: var(--text-md, #aaa);
+  font-size: 10px;
+  font-family: var(--font-mono, monospace);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 90px;
+  transition: border-color 0.1s;
+}
+
+.previewSlot:hover {
+  border-color: var(--accent-blue, #4a6fa8);
+}
+
+.previewSlot:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.previewSlotEmpty {
+  border-style: dashed;
+}
+
+/* Camera-transition highlight — amber border draws the eye so the
+   operator can't miss the impending camera change while keyboard-voting
+   fast. Threshold-of-attention design: only paints when it matters. */
+.previewSlotCameraChange {
+  border-color: var(--accent-warn, #d0aa5a);
+  border-width: 2px;
+  padding: 3px;
+}
+
+.previewLabel {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-lo, #888);
+}
+
+.previewCam {
+  background: var(--bg-2, #222228);
+  color: var(--accent-camera, #6b96d6);
+  padding: 0 4px;
+  border-radius: 2px;
+  font-size: 9px;
+}
+
+.previewCamChange {
+  background: var(--accent-warn, #d0aa5a);
+  color: #000;
+  padding: 0 4px;
+  border-radius: 2px;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.previewThumb {
+  width: 80px;
+  height: 45px;
+  object-fit: cover;
+  border-radius: 2px;
+  display: block;
+}
+
+.previewPlaceholder {
+  width: 80px;
+  height: 45px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-lo, #888);
+  font-size: 14px;
 }
 
 .closeBtn {
