@@ -1,0 +1,5 @@
+clips/
+results/
+ground_truth.json
+*.pyc
+__pycache__/
