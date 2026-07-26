@@ -80,6 +80,7 @@ def replay(
     history: int,
     edge_margin: int,
     use_zone: bool,
+    min_bbox_px: int = 0,
 ) -> dict:
     """Run one clip through the pipeline with the given config. Returns
     a summary dict — see the JSON printed by main()."""
@@ -108,10 +109,12 @@ def replay(
     )
 
     frame_count = 0
-    dets_pre_zone = 0    # raw detections from MotionDetector
+    dets_pre_bbox_filter = 0
+    dets_pre_zone = 0    # raw detections that survived the bbox pre-filter
     dets_post_zone = 0   # after zone filter
     velocity_rej_total = 0
     persistence_rej_total = 0
+    bbox_prefilter_rej = 0
     first_hit_frame = None
 
     while True:
@@ -122,6 +125,21 @@ def replay(
         # NOTE: no color conversion — MotionDetector accepts either
         # single-channel or 3-channel and internally converts.
         dets = motion.detect(frame)
+        dets_pre_bbox_filter += len(dets)
+
+        # MIN_MOTION_BBOX_PX pre-filter — production applies this in
+        # pipeline.py right after MotionDetector.detect. Requires bbox
+        # width AND height ≥ threshold. Not part of MotionDetector
+        # itself so we replicate here.
+        if min_bbox_px > 0 and dets:
+            filtered = [
+                d for d in dets
+                if (d.bbox[2] - d.bbox[0]) >= min_bbox_px
+                and (d.bbox[3] - d.bbox[1]) >= min_bbox_px
+            ]
+            bbox_prefilter_rej += len(dets) - len(filtered)
+            dets = filtered
+
         dets_pre_zone += len(dets)
 
         if zone_filter and dets:
@@ -151,12 +169,15 @@ def replay(
             "history": history,
             "edge_margin": edge_margin,
             "use_zone": use_zone,
+            "min_bbox_px": min_bbox_px,
         },
+        "detections_pre_bbox_filter": dets_pre_bbox_filter,
         "detections_pre_zone": dets_pre_zone,
         "detections_post_zone": dets_post_zone,
         "first_hit_frame": first_hit_frame,
         "velocity_rejects": velocity_rej_total,
         "persistence_rejects": persistence_rej_total,
+        "bbox_prefilter_rejects": bbox_prefilter_rej,
         "would_fire_alert": dets_post_zone > 0,
     }
 
@@ -177,6 +198,9 @@ def main() -> int:
     ap.add_argument("--history", type=int, default=400,
                     help="MOG2 history frames (default 400)")
     ap.add_argument("--edge-margin", type=int, default=20)
+    ap.add_argument("--min-bbox-px", type=int, default=30,
+                    help="MIN_MOTION_BBOX_PX pre-filter — bbox W AND H both must be >= this "
+                         "(default 30 = rooftop production; use 0 to disable)")
     ap.add_argument("--no-zone", action="store_true",
                     help="disable zone-filter (all detections pass)")
     args = ap.parse_args()
@@ -194,6 +218,7 @@ def main() -> int:
         history=args.history,
         edge_margin=args.edge_margin,
         use_zone=not args.no_zone,
+        min_bbox_px=args.min_bbox_px,
     )
     print(json.dumps(result, indent=2))
     return 0 if result["would_fire_alert"] else 1

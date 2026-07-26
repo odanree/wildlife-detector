@@ -37,27 +37,29 @@ MANIFEST = SCRIPT_DIR / "ground_truth.json"
 CLIPS_DIR = SCRIPT_DIR / "clips"
 RESULTS_DIR = SCRIPT_DIR / "results"
 
-# Production defaults — pulled from motion_detector.py + detection.yaml
-# so a "baseline" run reproduces current behavior. Update if production
-# defaults change.
+# Production defaults for ROOFTOP — pulled from docker-compose.yml env
+# so a "baseline" run reproduces current rooftop behavior. Update if
+# rooftop's env changes. Yard uses different defaults; add a separate
+# BASELINE_YARD dict when we sweep that.
 BASELINE = {
-    "min_track_age": 2,
-    "max_velocity": 40,
-    "min_area": 80,
-    "max_area": 4000,
-    "var_threshold": 18.0,
-    "history": 400,
+    "min_track_age": 2,       # MOTION_MIN_TRACK_AGE_FRAMES not set → default 2
+    "max_velocity": 40,       # MOTION_MAX_VELOCITY_PX_PER_FRAME not set → default 40
+    "min_area": 40,           # MOTION_MIN_AREA env override on rooftop
+    "max_area": 4000,         # MotionDetector default; no env override
+    "var_threshold": 8.0,     # MOTION_VAR_THRESHOLD env override on rooftop
+    "history": 200,           # MOTION_HISTORY env override on rooftop
     "edge_margin": 20,
     "use_zone": True,
+    "min_bbox_px": 30,        # MIN_MOTION_BBOX_PX env override on rooftop
 }
 
-# The grid. Each key is a config dim; the value is the list of values
-# to test. Cartesian product = one run per combination. Keep this small
-# — 60 combos × 46 clips × ~2.6s = 2h. Trimmed to focus on the primary
-# knobs. Expand later once we've picked a corridor of interest.
+# The grid. Cartesian product per (config dim × value list). At 46 clips
+# × ~2.6s each, a 10-config run takes ~20min. Values chosen for
+# rooftop's actual 2048×928 resolution (area ~2.6x vs 1280×720 default,
+# so "generous" tighter values are in the 100-300 range at this res).
 GRID = {
     "min_track_age": [2, 3, 4, 5, 6],           # persistence gate — primary knob
-    "min_area":      [80, 200],                 # small-blob rejection
+    "min_area":      [40, 100, 200],            # small-blob rejection at 2048×928
 }
 
 
@@ -101,6 +103,7 @@ def run_sweep(clip_records: list[dict], configs: list[dict]) -> list[dict]:
                 history=cfg["history"],
                 edge_margin=cfg["edge_margin"],
                 use_zone=cfg["use_zone"],
+                min_bbox_px=cfg.get("min_bbox_px", 0),
             )
             rows.append({
                 "config_id": cid,

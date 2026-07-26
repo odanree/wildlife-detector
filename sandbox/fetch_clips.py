@@ -70,6 +70,12 @@ NVR_CHANNEL_BY_CAMERA = {
     "yard": 8,
 }
 
+# Target resolution — MUST match production per camera (see the
+# ffmpeg -vf note below). Overridable per-invocation via --width/--height.
+# Default is rooftop's INPUT_WIDTH/INPUT_HEIGHT from docker-compose.yml.
+_TARGET_WIDTH = 2048
+_TARGET_HEIGHT = 928
+
 # Window around each alert timestamp: -PRE_S seconds .. +POST_S seconds.
 # Rationale: motion detector needs a few frames of settled background
 # before the target enters, plus enough post-event frames for the
@@ -109,10 +115,12 @@ def _fetch_one(alert_id: int, ts_epoch: float, camera: str, out_path: Path) -> t
     # break `-c copy`. Re-encode with ultrafast preset — small quality
     # loss, but the alternative is corrupted MP4 outputs.
     #
-    # -vf scale=1280:720: match production's detection input size (from
-    # config/detection.yaml `input_width`/`input_height`). NVR playback
-    # returns 4096×1860 raw; motion detector thresholds (min_area,
-    # max_area) are calibrated for 1280×720 so pixel counts must match.
+    # -vf scale=WxH: MUST match production's detection input size per
+    # camera. NVR returns 4096×1860 raw; motion detector thresholds
+    # (min_area, max_area) are calibrated in pixels so a resolution
+    # mismatch silently rescales every knob. Rooftop runs at 2048×928
+    # (INPUT_WIDTH/INPUT_HEIGHT env in docker-compose.yml), yard at the
+    # config/detection.yaml default 1280×720.
     #
     # -an: audio not needed for detection replay.
     cmd = [
@@ -120,7 +128,7 @@ def _fetch_one(alert_id: int, ts_epoch: float, camera: str, out_path: Path) -> t
         "-rtsp_transport", "tcp",
         "-i", url,
         "-t", str(PRE_S + POST_S + 1),  # +1s slack for RTSP-side jitter
-        "-vf", "scale=1280:720",
+        "-vf", f"scale={_TARGET_WIDTH}:{_TARGET_HEIGHT}",
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-crf", "23",
@@ -179,6 +187,10 @@ def _load_alerts(only_tps: bool, sample_fps: int, camera: str = "rooftop") -> li
 
 
 def main() -> int:
+    # Declared up-front because we mutate these after parsing CLI overrides.
+    # Python treats any name assigned inside a function as local unless the
+    # `global` keyword appears BEFORE the first reference.
+    global _TARGET_WIDTH, _TARGET_HEIGHT
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--tps", action="store_true", help="fetch clips for all TPs")
     ap.add_argument("--sample-fps", type=int, default=0,
@@ -189,6 +201,10 @@ def main() -> int:
                     help="print planned fetches, don't call ffmpeg")
     ap.add_argument("--limit", type=int, default=0,
                     help="cap total clips (0 = unlimited); useful for smoke test")
+    ap.add_argument("--width", type=int, default=_TARGET_WIDTH,
+                    help=f"target scale width in px (default {_TARGET_WIDTH} = rooftop)")
+    ap.add_argument("--height", type=int, default=_TARGET_HEIGHT,
+                    help=f"target scale height in px (default {_TARGET_HEIGHT} = rooftop)")
     args = ap.parse_args()
 
     if not args.tps and args.sample_fps == 0:
@@ -201,6 +217,11 @@ def main() -> int:
     if not DB_PATH.exists():
         print(f"ERROR: DB not found at {DB_PATH}", file=sys.stderr)
         return 2
+
+    # Fold CLI overrides back into the module-level constants that the
+    # ffmpeg command reads from. (`global` was declared at the top of main.)
+    _TARGET_WIDTH = args.width
+    _TARGET_HEIGHT = args.height
 
     CLIPS_DIR.mkdir(parents=True, exist_ok=True)
     alerts = _load_alerts(only_tps=args.tps, sample_fps=args.sample_fps, camera=args.camera)
