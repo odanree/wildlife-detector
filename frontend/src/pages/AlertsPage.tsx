@@ -1,14 +1,14 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AlertRow, LabelVerdict } from "../api/alerts";
 import { AlertLightbox } from "../components/AlertLightbox";
 import { BulkLabelBar } from "../components/BulkLabelBar";
 import { GlobalHeader } from "../components/GlobalHeader";
 import { LabelPicker } from "../components/LabelPicker";
 import { ReplayButton } from "../components/ReplayButton";
+import { markAlertRead, seedAlertReadsOnce, useAlertReadIds } from "../hooks/useAlertReadIds";
 import { useAlerts } from "../hooks/useAlerts";
 import { useAlertsFilters } from "../hooks/useAlertsFilters";
 import { useAlertsSelection } from "../hooks/useAlertsSelection";
-import { useAlertsWatermark } from "../hooks/useAlertsWatermark";
 import { useCameras } from "../hooks/useCameras";
 import { useLabelOverlay } from "../hooks/useLabelOverlay";
 import { fmtRelative, fmtTs } from "../util/time";
@@ -29,7 +29,8 @@ interface GroupedAlerts {
  *   - useAlertsFilters: URL + localStorage filter state.
  *   - useAlertsSelection: bulk checkbox Set + toggle/clear.
  *   - useLabelOverlay: optimistic label map + rollback + busy set.
- *   - useAlertsWatermark: initialSeenId snapshot + markAlertsSeen ledger.
+ *   - useAlertReadIds: per-message read receipts + click-driven
+ *     watermark advancement for the header badge.
  *
  * What's left here: the useAlerts call, table + modal composition,
  * and the row component. Was 557 LOC + 12 useState + 3 useEffect
@@ -39,7 +40,8 @@ export function AlertsPage() {
   const filters = useAlertsFilters();
   const selection = useAlertsSelection();
   const overlay = useLabelOverlay();
-  const [openId, setOpenId] = useState<number | null>(null);
+  const [openId, setOpenIdRaw] = useState<number | null>(null);
+  const readIds = useAlertReadIds();
 
   const camerasResp = useCameras();
   const { data, error, loading } = useAlerts(
@@ -53,12 +55,38 @@ export function AlertsPage() {
   );
 
   const items = data?.items ?? [];
+
+  // Every open path — row thumb, lightbox prev/next, preview-strip
+  // jump — routes through this single setOpenId. Wrapping it here
+  // catches all read-triggers with one line. markAlertRead needs the
+  // full AlertRow so it can advance the correct per-camera watermark;
+  // we look it up in the current items list. Null (close) is
+  // deliberately not a read event.
+  const setOpenId = useCallback(
+    (id: number | null) => {
+      if (id != null) {
+        const alert = items.find((a) => a.id === id);
+        if (alert) markAlertRead(alert);
+      }
+      setOpenIdRaw(id);
+    },
+    [items],
+  );
   const groups = useMemo(
     () => (filters.grouped ? groupItems(items) : items.map((h) => ({ head: h, children: [] }))),
     [items, filters.grouped],
   );
 
-  const { initialSeenId } = useAlertsWatermark({ data, camera: filters.camera });
+  // One-time seed: on the very first mount of this feature (across
+  // all sessions on this browser) mark every currently-loaded alert
+  // as read AND stamp per-camera watermarks to current server totals
+  // so the header badge starts at 0. Without this, an operator new
+  // to the feature would see thousands of unread rows in the badge
+  // and 200 highlighted rows in the table. After the seed, only
+  // markAlertRead advances anything.
+  useEffect(() => {
+    if (items.length > 0) seedAlertReadsOnce(items);
+  }, [items]);
 
   return (
     <div className={styles.wrap}>
@@ -214,7 +242,7 @@ export function AlertsPage() {
                   g,
                   filters.camera === "",
                   setOpenId,
-                  initialSeenId ?? Number.POSITIVE_INFINITY,
+                  readIds,
                   selection.selectedIds,
                   selection.toggleOne,
                   overlay.labelOverlay,
@@ -247,13 +275,20 @@ function renderGroup(
   g: GroupedAlerts,
   showCameraBadge: boolean,
   onOpen: (id: number) => void,
-  unreadThreshold: number,
+  readIds: Set<number>,
   selectedIds: Set<number>,
   toggleOne: (id: number) => void,
   labelOverlay: Map<number, { verdict: LabelVerdict; species: string | null }>,
   writeLabel: (id: number, verdict: LabelVerdict, species: string | null) => Promise<void>,
   busyIds: Set<number>,
 ): JSX.Element[] {
+  // Pure per-message unread — the row is unread iff the operator
+  // hasn't explicitly opened it. Visiting the page does NOT mark
+  // anything read; only opening the specific alert (via row thumb,
+  // lightbox nav, or preview strip) does — see the setOpenId
+  // wrapper in AlertsPage. The one-time seedAlertReadsOnce on first
+  // mount prevents the cold-start flood.
+  const isUnread = !readIds.has(g.head.id);
   return [
     <Row
       key={g.head.id}
@@ -261,7 +296,7 @@ function renderGroup(
       showCameraBadge={showCameraBadge}
       groupSize={g.children.length + 1}
       onOpen={onOpen}
-      isUnread={g.head.id > unreadThreshold}
+      isUnread={isUnread}
       isSelected={selectedIds.has(g.head.id)}
       onToggleSelect={() => toggleOne(g.head.id)}
       labelOverride={labelOverlay.get(g.head.id)}
