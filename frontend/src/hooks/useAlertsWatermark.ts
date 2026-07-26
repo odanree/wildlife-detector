@@ -57,14 +57,44 @@ export function useAlertsWatermark({ data, camera }: UseAlertsWatermarkOpts): Al
     setInitialSeenId(readLastSeenId(camera || null));
   }
 
+  // Track visibility as reactive state so the ledger effect below can
+  // list it in its deps. Without this, a tab that was hidden when new
+  // alerts arrived would return to `visible` but the effect wouldn't
+  // re-run (deps unchanged), leaving the badge stale until the next
+  // data tick. With `isVisible` in deps, the effect fires the moment
+  // the tab regains focus and stamps whatever data is currently in
+  // hand.
+  const [isVisible, setIsVisible] = useState<boolean>(() =>
+    typeof document === "undefined" ? true : document.visibilityState === "visible",
+  );
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onVis = () => setIsVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+
   // Alerts-seen ledger — cheap local writes every tick, expensive
   // /api/alerts/counts fetch once per filter-state change. Guard with
   // a ref keyed on the filter (camera swap invalidates the guard
   // via the reset effect below).
+  //
+  // **Visibility gate** — only stamp when the tab is actually the
+  // frontmost visible surface (document.visibilityState === "visible").
+  // Fixes the alt-tab correctness bug: without the gate, an operator
+  // who opens the alerts page and switches to another tab would have
+  // newly-arriving alerts silently marked as "seen" via the 5s polling
+  // tick even though nothing was ever on screen. This is a **read-side
+  // liveness signal** — the browser tells us whether the user could
+  // plausibly have seen the content; we only advance the watermark when
+  // they could. Coarse compared to per-row IntersectionObserver
+  // (below-the-fold rows on a visible tab still count), but a strict
+  // win over unconditional-on-tick, and cheap.
   const countsFetchedForRef = useRef<string | null>(null);
   const items = data?.items ?? [];
   useEffect(() => {
     if (!data) return;
+    if (!isVisible) return;
     const overallMaxId = items.reduce((m, a) => Math.max(m, a.id), 0);
     if (initialSeenId === null) setInitialSeenId(overallMaxId);
 
@@ -76,15 +106,29 @@ export function useAlertsWatermark({ data, camera }: UseAlertsWatermarkOpts): Al
     }
 
     // Unfiltered — cheap local writes every tick, expensive counts
-    // fetch once per filter-state.
+    // fetch once per (filter-state, server-total) pair. Keying on
+    // data.total means the fetch re-fires whenever new alerts land
+    // so per-camera watermarks advance during a session — earlier
+    // guard was just "unfiltered" which froze yard/rooftop
+    // watermarks at mount and left the dual-pane header badge
+    // stuck showing unread that would never clear. Guard still
+    // suppresses the tick-storm when no new alerts arrive.
     markAlertsSeen(null, data.total, overallMaxId);
-    const key = "unfiltered";
+    const key = `unfiltered:${data.total}`;
     if (countsFetchedForRef.current === key) return;
     countsFetchedForRef.current = key;
-    const controller = new AbortController();
+    // No AbortController: the counts fetch's only side effects are
+    // localStorage writes + BroadcastChannel posts, both safe after
+    // unmount. Earlier version aborted on effect cleanup, which
+    // introduced a **fetch-abort race** — every SSE data tick re-ran
+    // the effect, cleanup killed the in-flight counts fetch, then
+    // the new effect run's `unfiltered:${data.total}` guard matched
+    // the just-set key and skipped firing a replacement. Result:
+    // per-camera watermarks stayed stuck until data.total actually
+    // changed. Letting the fetch complete is strictly correct here.
     (async () => {
       try {
-        const r = await fetch("/api/alerts/counts", { signal: controller.signal });
+        const r = await fetch("/api/alerts/counts");
         if (!r.ok) return;
         const counts = (await r.json()) as Record<string, number>;
         const perCamMaxId: Record<string, number> = {};
@@ -96,19 +140,19 @@ export function useAlertsWatermark({ data, camera }: UseAlertsWatermarkOpts): Al
         for (const [cam, total] of Object.entries(counts)) {
           markAlertsSeen(cam, total, perCamMaxId[cam]);
         }
-      } catch (e) {
-        if (e instanceof DOMException && e.name === "AbortError") return;
+      } catch {
         // Silent — filtered-view watermark already stamped above,
         // dual-pane badge just won't clear this cycle.
       }
     })();
-    return () => {
-      controller.abort();
-    };
     // camera IS in deps: switching from filtered → unfiltered must let
     // the guard-check re-run with a fresh key. We compare inside via
     // countsFetchedForRef, so no double-fetch.
-  }, [data, items, initialSeenId, camera]);
+    // isVisible IS in deps: a hidden→visible transition must re-fire
+    // the stamp for whatever data is currently in hand, otherwise
+    // a background tab that missed ticks stays stale on return until
+    // the next data change.
+  }, [data, items, initialSeenId, camera, isVisible]);
 
   // Invalidate the counts-fetched guard when camera filter changes so
   // a camera-swap → back-to-unfiltered re-runs the counts fetch once.
