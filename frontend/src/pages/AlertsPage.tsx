@@ -1,11 +1,11 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AlertRow, LabelVerdict } from "../api/alerts";
 import { AlertLightbox } from "../components/AlertLightbox";
 import { BulkLabelBar } from "../components/BulkLabelBar";
 import { GlobalHeader } from "../components/GlobalHeader";
 import { LabelPicker } from "../components/LabelPicker";
 import { ReplayButton } from "../components/ReplayButton";
-import { markAlertRead, useAlertReadIds } from "../hooks/useAlertReadIds";
+import { markAlertRead, seedAlertReadsOnce, useAlertReadIds } from "../hooks/useAlertReadIds";
 import { useAlerts } from "../hooks/useAlerts";
 import { useAlertsFilters } from "../hooks/useAlertsFilters";
 import { useAlertsSelection } from "../hooks/useAlertsSelection";
@@ -69,7 +69,20 @@ export function AlertsPage() {
     [items, filters.grouped],
   );
 
-  const { initialSeenId } = useAlertsWatermark({ data, camera: filters.camera });
+  // useAlertsWatermark is still called for its side effect — advancing
+  // the localStorage watermark on every visible tick so the header
+  // badge in `useUnreadAlerts` clears. Its returned initialSeenId is
+  // no longer used for row highlighting (that's pure per-message now).
+  useAlertsWatermark({ data, camera: filters.camera });
+
+  // One-time seed: on the very first mount of this feature (across
+  // all sessions on this browser) mark every currently-loaded alert
+  // id as read, so the operator doesn't see 200 historical rows as
+  // unread. After the seed, only markAlertRead advances readIds —
+  // new alerts default to unread until explicitly opened.
+  useEffect(() => {
+    if (items.length > 0) seedAlertReadsOnce(items.map((a) => a.id));
+  }, [items]);
 
   return (
     <div className={styles.wrap}>
@@ -225,7 +238,6 @@ export function AlertsPage() {
                   g,
                   filters.camera === "",
                   setOpenId,
-                  initialSeenId ?? Number.POSITIVE_INFINITY,
                   readIds,
                   selection.selectedIds,
                   selection.toggleOne,
@@ -259,7 +271,6 @@ function renderGroup(
   g: GroupedAlerts,
   showCameraBadge: boolean,
   onOpen: (id: number) => void,
-  unreadThreshold: number,
   readIds: Set<number>,
   selectedIds: Set<number>,
   toggleOne: (id: number) => void,
@@ -267,14 +278,13 @@ function renderGroup(
   writeLabel: (id: number, verdict: LabelVerdict, species: string | null) => Promise<void>,
   busyIds: Set<number>,
 ): JSX.Element[] {
-  // Composite unread signal: the row must be (a) newer than the
-  // watermark snapshot at page mount AND (b) not already opened
-  // this session (or a prior one — the read-id set persists in
-  // localStorage). Either clause alone would leak state: watermark-
-  // only would re-highlight rows the user already clicked into;
-  // read-id-only would show every historical row as unread on
-  // first visit.
-  const isUnread = g.head.id > unreadThreshold && !readIds.has(g.head.id);
+  // Pure per-message unread — the row is unread iff the operator
+  // hasn't explicitly opened it. Visiting the page does NOT mark
+  // anything read; only opening the specific alert (via row thumb,
+  // lightbox nav, or preview strip) does — see the setOpenId
+  // wrapper in AlertsPage. The one-time seedAlertReadsOnce on first
+  // mount prevents the cold-start flood.
+  const isUnread = !readIds.has(g.head.id);
   return [
     <Row
       key={g.head.id}

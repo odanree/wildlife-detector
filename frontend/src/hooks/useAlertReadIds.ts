@@ -16,11 +16,15 @@ import { useEffect, useState } from "react";
  * lightbox prev/next, AND preview-strip jumps all mark-as-read for
  * free. Null (close) is a no-op.
  *
- * Composite with the watermark: a row is "unread" iff
- *   `alert.id > initialSeenId && !readIds.has(alert.id)`.
- * The watermark is a per-visit macro clear ("everything up to my
- * last visit"); per-message state is the micro override ("but I
- * specifically opened these").
+ * Pure per-message semantics: a row is "unread" iff
+ *   `!readIds.has(alert.id)`.
+ * The watermark stays only as the header-badge summary signal — it
+ * is intentionally NOT part of the row-highlight computation. An
+ * earlier composite (`alert.id > initialSeenId && !readIds.has(id)`)
+ * had the wrong semantics: the watermark advanced on every visit,
+ * bulk-clearing unread rows before the operator could open them.
+ * Per-message means visiting the page does not mark anything read;
+ * only opening the specific alert does.
  *
  * Patterns:
  * - **Read-receipt set + bounded LRU** — Set<number> capped at CAP,
@@ -36,6 +40,7 @@ import { useEffect, useState } from "react";
  */
 
 const READ_IDS_KEY = "alertReadIds";
+const READ_SEEDED_KEY = "alertReadIdsSeeded";
 const READ_CHANNEL_NAME = "wildlife-detector-alerts-read";
 const CAP = 5000;
 
@@ -63,6 +68,31 @@ function writeStored(ids: number[]): void {
     localStorage.setItem(READ_IDS_KEY, JSON.stringify(ids));
   } catch {
     /* quota / privacy mode — accept the loss */
+  }
+}
+
+/**
+ * One-time bulk-mark on install: on the first-ever mount of the
+ * per-message read system, seed the set with every currently-loaded
+ * alert id so an operator new to this feature doesn't see 200
+ * historical rows flagged unread on their first visit. Guarded by a
+ * dedicated seeded-flag key so it fires exactly once per browser.
+ * Subsequent installs (new alerts) default to unread until
+ * explicitly opened — the correct per-message semantics.
+ */
+export function seedAlertReadsOnce(ids: readonly number[]): void {
+  try {
+    if (localStorage.getItem(READ_SEEDED_KEY)) return;
+    if (ids.length === 0) return;
+    const cur = new Set(readStored());
+    for (const id of ids) cur.add(id);
+    const sorted = [...cur].sort((a, b) => a - b);
+    const capped = sorted.length > CAP ? sorted.slice(sorted.length - CAP) : sorted;
+    writeStored(capped);
+    localStorage.setItem(READ_SEEDED_KEY, "1");
+    getSender()?.postMessage({ type: "invalidate" });
+  } catch {
+    /* quota / privacy mode — next visit will retry */
   }
 }
 
