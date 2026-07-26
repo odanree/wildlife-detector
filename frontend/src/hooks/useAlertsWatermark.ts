@@ -89,9 +89,15 @@ export function useAlertsWatermark({ data, camera }: UseAlertsWatermarkOpts): Al
     }
 
     // Unfiltered — cheap local writes every tick, expensive counts
-    // fetch once per filter-state.
+    // fetch once per (filter-state, server-total) pair. Keying on
+    // data.total means the fetch re-fires whenever new alerts land
+    // so per-camera watermarks advance during a session — earlier
+    // guard was just "unfiltered" which froze yard/rooftop
+    // watermarks at mount and left the dual-pane header badge
+    // stuck showing unread that would never clear. Guard still
+    // suppresses the tick-storm when no new alerts arrive.
     markAlertsSeen(null, data.total, overallMaxId);
-    const key = "unfiltered";
+    const key = `unfiltered:${data.total}`;
     if (countsFetchedForRef.current === key) return;
     countsFetchedForRef.current = key;
     const controller = new AbortController();
