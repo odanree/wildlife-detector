@@ -6,15 +6,32 @@ import { fetchAlerts } from "../api/alerts";
 const SEEN_KEY_BASE = "alertsLastSeenTotal";
 const SEEN_ID_KEY_BASE = "alertsLastSeenId";
 
-/** Custom event fired on the same tab that just called markAlertsSeen,
- *  because the browser's native `storage` event only fires in OTHER tabs.
- *  useUnreadAlerts listens to both — this one for same-tab reactivity,
- *  the storage event for cross-tab sync. Detail carries the camera key
- *  and the new total so listeners don't have to re-read localStorage. */
-const SEEN_UPDATED_EVENT = "wildlife-detector:alerts-seen-updated";
-interface SeenUpdatedDetail {
+/** BroadcastChannel name — single pub-sub primitive for watermark
+ *  updates, same-tab AND cross-tab. Replaces the earlier belt-and-
+ *  suspenders combo of `storage` event (cross-tab only, native
+ *  browser) + custom `alerts-seen-updated` event (same-tab only,
+ *  our own workaround). BroadcastChannel is the standard API for
+ *  this — cleaner, single mechanism.
+ *
+ *  Semantics: BroadcastChannel messages are delivered to every
+ *  BroadcastChannel INSTANCE on the same origin subscribed to the
+ *  same name, EXCEPT the instance that called postMessage(). So we
+ *  use a module-scope sender + per-hook subscriber; sender posts,
+ *  every subscriber (including in the same tab) receives. */
+const SEEN_CHANNEL_NAME = "wildlife-detector-alerts-seen";
+interface SeenMessage {
   camera: string; // "all" or camera_id — the localStorage key suffix
   total: number;
+}
+
+/** Sender-side channel. Module-scope so we don't rebuild it on every
+ *  markAlertsSeen call. Guarded because SSR / very old browsers don't
+ *  have BroadcastChannel. */
+let _seenSender: BroadcastChannel | null = null;
+function getSeenSender(): BroadcastChannel | null {
+  if (typeof BroadcastChannel === "undefined") return null;
+  if (_seenSender === null) _seenSender = new BroadcastChannel(SEEN_CHANNEL_NAME);
+  return _seenSender;
 }
 
 function seenKey(camera?: string | null): string {
@@ -182,39 +199,47 @@ export function useUnreadAlerts(
       startFallbackPolling();
     }
 
-    // Cross-tab sync: any tab stamping a watermark for one of our
-    // cameras should update our seen state so the badge stays honest.
-    const watchedKeys = new Set(cams.map((c) => seenKey(c)));
-    function onStorage(e: StorageEvent) {
-      if (!e.key || !watchedKeys.has(e.key) || e.newValue === null) return;
-      const camera = e.key.slice(SEEN_KEY_BASE.length + 1);
-      setSeens((prev) => ({
-        ...prev,
-        [camera]: Number.parseInt(e.newValue as string, 10) || 0,
-      }));
-    }
-    window.addEventListener("storage", onStorage);
-
-    // Same-tab sync: `storage` events don't fire in the tab that wrote
-    // localStorage. AlertsPage calls markAlertsSeen() during its
-    // effect chain and expects the badge in THIS tab's header to
-    // update. The custom event fills that gap — same shape as
-    // onStorage but for the same tab.
+    // Watermark sync via BroadcastChannel — one primitive handles
+    // both same-tab AND cross-tab updates. Every markAlertsSeen call
+    // posts to the sender channel; every subscriber (including THIS
+    // hook, since we're a different BroadcastChannel instance from
+    // the sender) receives.
+    //
+    // Fallback for browsers with no BroadcastChannel: keep the legacy
+    // `storage` event listener so cross-tab sync still works even if
+    // same-tab won't. Modern browsers (all evergreen 2022+) support
+    // BroadcastChannel natively.
     const watchedCameras = new Set(cams);
-    function onSeenUpdated(e: Event) {
-      const detail = (e as CustomEvent<SeenUpdatedDetail>).detail;
-      if (!detail || !watchedCameras.has(detail.camera)) return;
-      setSeens((prev) => ({ ...prev, [detail.camera]: detail.total }));
+    let subscriberChannel: BroadcastChannel | null = null;
+    let onStorageFallback: ((e: StorageEvent) => void) | null = null;
+
+    if (typeof BroadcastChannel !== "undefined") {
+      subscriberChannel = new BroadcastChannel(SEEN_CHANNEL_NAME);
+      subscriberChannel.onmessage = (e: MessageEvent<SeenMessage>) => {
+        const msg = e.data;
+        if (!msg || !watchedCameras.has(msg.camera)) return;
+        setSeens((prev) => ({ ...prev, [msg.camera]: msg.total }));
+      };
+    } else {
+      const watchedKeys = new Set(cams.map((c) => seenKey(c)));
+      onStorageFallback = (e: StorageEvent) => {
+        if (!e.key || !watchedKeys.has(e.key) || e.newValue === null) return;
+        const camera = e.key.slice(SEEN_KEY_BASE.length + 1);
+        setSeens((prev) => ({
+          ...prev,
+          [camera]: Number.parseInt(e.newValue as string, 10) || 0,
+        }));
+      };
+      window.addEventListener("storage", onStorageFallback);
     }
-    window.addEventListener(SEEN_UPDATED_EVENT, onSeenUpdated);
 
     return () => {
       cancelled = true;
       controller.abort();
       es?.close();
       if (fallbackHandle != null) window.clearInterval(fallbackHandle);
-      window.removeEventListener("storage", onStorage);
-      window.removeEventListener(SEEN_UPDATED_EVENT, onSeenUpdated);
+      subscriberChannel?.close();
+      if (onStorageFallback) window.removeEventListener("storage", onStorageFallback);
     };
   }, [camsKey, intervalMs]);
 
@@ -279,12 +304,15 @@ export function markAlertsSeen(
     if (highestId != null) {
       localStorage.setItem(seenIdKey(camera), String(highestId));
     }
-    // Same-tab notification — the native `storage` event won't fire on
-    // this tab, only on other tabs. Custom event fills that gap so the
-    // header badge updates immediately when the operator visits the
-    // alerts page.
-    const detail: SeenUpdatedDetail = { camera: camera || "all", total };
-    window.dispatchEvent(new CustomEvent(SEEN_UPDATED_EVENT, { detail }));
+    // Single-primitive notification: BroadcastChannel delivers to every
+    // subscribed instance on this origin except the sender, which covers
+    // both same-tab (other hook instances in this tab) and cross-tab
+    // (siblings on other pages) — replacing the older combo of native
+    // `storage` (cross-tab-only) + custom `alerts-seen-updated` event
+    // (same-tab-only). Sender is module-scope so we don't rebuild it
+    // on every stamp.
+    const msg: SeenMessage = { camera: camera || "all", total };
+    getSeenSender()?.postMessage(msg);
   } catch {
     /* ignore */
   }
