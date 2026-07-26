@@ -57,6 +57,23 @@ export function useAlertsWatermark({ data, camera }: UseAlertsWatermarkOpts): Al
     setInitialSeenId(readLastSeenId(camera || null));
   }
 
+  // Track visibility as reactive state so the ledger effect below can
+  // list it in its deps. Without this, a tab that was hidden when new
+  // alerts arrived would return to `visible` but the effect wouldn't
+  // re-run (deps unchanged), leaving the badge stale until the next
+  // data tick. With `isVisible` in deps, the effect fires the moment
+  // the tab regains focus and stamps whatever data is currently in
+  // hand.
+  const [isVisible, setIsVisible] = useState<boolean>(() =>
+    typeof document === "undefined" ? true : document.visibilityState === "visible",
+  );
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onVis = () => setIsVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+
   // Alerts-seen ledger — cheap local writes every tick, expensive
   // /api/alerts/counts fetch once per filter-state change. Guard with
   // a ref keyed on the filter (camera swap invalidates the guard
@@ -77,7 +94,7 @@ export function useAlertsWatermark({ data, camera }: UseAlertsWatermarkOpts): Al
   const items = data?.items ?? [];
   useEffect(() => {
     if (!data) return;
-    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+    if (!isVisible) return;
     const overallMaxId = items.reduce((m, a) => Math.max(m, a.id), 0);
     if (initialSeenId === null) setInitialSeenId(overallMaxId);
 
@@ -131,7 +148,11 @@ export function useAlertsWatermark({ data, camera }: UseAlertsWatermarkOpts): Al
     // camera IS in deps: switching from filtered → unfiltered must let
     // the guard-check re-run with a fresh key. We compare inside via
     // countsFetchedForRef, so no double-fetch.
-  }, [data, items, initialSeenId, camera]);
+    // isVisible IS in deps: a hidden→visible transition must re-fire
+    // the stamp for whatever data is currently in hand, otherwise
+    // a background tab that missed ticks stays stale on return until
+    // the next data change.
+  }, [data, items, initialSeenId, camera, isVisible]);
 
   // Invalidate the counts-fetched guard when camera filter changes so
   // a camera-swap → back-to-unfiltered re-runs the counts fetch once.
