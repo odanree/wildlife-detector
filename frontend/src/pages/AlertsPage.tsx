@@ -5,7 +5,7 @@ import { BulkLabelBar } from "../components/BulkLabelBar";
 import { GlobalHeader } from "../components/GlobalHeader";
 import { LabelPicker } from "../components/LabelPicker";
 import { ReplayButton } from "../components/ReplayButton";
-import { useAlertReadIds, markAlertRead } from "../hooks/useAlertReadIds";
+import { markAlertRead, useAlertReadIds } from "../hooks/useAlertReadIds";
 import { useAlerts } from "../hooks/useAlerts";
 import { useAlertsFilters } from "../hooks/useAlertsFilters";
 import { useAlertsSelection } from "../hooks/useAlertsSelection";
