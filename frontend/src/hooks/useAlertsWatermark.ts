@@ -61,10 +61,23 @@ export function useAlertsWatermark({ data, camera }: UseAlertsWatermarkOpts): Al
   // /api/alerts/counts fetch once per filter-state change. Guard with
   // a ref keyed on the filter (camera swap invalidates the guard
   // via the reset effect below).
+  //
+  // **Visibility gate** — only stamp when the tab is actually the
+  // frontmost visible surface (document.visibilityState === "visible").
+  // Fixes the alt-tab correctness bug: without the gate, an operator
+  // who opens the alerts page and switches to another tab would have
+  // newly-arriving alerts silently marked as "seen" via the 5s polling
+  // tick even though nothing was ever on screen. This is a **read-side
+  // liveness signal** — the browser tells us whether the user could
+  // plausibly have seen the content; we only advance the watermark when
+  // they could. Coarse compared to per-row IntersectionObserver
+  // (below-the-fold rows on a visible tab still count), but a strict
+  // win over unconditional-on-tick, and cheap.
   const countsFetchedForRef = useRef<string | null>(null);
   const items = data?.items ?? [];
   useEffect(() => {
     if (!data) return;
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
     const overallMaxId = items.reduce((m, a) => Math.max(m, a.id), 0);
     if (initialSeenId === null) setInitialSeenId(overallMaxId);
 
