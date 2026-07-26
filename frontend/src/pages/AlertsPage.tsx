@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { AlertRow, LabelVerdict } from "../api/alerts";
 import { AlertLightbox } from "../components/AlertLightbox";
 import { BulkLabelBar } from "../components/BulkLabelBar";
 import { GlobalHeader } from "../components/GlobalHeader";
 import { LabelPicker } from "../components/LabelPicker";
 import { ReplayButton } from "../components/ReplayButton";
+import { useAlertReadIds, markAlertRead } from "../hooks/useAlertReadIds";
 import { useAlerts } from "../hooks/useAlerts";
 import { useAlertsFilters } from "../hooks/useAlertsFilters";
 import { useAlertsSelection } from "../hooks/useAlertsSelection";
@@ -39,7 +40,17 @@ export function AlertsPage() {
   const filters = useAlertsFilters();
   const selection = useAlertsSelection();
   const overlay = useLabelOverlay();
-  const [openId, setOpenId] = useState<number | null>(null);
+  const [openId, setOpenIdRaw] = useState<number | null>(null);
+  const readIds = useAlertReadIds();
+
+  // Every open path — row thumb, lightbox prev/next, preview-strip
+  // jump — routes through this single setOpenId, so wrapping it here
+  // catches all read-triggers with one line. Null (close) is
+  // deliberately not a read event.
+  const setOpenId = useCallback((id: number | null) => {
+    if (id != null) markAlertRead(id);
+    setOpenIdRaw(id);
+  }, []);
 
   const camerasResp = useCameras();
   const { data, error, loading } = useAlerts(
@@ -215,6 +226,7 @@ export function AlertsPage() {
                   filters.camera === "",
                   setOpenId,
                   initialSeenId ?? Number.POSITIVE_INFINITY,
+                  readIds,
                   selection.selectedIds,
                   selection.toggleOne,
                   overlay.labelOverlay,
@@ -248,12 +260,21 @@ function renderGroup(
   showCameraBadge: boolean,
   onOpen: (id: number) => void,
   unreadThreshold: number,
+  readIds: Set<number>,
   selectedIds: Set<number>,
   toggleOne: (id: number) => void,
   labelOverlay: Map<number, { verdict: LabelVerdict; species: string | null }>,
   writeLabel: (id: number, verdict: LabelVerdict, species: string | null) => Promise<void>,
   busyIds: Set<number>,
 ): JSX.Element[] {
+  // Composite unread signal: the row must be (a) newer than the
+  // watermark snapshot at page mount AND (b) not already opened
+  // this session (or a prior one — the read-id set persists in
+  // localStorage). Either clause alone would leak state: watermark-
+  // only would re-highlight rows the user already clicked into;
+  // read-id-only would show every historical row as unread on
+  // first visit.
+  const isUnread = g.head.id > unreadThreshold && !readIds.has(g.head.id);
   return [
     <Row
       key={g.head.id}
@@ -261,7 +282,7 @@ function renderGroup(
       showCameraBadge={showCameraBadge}
       groupSize={g.children.length + 1}
       onOpen={onOpen}
-      isUnread={g.head.id > unreadThreshold}
+      isUnread={isUnread}
       isSelected={selectedIds.has(g.head.id)}
       onToggleSelect={() => toggleOne(g.head.id)}
       labelOverride={labelOverlay.get(g.head.id)}
