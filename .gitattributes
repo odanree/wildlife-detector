@@ -1,0 +1,28 @@
+# Pin line endings so Windows checkouts don't produce phantom
+# "modified" files from CRLF/LF drift. All text files are stored
+# as LF in the repo AND kept as LF in the working tree, regardless
+# of the local `core.autocrlf` setting. This matches CI (Linux)
+# behavior and Biome's format-check expectations.
+#
+# Without this, Windows users with `core.autocrlf=true` see 20+
+# unrelated files show as modified on every `git status`, because
+# git thinks it will convert LF→CRLF on next checkout even though
+# working-tree content is unchanged.
+
+* text=auto eol=lf
+
+# Binary formats — never touch line endings.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.mp4 binary
+*.mov binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
