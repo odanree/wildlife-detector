@@ -1,0 +1,6 @@
+clips/
+results/
+investigation/
+ground_truth.json
+*.pyc
+__pycache__/
