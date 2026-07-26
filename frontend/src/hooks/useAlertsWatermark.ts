@@ -100,10 +100,18 @@ export function useAlertsWatermark({ data, camera }: UseAlertsWatermarkOpts): Al
     const key = `unfiltered:${data.total}`;
     if (countsFetchedForRef.current === key) return;
     countsFetchedForRef.current = key;
-    const controller = new AbortController();
+    // No AbortController: the counts fetch's only side effects are
+    // localStorage writes + BroadcastChannel posts, both safe after
+    // unmount. Earlier version aborted on effect cleanup, which
+    // introduced a **fetch-abort race** — every SSE data tick re-ran
+    // the effect, cleanup killed the in-flight counts fetch, then
+    // the new effect run's `unfiltered:${data.total}` guard matched
+    // the just-set key and skipped firing a replacement. Result:
+    // per-camera watermarks stayed stuck until data.total actually
+    // changed. Letting the fetch complete is strictly correct here.
     (async () => {
       try {
-        const r = await fetch("/api/alerts/counts", { signal: controller.signal });
+        const r = await fetch("/api/alerts/counts");
         if (!r.ok) return;
         const counts = (await r.json()) as Record<string, number>;
         const perCamMaxId: Record<string, number> = {};
@@ -115,15 +123,11 @@ export function useAlertsWatermark({ data, camera }: UseAlertsWatermarkOpts): Al
         for (const [cam, total] of Object.entries(counts)) {
           markAlertsSeen(cam, total, perCamMaxId[cam]);
         }
-      } catch (e) {
-        if (e instanceof DOMException && e.name === "AbortError") return;
+      } catch {
         // Silent — filtered-view watermark already stamped above,
         // dual-pane badge just won't clear this cycle.
       }
     })();
-    return () => {
-      controller.abort();
-    };
     // camera IS in deps: switching from filtered → unfiltered must let
     // the guard-check re-run with a fresh key. We compare inside via
     // countsFetchedForRef, so no double-fetch.
