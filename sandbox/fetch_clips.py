@@ -158,12 +158,19 @@ def _load_alerts(only_tps: bool, sample_fps: int, camera: str = "rooftop") -> li
     conn = sqlite3.connect(str(DB_PATH))
     out: list[dict] = []
 
+    # Exclude alerts flagged by the 2026-07-23 attribution-suspect
+    # bulk update — those fired during the intermittent VLM-queue-swap
+    # window (fixed by commit 67a7331). Their camera_id can't be
+    # trusted, so they'd poison the sandbox eval.
+    ATTR_FILTER = "AND (label_notes IS NULL OR label_notes != 'attribution-suspect')"
+
     if only_tps:
-        rows = conn.execute("""
+        rows = conn.execute(f"""
             SELECT id, ts, species, camera_id, label_verdict
             FROM alerts
             WHERE camera_id = ? AND label_verdict = 'correct'
               AND snapshot IS NOT NULL
+              {ATTR_FILTER}
             ORDER BY ts
         """, (camera,)).fetchall()
         for r in rows:
@@ -171,11 +178,12 @@ def _load_alerts(only_tps: bool, sample_fps: int, camera: str = "rooftop") -> li
                         "camera": r[3], "verdict": "TP"})
 
     if sample_fps > 0:
-        rows = conn.execute("""
+        rows = conn.execute(f"""
             SELECT id, ts, species, camera_id, label_verdict
             FROM alerts
             WHERE camera_id = ? AND label_verdict = 'incorrect'
               AND snapshot IS NOT NULL
+              {ATTR_FILTER}
             ORDER BY RANDOM()
             LIMIT ?
         """, (camera, sample_fps)).fetchall()
