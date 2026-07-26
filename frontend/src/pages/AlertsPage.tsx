@@ -9,7 +9,6 @@ import { markAlertRead, seedAlertReadsOnce, useAlertReadIds } from "../hooks/use
 import { useAlerts } from "../hooks/useAlerts";
 import { useAlertsFilters } from "../hooks/useAlertsFilters";
 import { useAlertsSelection } from "../hooks/useAlertsSelection";
-import { useAlertsWatermark } from "../hooks/useAlertsWatermark";
 import { useCameras } from "../hooks/useCameras";
 import { useLabelOverlay } from "../hooks/useLabelOverlay";
 import { fmtRelative, fmtTs } from "../util/time";
@@ -30,7 +29,8 @@ interface GroupedAlerts {
  *   - useAlertsFilters: URL + localStorage filter state.
  *   - useAlertsSelection: bulk checkbox Set + toggle/clear.
  *   - useLabelOverlay: optimistic label map + rollback + busy set.
- *   - useAlertsWatermark: initialSeenId snapshot + markAlertsSeen ledger.
+ *   - useAlertReadIds: per-message read receipts + click-driven
+ *     watermark advancement for the header badge.
  *
  * What's left here: the useAlerts call, table + modal composition,
  * and the row component. Was 557 LOC + 12 useState + 3 useEffect
@@ -42,15 +42,6 @@ export function AlertsPage() {
   const overlay = useLabelOverlay();
   const [openId, setOpenIdRaw] = useState<number | null>(null);
   const readIds = useAlertReadIds();
-
-  // Every open path — row thumb, lightbox prev/next, preview-strip
-  // jump — routes through this single setOpenId, so wrapping it here
-  // catches all read-triggers with one line. Null (close) is
-  // deliberately not a read event.
-  const setOpenId = useCallback((id: number | null) => {
-    if (id != null) markAlertRead(id);
-    setOpenIdRaw(id);
-  }, []);
 
   const camerasResp = useCameras();
   const { data, error, loading } = useAlerts(
@@ -64,24 +55,37 @@ export function AlertsPage() {
   );
 
   const items = data?.items ?? [];
+
+  // Every open path — row thumb, lightbox prev/next, preview-strip
+  // jump — routes through this single setOpenId. Wrapping it here
+  // catches all read-triggers with one line. markAlertRead needs the
+  // full AlertRow so it can advance the correct per-camera watermark;
+  // we look it up in the current items list. Null (close) is
+  // deliberately not a read event.
+  const setOpenId = useCallback(
+    (id: number | null) => {
+      if (id != null) {
+        const alert = items.find((a) => a.id === id);
+        if (alert) markAlertRead(alert);
+      }
+      setOpenIdRaw(id);
+    },
+    [items],
+  );
   const groups = useMemo(
     () => (filters.grouped ? groupItems(items) : items.map((h) => ({ head: h, children: [] }))),
     [items, filters.grouped],
   );
 
-  // useAlertsWatermark is still called for its side effect — advancing
-  // the localStorage watermark on every visible tick so the header
-  // badge in `useUnreadAlerts` clears. Its returned initialSeenId is
-  // no longer used for row highlighting (that's pure per-message now).
-  useAlertsWatermark({ data, camera: filters.camera });
-
   // One-time seed: on the very first mount of this feature (across
   // all sessions on this browser) mark every currently-loaded alert
-  // id as read, so the operator doesn't see 200 historical rows as
-  // unread. After the seed, only markAlertRead advances readIds —
-  // new alerts default to unread until explicitly opened.
+  // as read AND stamp per-camera watermarks to current server totals
+  // so the header badge starts at 0. Without this, an operator new
+  // to the feature would see thousands of unread rows in the badge
+  // and 200 highlighted rows in the table. After the seed, only
+  // markAlertRead advances anything.
   useEffect(() => {
-    if (items.length > 0) seedAlertReadsOnce(items.map((a) => a.id));
+    if (items.length > 0) seedAlertReadsOnce(items);
   }, [items]);
 
   return (

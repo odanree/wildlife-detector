@@ -1,42 +1,48 @@
 import { useEffect, useState } from "react";
+import type { AlertRow } from "../api/alerts";
+import { markAlertsSeen } from "./useUnreadAlerts";
 
 /**
- * Per-message read receipts — complements the coarse camera-scoped
- * watermarks in useUnreadAlerts (which power the header badge) with
- * fine-grained "which specific alerts have I looked at" state.
+ * Per-message read receipts + click-driven header-badge watermark.
  *
- * Storage model: a bounded Set<number> in localStorage, mirrored to
- * every tab via BroadcastChannel. Cap keeps the set from growing
- * unboundedly as alert IDs march up; oldest-by-id evicted first
- * once we exceed CAP. In practice the DB retention window is well
- * under CAP so eviction is rare.
+ * **Row highlighting** (this hook's Set<number>):
+ *   `isUnread(alert) = !readIds.has(alert.id)`
  *
- * Read trigger convention: `markAlertRead(id)` fires from the single
- * AlertsPage `setOpenId(id)` wrapper — that means row-thumb click,
- * lightbox prev/next, AND preview-strip jumps all mark-as-read for
- * free. Null (close) is a no-op.
+ * **Header badge** (existing per-camera watermark in localStorage,
+ * consumed by useUnreadAlerts): now advances +1 per click via
+ * markAlertRead, not per tick via useAlertsWatermark. Visiting the
+ * page no longer clears the badge; only opening specific alerts does.
  *
- * Pure per-message semantics: a row is "unread" iff
- *   `!readIds.has(alert.id)`.
- * The watermark stays only as the header-badge summary signal — it
- * is intentionally NOT part of the row-highlight computation. An
- * earlier composite (`alert.id > initialSeenId && !readIds.has(id)`)
- * had the wrong semantics: the watermark advanced on every visit,
- * bulk-clearing unread rows before the operator could open them.
- * Per-message means visiting the page does not mark anything read;
- * only opening the specific alert does.
+ * That's the whole "per-message unread" idea: the read/unread state
+ * of the header badge and the row highlight are driven by the SAME
+ * event (opening an alert). Visit ≠ read.
  *
- * Patterns:
+ * ## First-install seed
+ *
+ * On the very first mount ever, seedAlertReadsOnce fires and:
+ *   1. Adds every currently-loaded alert id to readIds (row highlights
+ *      cold-start "everything is read" instead of flooding the
+ *      operator with 200 unread historical rows).
+ *   2. Stamps per-camera watermarks to current server totals via
+ *      /api/alerts/counts so the header badge starts at 0 instead
+ *      of showing thousands of unread.
+ *
+ * After the seed, only markAlertRead advances anything. New alerts
+ * arrive → server total increases → badge count = total - watermark
+ * = number of new alerts since last click.
+ *
+ * ## Patterns
  * - **Read-receipt set + bounded LRU** — Set<number> capped at CAP,
- *   drop-lowest eviction. Bound is by count, not by wall clock, so
- *   a burst of alerts doesn't push out recently-opened ones.
+ *   drop-lowest-by-id eviction. Bound by count so bursts don't push
+ *   out recently-opened ones.
  * - **Event-driven pub-sub via origin-scoped BroadcastChannel** —
  *   same primitive as the watermark sync in useUnreadAlerts. Sender
- *   is module-scope, subscribers are per-hook; native semantics
- *   deliver to every subscriber except the sender instance, covering
- *   same-tab AND cross-tab in one call.
- * - **Storage-event fallback** for browsers without BroadcastChannel
- *   support, so cross-tab still works on older engines.
+ *   is module-scope, subscribers are per-hook.
+ * - **Storage-event fallback** for browsers without BroadcastChannel.
+ * - **Cross-hook coupling via shared markAlertsSeen** — markAlertRead
+ *   reuses useUnreadAlerts' markAlertsSeen to keep the badge in
+ *   sync. Alternative was duplicating the write+broadcast plumbing,
+ *   which would drift.
  */
 
 const READ_IDS_KEY = "alertReadIds";
@@ -72,51 +78,108 @@ function writeStored(ids: number[]): void {
 }
 
 /**
- * One-time bulk-mark on install: on the first-ever mount of the
- * per-message read system, seed the set with every currently-loaded
- * alert id so an operator new to this feature doesn't see 200
- * historical rows flagged unread on their first visit. Guarded by a
- * dedicated seeded-flag key so it fires exactly once per browser.
- * Subsequent installs (new alerts) default to unread until
- * explicitly opened — the correct per-message semantics.
+ * Per-camera watermark for the header badge. We advance it +1 per
+ * click via markAlertRead. Read via localStorage in useUnreadAlerts.
+ * Key format matches the existing watermark keys so useUnreadAlerts
+ * needs no changes.
  */
-export function seedAlertReadsOnce(ids: readonly number[]): void {
+function seenKey(camera: string | null): string {
+  return `alertsLastSeenTotal:${camera || "all"}`;
+}
+
+/**
+ * Increment a camera's watermark by +1, then also increment the
+ * cross-camera "all" watermark. Emits BroadcastChannel messages via
+ * markAlertsSeen so subscribers in the header (or other tabs) update
+ * without waiting for a tick.
+ */
+function advanceWatermarkForClick(cameraId: string | null | undefined, alertId: number): void {
+  const stamp = (cam: string | null) => {
+    try {
+      const cur = Number(localStorage.getItem(seenKey(cam)) || "0");
+      markAlertsSeen(cam, cur + 1, alertId);
+    } catch {
+      /* ignore */
+    }
+  };
+  if (cameraId) stamp(cameraId);
+  stamp(null); // also the "all" scope so the un-scoped header updates
+}
+
+/**
+ * One-time bulk-mark on first-ever install. Seeds:
+ *   - readIds set with currently-loaded alert ids (no unread flood)
+ *   - per-camera watermarks with current server totals (badge at 0)
+ *
+ * Idempotent — guarded by a localStorage flag so subsequent visits
+ * pass through untouched. The counts fetch runs fire-and-forget; if
+ * it fails, next visit will re-seed the flag (the flag is set only
+ * on success). Non-blocking for the caller.
+ */
+export function seedAlertReadsOnce(alerts: readonly AlertRow[]): void {
   try {
     if (localStorage.getItem(READ_SEEDED_KEY)) return;
-    if (ids.length === 0) return;
+    if (alerts.length === 0) return;
+
+    // 1) Seed the readIds set with everything currently loaded.
     const cur = new Set(readStored());
-    for (const id of ids) cur.add(id);
+    for (const a of alerts) cur.add(a.id);
     const sorted = [...cur].sort((a, b) => a - b);
     const capped = sorted.length > CAP ? sorted.slice(sorted.length - CAP) : sorted;
     writeStored(capped);
-    localStorage.setItem(READ_SEEDED_KEY, "1");
-    getSender()?.postMessage({ type: "invalidate" });
+
+    // 2) Fetch server counts and stamp per-camera watermarks so the
+    //    header badge starts at 0. Fire-and-forget — the flag is set
+    //    inside the async block only after both writes succeed, so a
+    //    fetch failure means we retry on the next mount.
+    const perCamMaxId: Record<string, number> = {};
+    for (const a of alerts) {
+      if (!a.camera_id) continue;
+      const prev = perCamMaxId[a.camera_id] ?? 0;
+      if (a.id > prev) perCamMaxId[a.camera_id] = a.id;
+    }
+    const overallMax = alerts.reduce((m, a) => Math.max(m, a.id), 0);
+
+    (async () => {
+      try {
+        const r = await fetch("/api/alerts/counts");
+        if (!r.ok) return;
+        const counts = (await r.json()) as Record<string, number>;
+        for (const [cam, total] of Object.entries(counts)) {
+          markAlertsSeen(cam, total, perCamMaxId[cam]);
+        }
+        const overallTotal = Object.values(counts).reduce((s, n) => s + n, 0);
+        markAlertsSeen(null, overallTotal, overallMax);
+        localStorage.setItem(READ_SEEDED_KEY, "1");
+        getSender()?.postMessage({ type: "invalidate" });
+      } catch {
+        /* transient — next visit retries */
+      }
+    })();
   } catch {
     /* quota / privacy mode — next visit will retry */
   }
 }
 
 /**
- * Mark one or more alerts as read. Idempotent — repeat calls with
- * already-known ids are cheap no-ops (no write, no broadcast).
+ * Mark an alert as read. Idempotent — a repeat call on an already-
+ * known id is a cheap no-op (no write, no broadcast).
+ *
+ * Side effect: also advances the per-camera watermark by +1 (and the
+ * cross-camera "all" watermark), which is what the header badge in
+ * useUnreadAlerts consumes. So opening an alert clears one from the
+ * badge count AND drops the row highlight in one call.
  */
-export function markAlertRead(...ids: number[]): void {
+export function markAlertRead(alert: AlertRow): void {
   const cur = readStored();
   const set = new Set(cur);
-  let mutated = false;
-  for (const id of ids) {
-    if (!set.has(id)) {
-      set.add(id);
-      mutated = true;
-    }
-  }
-  if (!mutated) return;
-  // Bounded-LRU-by-id: keep the CAP highest ids. Alerts have
-  // monotonically increasing ids so "highest id" ≈ "most recent."
+  if (set.has(alert.id)) return;
+  set.add(alert.id);
   const sorted = [...set].sort((a, b) => a - b);
   const capped = sorted.length > CAP ? sorted.slice(sorted.length - CAP) : sorted;
   writeStored(capped);
   getSender()?.postMessage({ type: "invalidate" });
+  advanceWatermarkForClick(alert.camera_id, alert.id);
 }
 
 /**
@@ -136,10 +199,6 @@ export function useAlertReadIds(): Set<number> {
       sub = new BroadcastChannel(READ_CHANNEL_NAME);
       sub.onmessage = reread;
     } else {
-      // Fallback: browsers without BroadcastChannel still get the
-      // native cross-tab storage event. Same-tab reactivity is lost
-      // in this branch, but modern browsers all support the primary
-      // path.
       onStorage = (e: StorageEvent) => {
         if (e.key === READ_IDS_KEY) reread();
       };
