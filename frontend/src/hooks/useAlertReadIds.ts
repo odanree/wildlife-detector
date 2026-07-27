@@ -92,11 +92,30 @@ function seenKey(camera: string | null): string {
  * cross-camera "all" watermark. Emits BroadcastChannel messages via
  * markAlertsSeen so subscribers in the header (or other tabs) update
  * without waiting for a tick.
+ *
+ * **Clamp**: only advance if the current watermark is BELOW the last-
+ * known server total (mirrored into localStorage by useUnreadAlerts on
+ * every SSE frame — see `alertsServerTotal:<cam>`). Without this, a
+ * click can push the watermark past the server total, and every
+ * future badge computes as `max(0, server - watermark) = 0` forever.
+ * Fail-open when the mirror hasn't been populated yet (first mount
+ * before first SSE frame) — a rare edge case, and legacy behavior.
+ *
+ * Pattern: **read-side clamp against a mirrored source of truth** —
+ * localStorage is the pub-sub between the SSE-consuming hook and this
+ * module-level side-effect helper. Same shape as any read-your-own-
+ * writes barrier in a distributed system, just scoped to one browser.
  */
 function advanceWatermarkForClick(cameraId: string | null | undefined, alertId: number): void {
   const stamp = (cam: string | null) => {
     try {
       const cur = Number(localStorage.getItem(seenKey(cam)) || "0");
+      const serverKey = `alertsServerTotal:${cam || "all"}`;
+      const serverTotal = Number(localStorage.getItem(serverKey) || "0");
+      // Only advance if we know server truth AND there's an unread to
+      // consume. serverTotal===0 means "mirror not yet populated" — fall
+      // through to the legacy unconditional advance in that case.
+      if (serverTotal > 0 && cur >= serverTotal) return;
       markAlertsSeen(cam, cur + 1, alertId);
     } catch {
       /* ignore */
