@@ -288,10 +288,19 @@ services:
     ports:
       - "8100:8100"   # user-facing UI
     depends_on:
+      # `service_healthy` (not `service_started`) is load-bearing here: the
+      # DetectorRegistry probes each detector's /internal/status ONCE at
+      # web startup to learn its camera_id. If a probe fails, the registry
+      # silently falls back to positional `cam0`, `cam1` — those names
+      # match zero rows in the alerts table, so /api/alerts/counts starts
+      # returning {"cam0":0,"cam1":0} and the unread badge shows 0 forever.
+      # Waiting for the detectors' healthcheck to pass eliminates the race.
+      # See src/web_service.py:DetectorRegistry for the code-level retry
+      # backstop and the underlying "silent fallback" comment.
       detector-yard:
-        condition: service_started
+        condition: service_healthy
       detector-rooftop:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/status', timeout=2)"]
       interval: 30s
