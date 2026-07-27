@@ -147,6 +147,26 @@ export function useUnreadAlerts(
       return out;
     }
 
+    // Mirror the raw server counts into localStorage so module-level
+    // helpers (advanceWatermarkForClick in useAlertReadIds) can read
+    // server truth without needing a shared React state channel. This
+    // is the load-bearing input for the watermark-clamp fix — without
+    // it, per-click watermark increments could drift above server_total
+    // and pin the unread badge to 0 forever. Written on every SSE
+    // frame; last-write-wins across multiple useUnreadAlerts consumers
+    // is fine since they receive identical frames.
+    function mirrorServerTotals(serverCounts: Record<string, number>): void {
+      try {
+        for (const [cam, n] of Object.entries(serverCounts)) {
+          localStorage.setItem(`alertsServerTotal:${cam}`, String(n));
+        }
+        const all = Object.values(serverCounts).reduce((s, n) => s + n, 0);
+        localStorage.setItem("alertsServerTotal:all", String(all));
+      } catch {
+        /* quota / privacy mode — advance-clamp will fall back to fail-open */
+      }
+    }
+
     // Try SSE first — the modern path. If EventSource is unavailable or
     // errors, fall back to one-shot fetch per intervalMs (the pre-SSE
     // behavior) so the badge still updates.
@@ -163,6 +183,7 @@ export function useUnreadAlerts(
           if (cancelled) return;
           setTotals(raw);
           coldStartSeens(raw);
+          mirrorServerTotals(raw);
         } catch (e) {
           if (cancelled) return;
           if (e instanceof DOMException && e.name === "AbortError") return;
@@ -180,6 +201,10 @@ export function useUnreadAlerts(
         try {
           const msg = JSON.parse(ev.data) as { type?: string; counts?: Record<string, number> };
           if (msg.type !== "counts" || !msg.counts) return;
+          // Mirror RAW server counts (all cameras) before projection so
+          // the localStorage mirror is complete regardless of which hook
+          // instance's scope is projecting the data.
+          mirrorServerTotals(msg.counts);
           const projected = projectCounts(msg.counts);
           setTotals(projected);
           coldStartSeens(projected);
