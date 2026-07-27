@@ -126,8 +126,18 @@ class DetectorRegistry:
 
     Each detector's /internal/status carries its own camera_id; on first probe
     we learn the mapping so URLs like ?camera=rooftop route to the right
-    backend. Falls back to positional camera_id (cam0, cam1, ...) if the
-    detector is unreachable at probe time — the client will keep retrying.
+    backend. Falls back to positional camera_id (cam0, cam1, ...) only after
+    all retries are exhausted — the probe is retried with exponential backoff
+    (see _probe_camera_id) so a slow-starting detector doesn't wedge the
+    registry into a stale mapping.
+
+    **Why the retry exists** — this mapping is set ONCE at startup and never
+    re-probed. If web starts before a detector's HTTP server is ready,
+    the fallback name (cam0/cam1) doesn't match any camera_id in the alerts
+    table → /api/alerts/counts returns zero → header badge shows 0
+    indefinitely. docker-compose.yml `depends_on: service_healthy` closes
+    most of the race, but this retry is the belt-and-suspenders for
+    `docker compose restart web` and other out-of-band restarts.
     """
 
     def __init__(self, urls: list[str], token: str) -> None:
@@ -137,7 +147,18 @@ class DetectorRegistry:
         self._default_id: str | None = None
         for idx, url in enumerate(urls):
             client = DetectorClient(url.strip(), token)
-            camera_id = self._probe_camera_id(client) or f"cam{idx}"
+            camera_id = self._probe_camera_id(client)
+            if camera_id is None:
+                camera_id = f"cam{idx}"
+                # Surface the silent-fallback loudly — this is the failure
+                # mode that manifests as "badge stuck at 0" until web is
+                # restarted. Better a scary log than silent breakage.
+                logger.error(
+                    "DetectorRegistry: probe FAILED for %s after retries; "
+                    "falling back to positional id '%s'. Badge counts will "
+                    "be broken until web is restarted with the detector up.",
+                    url, camera_id,
+                )
             self._clients[camera_id] = client
             self._url_by_id[camera_id] = url.strip()
             if self._default_id is None:
@@ -146,11 +167,35 @@ class DetectorRegistry:
 
     @staticmethod
     def _probe_camera_id(client: DetectorClient) -> str | None:
-        try:
-            s = client.status()
-            return s.get("camera_id")
-        except Exception:
-            return None
+        """Retry the /internal/status probe with exponential backoff. Total
+        wait ~31s (1+2+4+8+16). If the detector isn't reachable by then,
+        something's genuinely wrong — bail so the caller can log + fall back.
+
+        Pattern: **retry with exponential backoff** — same shape as any
+        transient-fault startup gate; here the "fault" is the detector's
+        HTTP server not yet accepting connections."""
+        delays = [1, 2, 4, 8, 16]
+        for attempt, delay in enumerate([0] + delays):
+            if delay:
+                time.sleep(delay)
+            try:
+                s = client.status()
+                cam = s.get("camera_id")
+                if cam:
+                    if attempt > 0:
+                        logger.info(
+                            "DetectorRegistry: probe succeeded on attempt %d "
+                            "(waited %ds) for %s → '%s'",
+                            attempt + 1, sum(delays[:attempt]), client._base_url, cam,
+                        )
+                    return cam
+            except Exception as e:
+                if attempt == len(delays):
+                    logger.warning(
+                        "DetectorRegistry: probe failed on final attempt for "
+                        "%s: %s", client._base_url, e,
+                    )
+        return None
 
     def resolve(self, camera_id: str | None) -> DetectorClient:
         """Return client for the given camera; falls back to default (first
