@@ -202,6 +202,36 @@ export function markAlertRead(alert: AlertRow): void {
 }
 
 /**
+ * "Mark all as read" — reset all per-camera + "all" watermarks to
+ * current server truth by fetching /api/alerts/counts and stamping
+ * each into localStorage via markAlertsSeen. The escape hatch for
+ * when the badge feels stuck (or the operator just wants a clean
+ * slate). Fires BroadcastChannel updates via markAlertsSeen so all
+ * open tabs' header badges snap to 0 immediately.
+ *
+ * No-op on network failure — the badge stays wherever it was and
+ * the operator can retry. Not idempotent in the "state doesn't
+ * change on second call" sense (each call re-reads server truth
+ * which may have advanced), but effectively idempotent for the
+ * near-term.
+ */
+export async function markAllAlertsRead(): Promise<void> {
+  try {
+    const r = await fetch("/api/alerts/counts");
+    if (!r.ok) return;
+    const counts = (await r.json()) as Record<string, number>;
+    let overall = 0;
+    for (const [cam, total] of Object.entries(counts)) {
+      markAlertsSeen(cam, total);
+      overall += total;
+    }
+    markAlertsSeen(null, overall);
+  } catch {
+    /* transient — badge stays where it was, operator can retry */
+  }
+}
+
+/**
  * Subscribe to the read-ids set. Returns a fresh Set on every
  * cross-tab or same-tab update so `.has(id)` reads stay live.
  */

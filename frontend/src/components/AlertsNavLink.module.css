@@ -5,12 +5,10 @@
      to duplicate the shared button look. */
 }
 
-.badge {
+.badge,
+.badgeUnlabeled {
   position: absolute;
   top: -6px;
-  right: -8px;
-  background: var(--accent-err, #f66);
-  color: #fff;
   font-size: 10px;
   font-weight: 600;
   padding: 1px 5px;
@@ -19,7 +17,27 @@
   text-align: center;
   line-height: 1.3;
   font-family: var(--font-mono);
+  color: #fff;
   /* Prevent the pill from being clipped by parent overflow:hidden */
   z-index: 1;
   pointer-events: none;
+}
+
+/* Red = unread (per-user, click-clearable). Anchored at the right edge
+   of the "Alerts →" link. */
+.badge {
+  right: -8px;
+  background: var(--accent-err, #f66);
+}
+
+/* Amber = unlabeled (server-side, label-clearable). Sits just to the
+   LEFT of the red badge so both are visible when both > 0. The offset
+   (right: 22px) reserves space for the red badge (~14-22px wide + 4px
+   gap). If the red badge is hidden (unread=0), the amber still renders
+   at the same offset — no layout shift; the visual weight sits
+   consistent between states. */
+.badgeUnlabeled {
+  right: 22px;
+  background: var(--accent-warn, #d0aa5a);
+  color: #111;
 }
