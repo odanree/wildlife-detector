@@ -207,9 +207,17 @@ export function AlertsPage() {
             <BulkLabelBar
               selectedIds={Array.from(selection.selectedIds)}
               onCleared={selection.clear}
-              onApplied={(verdict, species) =>
-                overlay.applyOverlay(Array.from(selection.selectedIds), verdict, species)
-              }
+              onApplied={(verdict, species) => {
+                const selectedIdArr = Array.from(selection.selectedIds);
+                // Bulk-label also counts as "read" — look up each selected
+                // alert from items and mark it. Same reason as the row
+                // LabelPicker onChange handler above.
+                for (const id of selectedIdArr) {
+                  const alert = items.find((a) => a.id === id);
+                  if (alert) markAlertRead(alert);
+                }
+                overlay.applyOverlay(selectedIdArr, verdict, species);
+              }}
             />
           )}
           <table className={styles.table}>
@@ -383,7 +391,13 @@ function Row({
           verdict={effVerdict}
           species={effSpecies}
           busy={busy}
-          onChange={(v, s) => writeLabel(alert.id, v, s)}
+          onChange={(v, s) => {
+            // Row-level labeling counts as "read" for badge purposes —
+            // otherwise operator can churn through 50 FPs via the row's
+            // ✓/X buttons and the unread badge never decrements.
+            markAlertRead(alert);
+            writeLabel(alert.id, v, s);
+          }}
         />
       </td>
       <td className={speciesCls}>
