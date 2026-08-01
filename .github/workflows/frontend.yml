@@ -136,33 +136,59 @@ jobs:
             exit 1
           fi
           echo "OK — no regression (delta ≤ 0)."
-      - name: Comment on delta increase
-        if: failure() && steps.head_count.outputs.count > steps.base_count.outputs.count
+      - name: Sticky comment (post on regression, delete when green)
+        # Always runs — same script handles both branches (regression =
+        # post/update, no-regression = delete stale comment). This is why
+        # we drop the previous `if: failure()` gate on the comment step:
+        # a subsequent green run needs to clean up its own stale comment
+        # from an earlier failing run, otherwise the operator sees
+        # "regression detected" long after the PR was fixed and merged
+        # (which is exactly what happened on PR #56).
+        if: always()
         uses: actions/github-script@v7
         with:
           script: |
             const head = ${{ steps.head_count.outputs.count }};
             const base = ${{ steps.base_count.outputs.count }};
             const delta = head - base;
-            const body = [
-              '### Anti-pattern regression detected',
-              '',
-              `This PR adds **${delta}** new \`react-you-might-not-need-an-effect\` finding${delta === 1 ? '' : 's'}.`,
-              '',
-              `| Ref | Count |`,
-              `|---|---|`,
-              `| Base (\`${{ github.base_ref }}\`) | ${base} |`,
-              `| PR head | ${head} |`,
-              `| **Delta** | **+${delta}** |`,
-              '',
-              'Run \`bun run lint:antipatterns\` locally to see the offending lines and fix shape. See #36 for the pattern class and PR #29 for the canonical fix shape.',
-            ].join('\n');
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body,
-            });
+            // Marker line lets us find our own prior comment (if any)
+            // without a database. Hidden in HTML comment so operators
+            // don't see the mechanism.
+            const MARKER = '<!-- antipattern-delta-sticky -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            // Find the existing sticky comment, if any.
+            const existing = (await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number, per_page: 100 },
+            )).find((c) => c.body && c.body.includes(MARKER));
+            if (delta > 0) {
+              const body = [
+                MARKER,
+                '### Anti-pattern regression detected',
+                '',
+                `This PR adds **${delta}** new \`react-you-might-not-need-an-effect\` finding${delta === 1 ? '' : 's'}.`,
+                '',
+                `| Ref | Count |`,
+                `|---|---|`,
+                `| Base (\`${{ github.base_ref }}\`) | ${base} |`,
+                `| PR head | ${head} |`,
+                `| **Delta** | **+${delta}** |`,
+                '',
+                'Run `bun run lint:antipatterns` locally to see the offending lines and fix shape. See #36 for the pattern class and PR #29 for the canonical fix shape.',
+                '',
+                `<sub>Updated at ${new Date().toISOString()}. This comment auto-deletes once the PR is fixed.</sub>`,
+              ].join('\n');
+              if (existing) {
+                await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+              } else {
+                await github.rest.issues.createComment({ owner, repo, issue_number, body });
+              }
+            } else if (existing) {
+              // Green now — remove the stale regression comment so the
+              // PR page reflects current state.
+              await github.rest.issues.deleteComment({ owner, repo, comment_id: existing.id });
+            }
 
   build:
     name: vite build
