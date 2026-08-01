@@ -55,6 +55,23 @@
   font-size: 12px;
 }
 
+/* Reset-unread button in the filter toolbar. Matches .select's shape
+   so it aligns visually with the neighboring controls; adds a subtle
+   hover so it reads as clickable action rather than passive filter. */
+.selectBtn {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 4px 10px;
+  border-radius: var(--r-md);
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.selectBtn:hover {
+  border-color: var(--accent-blue, #4a6fa8);
+}
+
 .closeBtn {
   background: var(--bg-2);
   color: var(--text-hi);
