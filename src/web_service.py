@@ -425,7 +425,11 @@ def create_app(registry: DetectorRegistry) -> Flask:
     """
     from src.web import preview
     from src.storage.state_db import StateDB
-    _state = StateDB(os.getenv("STATE_DB_PATH", "data/state.db"))
+    # Postgres via DATABASE_URL — see StateDB docstring for the migration
+    # rationale (9P + SQLite lock hazard). STATE_DB_PATH env is no longer
+    # consulted; kept in .env for reference until the migration lands
+    # everywhere.
+    _state = StateDB()
 
     # Kick off the counts SSE poller — fixed-cost DB reader that pushes
     # to all EventSource subscribers instead of each tab polling

@@ -7,3 +7,6 @@ python-dotenv>=1.0
 # ~30 MB. Cleaner long-term: extract HTML+AlertLog into a cv2-free module.
 opencv-python-headless>=4.9.0
 numpy>=1.24
+# Postgres client + connection pool for StateDB (postgres-migration PR).
+# `[binary]` bundles libpq so no pg-dev system package needed.
+psycopg[binary,pool]>=3.2
