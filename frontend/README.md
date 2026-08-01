@@ -135,3 +135,4 @@ Two we've been holding to consistently since the audit (2026-07-22):
 1. **Focused hooks over god components.** Any page > 200 LOC with more than a couple of `useState` gets its state ownership lifted into named hooks. Enforced culturally, not by CI. See `useAlertsFilters` / `useZoneEditor` / etc. for the shape.
 
 2. **No sync-via-effect / derived-state-via-effect.** The `eslint-plugin-react-you-might-not-need-an-effect` gate catches most cases; the ones it misses show up in code review. Replacements: **adjust-state-during-rendering** for prop-derived state, **single-writer wrapper** for handler-owned side effects, **fully-controlled component** for state that belongs to a parent. See PR #29 for the canonical fix shape.
+
