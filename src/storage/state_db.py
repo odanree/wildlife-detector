@@ -412,6 +412,22 @@ class StateDB:
             cur = self._conn.execute("SELECT COUNT(*) FROM alerts")
         return int(cur.fetchone()[0])
 
+    def unlabeled_alerts(self, camera_id: str | None = None) -> int:
+        """Count of alerts with label_verdict IS NULL — the "still needs
+        my verdict" queue depth. Feeds the amber unlabeled badge (see
+        AlertsNavLink) which shows how much labeling work is left, distinct
+        from the red "unread" badge (per-user watermark drift)."""
+        if camera_id:
+            cur = self._conn.execute(
+                "SELECT COUNT(*) FROM alerts WHERE camera_id = ? AND label_verdict IS NULL",
+                (camera_id,),
+            )
+        else:
+            cur = self._conn.execute(
+                "SELECT COUNT(*) FROM alerts WHERE label_verdict IS NULL"
+            )
+        return int(cur.fetchone()[0])
+
     def snapshots_present(self) -> set[str]:
         """Return the set of snapshot filenames already stored — used by
         backfill to short-circuit before hitting the unique constraint."""

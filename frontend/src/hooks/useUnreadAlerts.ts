@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { fetchAlerts } from "../api/alerts";
 
 /** Base key; camera scope (or "all") is suffixed onto it so per-camera
  *  watermarks don't leak across cameras. */
@@ -76,22 +75,34 @@ export function readLastSeenId(camera?: string | null): number | null {
 export function useUnreadAlerts(
   cameras?: readonly string[] | null,
   intervalMs = 5000,
-): { unread: number } {
+): { unread: number; unlabeled: number } {
   // Normalize: empty / undefined → cross-camera pseudo-scope "all".
   const camsKey = cameras && cameras.length > 0 ? cameras.join(",") : "all";
   const cams = useMemo(() => camsKey.split(","), [camsKey]);
 
   const [totals, setTotals] = useState<Record<string, number>>({});
+  const [unlabeledCounts, setUnlabeledCounts] = useState<Record<string, number>>({});
   const [seens, setSeens] = useState<Record<string, number | null>>(() => readWatermarks(cams));
 
-  // Cameras change → re-read the new set's watermarks. Clear totals so
-  // the unread computation doesn't briefly mix old-set numbers with
-  // new-set state.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: cams identity tracked via camsKey
-  useEffect(() => {
+  // Adjust-state-during-rendering for the cams-change reset. Was a
+  // useEffect([camsKey]) that called three setStates in sequence —
+  // React docs call this the "no-adjust-state-when-a-prop-changes"
+  // anti-pattern because it delays the reset by a render (stale
+  // frame flashes) and inflates the anti-pattern-delta CI count.
+  //
+  // The `prevCamsKey` sentinel lets us detect the change during render:
+  // React sees the setStates, discards the current render output, and
+  // re-runs with the reset applied. No stale frame, no useEffect.
+  //
+  // Pattern: **React derived-state via prev-prop sentinel** — same
+  // shape as PR #43's zone/mask reset refactor.
+  const [prevCamsKey, setPrevCamsKey] = useState<string>(camsKey);
+  if (camsKey !== prevCamsKey) {
+    setPrevCamsKey(camsKey);
     setSeens(readWatermarks(cams));
     setTotals({});
-  }, [camsKey]);
+    setUnlabeledCounts({});
+  }
 
   // Server-pushed counts via SSE — one persistent EventSource connection
   // per tab. Replaces the previous per-tab setInterval that hit
@@ -176,14 +187,15 @@ export function useUnreadAlerts(
     function startFallbackPolling(): void {
       async function tick(): Promise<void> {
         try {
-          const raw =
-            cams.length === 1 && cams[0] === "all"
-              ? await fetchAllTotal(controller.signal)
-              : await fetchCountsForCameras(cams, controller.signal);
+          const raw = await fetchCountsBreakdown(controller.signal);
           if (cancelled) return;
-          setTotals(raw);
-          coldStartSeens(raw);
-          mirrorServerTotals(raw);
+          // Project totals in the scope shape; keep RAW for the mirror
+          // (mirror keys off camera_id, not scope).
+          const projectedTotals = projectCounts(raw.total);
+          setTotals(projectedTotals);
+          coldStartSeens(projectedTotals);
+          mirrorServerTotals(raw.total);
+          setUnlabeledCounts(projectCounts(raw.unlabeled));
         } catch (e) {
           if (cancelled) return;
           if (e instanceof DOMException && e.name === "AbortError") return;
@@ -199,7 +211,11 @@ export function useUnreadAlerts(
       es.onmessage = (ev) => {
         if (cancelled) return;
         try {
-          const msg = JSON.parse(ev.data) as { type?: string; counts?: Record<string, number> };
+          const msg = JSON.parse(ev.data) as {
+            type?: string;
+            counts?: Record<string, number>;
+            unlabeled?: Record<string, number>;
+          };
           if (msg.type !== "counts" || !msg.counts) return;
           // Mirror RAW server counts (all cameras) before projection so
           // the localStorage mirror is complete regardless of which hook
@@ -208,6 +224,12 @@ export function useUnreadAlerts(
           const projected = projectCounts(msg.counts);
           setTotals(projected);
           coldStartSeens(projected);
+          // Unlabeled counts — same projection shape as totals so the
+          // "all" scope sums correctly and per-camera scopes see only
+          // their cameras.
+          if (msg.unlabeled) {
+            setUnlabeledCounts(projectCounts(msg.unlabeled));
+          }
         } catch {
           /* malformed frame — skip */
         }
@@ -274,7 +296,9 @@ export function useUnreadAlerts(
     return sum + (s === null ? 0 : Math.max(0, t - s));
   }, 0);
 
-  return { unread };
+  const unlabeled = cams.reduce((sum, c) => sum + (unlabeledCounts[c] ?? 0), 0);
+
+  return { unread, unlabeled };
 }
 
 function readWatermarks(cams: readonly string[]): Record<string, number | null> {
@@ -290,24 +314,19 @@ function readWatermarks(cams: readonly string[]): Record<string, number | null> 
   return out;
 }
 
-async function fetchAllTotal(signal: AbortSignal): Promise<Record<string, number>> {
-  const r = await fetchAlerts({ limit: 1 }, signal);
-  return { all: r.total ?? 0 };
-}
-
-/** Fetch per-camera counts via /api/alerts/counts. Restricts response
- *  to cameras we care about so unrelated activity doesn't leak into
- *  our sum. */
-async function fetchCountsForCameras(
-  cams: readonly string[],
+/** Fetch total + unlabeled counts in one call — used by the SSE-fallback
+ *  polling path so we don't need two REST endpoints when SSE isn't
+ *  available. Returns raw server counts (all cameras), caller projects. */
+async function fetchCountsBreakdown(
   signal: AbortSignal,
-): Promise<Record<string, number>> {
-  const r = await fetch("/api/alerts/counts", { signal });
-  if (!r.ok) throw new Error(`/api/alerts/counts ${r.status}`);
-  const body = (await r.json()) as Record<string, number>;
-  const out: Record<string, number> = {};
-  for (const c of cams) out[c] = body[c] ?? 0;
-  return out;
+): Promise<{ total: Record<string, number>; unlabeled: Record<string, number> }> {
+  const r = await fetch("/api/alerts/counts?breakdown=1", { signal });
+  if (!r.ok) throw new Error(`/api/alerts/counts?breakdown=1 ${r.status}`);
+  const body = (await r.json()) as {
+    total?: Record<string, number>;
+    unlabeled?: Record<string, number>;
+  };
+  return { total: body.total ?? {}, unlabeled: body.unlabeled ?? {} };
 }
 
 /**

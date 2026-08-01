@@ -235,6 +235,7 @@ _DETECTION_CFG = Path("config/detection.yaml")
 # client falls behind.
 _COUNTS_POLL_INTERVAL_S = float(os.getenv("COUNTS_POLL_INTERVAL_S", "3"))
 _counts_cache: dict[str, int] = {}
+_unlabeled_cache: dict[str, int] = {}
 _counts_lock = threading.Lock()
 _counts_subscribers: list["queue.Queue[dict]"] = []
 
@@ -254,11 +255,15 @@ def _drop_counts_subscriber(q: "queue.Queue[dict]") -> None:
             pass
 
 
-def _publish_counts(counts: dict[str, int]) -> None:
+def _publish_counts(counts: dict[str, int], unlabeled: dict[str, int] | None = None) -> None:
     """Fan-out a counts snapshot to all live subscribers. Best-effort:
     subscribers with full queues get their oldest message dropped so the
-    poller never blocks on a slow client."""
-    msg = {"type": "counts", "counts": counts}
+    poller never blocks on a slow client. `unlabeled` is optional for
+    backwards compat — old callers omit; new callers pass the paired
+    unlabeled counts so the amber badge stays in sync."""
+    msg: dict = {"type": "counts", "counts": counts}
+    if unlabeled is not None:
+        msg["unlabeled"] = unlabeled
     with _counts_lock:
         for q in list(_counts_subscribers):
             try:
@@ -283,19 +288,19 @@ def _start_counts_poller(state, camera_ids_fn) -> threading.Thread:
       rather than a captured list so a future dynamic-camera-set change
       is picked up without restarting the poller)."""
     def _loop():
-        global _counts_cache
+        global _counts_cache, _unlabeled_cache
         while True:
             try:
-                new_counts = {
-                    cam: state.total_alerts(camera_id=cam)
-                    for cam in camera_ids_fn()
-                }
+                cams = camera_ids_fn()
+                new_counts = {cam: state.total_alerts(camera_id=cam) for cam in cams}
+                new_unlabeled = {cam: state.unlabeled_alerts(camera_id=cam) for cam in cams}
                 with _counts_lock:
-                    changed = new_counts != _counts_cache
+                    changed = new_counts != _counts_cache or new_unlabeled != _unlabeled_cache
                     if changed:
                         _counts_cache = new_counts
+                        _unlabeled_cache = new_unlabeled
                 if changed:
-                    _publish_counts(new_counts)
+                    _publish_counts(new_counts, new_unlabeled)
             except Exception:
                 logger.exception("counts-poller: iteration failed")
             time.sleep(_COUNTS_POLL_INTERVAL_S)
@@ -614,11 +619,19 @@ def create_app(registry: DetectorRegistry) -> Flask:
     def api_alert_counts():
         """Per-camera alert counts in one call. Used by the header badge
         to sum unread across all visible panes without paying N HTTP
-        round-trips per poll. Response shape: {"yard": 2290, "rooftop": 4790}."""
-        counts = {}
-        for cam in registry.camera_ids:
-            counts[cam] = _state.total_alerts(camera_id=cam)
-        return jsonify(counts)
+        round-trips per poll.
+
+        Default response shape (backwards compat with old consumers):
+            {"yard": 2290, "rooftop": 4790}
+
+        With ?breakdown=1, returns totals + unlabeled counts for the
+        two-badge UI (red unread + amber unlabeled):
+            {"total": {"yard": 2290, ...}, "unlabeled": {"yard": 42, ...}}"""
+        totals = {cam: _state.total_alerts(camera_id=cam) for cam in registry.camera_ids}
+        if request.args.get("breakdown"):
+            unlabeled = {cam: _state.unlabeled_alerts(camera_id=cam) for cam in registry.camera_ids}
+            return jsonify({"total": totals, "unlabeled": unlabeled})
+        return jsonify(totals)
 
     # ── Counts SSE — push, not poll ───────────────────────────────────
     # Server-side polls the DB every _COUNTS_POLL_INTERVAL_S and fans
@@ -652,10 +665,14 @@ def create_app(registry: DetectorRegistry) -> Flask:
             q: "queue.Queue[dict]" = _new_counts_subscriber()
             try:
                 # Initial snapshot — bring the fresh subscriber up to date
-                # without waiting for the next change event.
+                # without waiting for the next change event. Includes
+                # both totals + unlabeled counts so the amber badge
+                # renders correctly on first paint (before the poller's
+                # next change-detect tick).
                 with _counts_lock:
                     initial = dict(_counts_cache)
-                yield f"data: {_json.dumps({'type': 'counts', 'counts': initial})}\n\n"
+                    initial_unl = dict(_unlabeled_cache)
+                yield f"data: {_json.dumps({'type': 'counts', 'counts': initial, 'unlabeled': initial_unl})}\n\n"
                 while True:
                     try:
                         # 25s heartbeat — under nginx / caddy 30s idle default.
