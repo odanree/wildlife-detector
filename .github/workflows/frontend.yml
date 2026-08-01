@@ -102,9 +102,20 @@ jobs:
           echo "count=$count" >> "$GITHUB_OUTPUT"
           echo "PR head: $count you-might-not-need-an-effect findings"
       - name: Checkout base branch
+        # `git checkout <ref> -- <paths>` overwrites tracked files with
+        # the base version but does NOT delete files that exist on
+        # HEAD but not on <ref>. Without `git clean -fd`, any file the
+        # PR adds (canary or real) survives into the base-count eslint
+        # run, inflating base_count to match head_count → delta 0 →
+        # gate silently passes. Discovered on the sticky-comment test
+        # PR (#58) which added a new anti-pattern file and unexpectedly
+        # got a green gate. `git clean -fd src` removes any untracked
+        # files inside src (my canary was one), respecting .gitignore
+        # so node_modules stays intact.
         run: |
           git fetch origin ${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}
           git checkout refs/remotes/origin/${{ github.base_ref }} -- src eslint.config.js package.json 2>/dev/null || true
+          git clean -fd src 2>/dev/null || true
       - name: Count anti-patterns on base branch
         id: base_count
         run: |
