@@ -2,8 +2,13 @@
 timestamp, and write a ground-truth JSON that pairs clips with their
 label verdict.
 
-Runs on the HOST (uses local ffmpeg + reads the bind-mounted state.db
-directly). No container needed.
+Runs on the HOST (uses local ffmpeg + reads Postgres over TCP). No
+container coupling needed — since the postgres-migration PR, sandbox
+can query the DB freely without triggering 9P/SQLite lock issues.
+
+Requires `psycopg` installed on the host: `pip install psycopg[binary]`.
+Reads `DATABASE_URL` from env (or falls back to sensible localhost
+default that matches the compose network exposed to host).
 
 Usage:
     python sandbox/fetch_clips.py --tps                     # all 16 rooftop TPs
@@ -32,7 +37,6 @@ import argparse
 import json
 import os
 import shutil
-import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -42,7 +46,6 @@ from pathlib import Path
 # run it from.
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
-DB_PATH = REPO_ROOT / "data" / "state.db"
 CLIPS_DIR = SCRIPT_DIR / "clips"
 MANIFEST = SCRIPT_DIR / "ground_truth.json"
 
@@ -153,44 +156,69 @@ def _fetch_one(alert_id: int, ts_epoch: float, camera: str, out_path: Path) -> t
     return True, "ok"
 
 
-def _load_alerts(only_tps: bool, sample_fps: int, camera: str = "rooftop") -> list[dict]:
-    """Pull the alert set to fetch clips for."""
-    conn = sqlite3.connect(str(DB_PATH))
-    out: list[dict] = []
+def _database_url() -> str:
+    """Resolve the Postgres conninfo. Env first (12-factor), then a
+    localhost fallback that assumes you've temporarily exposed
+    postgres via `ports: 5432:5432` in compose."""
+    url = os.environ.get("DATABASE_URL")
+    if url:
+        return url
+    # Fallback for host-side usage — needs postgres exposed on localhost.
+    # Password can come from .env or POSTGRES_PASSWORD env.
+    pw = os.environ.get("POSTGRES_PASSWORD", "")
+    user = os.environ.get("POSTGRES_USER", "wildlife")
+    db = os.environ.get("POSTGRES_DB", "wildlife")
+    return f"postgresql://{user}:{pw}@localhost:5432/{db}"
 
-    # Exclude alerts flagged by the 2026-07-23 attribution-suspect
-    # bulk update — those fired during the intermittent VLM-queue-swap
-    # window (fixed by commit 67a7331). Their camera_id can't be
-    # trusted, so they'd poison the sandbox eval.
+
+def _load_alerts(only_tps: bool, sample_fps: int, camera: str = "rooftop") -> list[dict]:
+    """Pull the alert set to fetch clips for.
+
+    Exclude alerts flagged by the 2026-07-23 attribution-suspect bulk
+    update — those fired during the intermittent VLM-queue-swap window
+    (fixed by commit 67a7331). Their camera_id can't be trusted, so
+    they'd poison the sandbox eval.
+    """
+    import psycopg
+    out: list[dict] = []
     ATTR_FILTER = "AND (label_notes IS NULL OR label_notes != 'attribution-suspect')"
 
-    if only_tps:
-        rows = conn.execute(f"""
-            SELECT id, ts, species, camera_id, label_verdict
-            FROM alerts
-            WHERE camera_id = ? AND label_verdict = 'correct'
-              AND snapshot IS NOT NULL
-              {ATTR_FILTER}
-            ORDER BY ts
-        """, (camera,)).fetchall()
-        for r in rows:
-            out.append({"id": r[0], "ts": r[1], "species": r[2],
-                        "camera": r[3], "verdict": "TP"})
-
-    if sample_fps > 0:
-        rows = conn.execute(f"""
-            SELECT id, ts, species, camera_id, label_verdict
-            FROM alerts
-            WHERE camera_id = ? AND label_verdict = 'incorrect'
-              AND snapshot IS NOT NULL
-              {ATTR_FILTER}
-            ORDER BY RANDOM()
-            LIMIT ?
-        """, (camera, sample_fps)).fetchall()
-        for r in rows:
-            out.append({"id": r[0], "ts": r[1], "species": r[2],
-                        "camera": r[3], "verdict": "FP"})
-
+    with psycopg.connect(_database_url()) as conn, conn.cursor() as cur:
+        if only_tps:
+            cur.execute(
+                f"""
+                SELECT id, ts, species, camera_id, label_verdict
+                FROM alerts
+                WHERE camera_id = %s AND label_verdict = 'correct'
+                  AND snapshot IS NOT NULL
+                  {ATTR_FILTER}
+                ORDER BY ts
+                """,
+                (camera,),
+            )
+            for r in cur.fetchall():
+                out.append(
+                    {"id": r[0], "ts": r[1], "species": r[2],
+                     "camera": r[3], "verdict": "TP"}
+                )
+        if sample_fps > 0:
+            cur.execute(
+                f"""
+                SELECT id, ts, species, camera_id, label_verdict
+                FROM alerts
+                WHERE camera_id = %s AND label_verdict = 'incorrect'
+                  AND snapshot IS NOT NULL
+                  {ATTR_FILTER}
+                ORDER BY RANDOM()
+                LIMIT %s
+                """,
+                (camera, sample_fps),
+            )
+            for r in cur.fetchall():
+                out.append(
+                    {"id": r[0], "ts": r[1], "species": r[2],
+                     "camera": r[3], "verdict": "FP"}
+                )
     return out
 
 
@@ -222,8 +250,16 @@ def main() -> int:
         print("ERROR: ffmpeg not found on PATH.", file=sys.stderr)
         return 2
 
-    if not DB_PATH.exists():
-        print(f"ERROR: DB not found at {DB_PATH}", file=sys.stderr)
+    # Postgres reachability check — better error than a generic psycopg
+    # OperationalError deep inside _load_alerts.
+    try:
+        import psycopg
+        with psycopg.connect(_database_url(), connect_timeout=5):
+            pass
+    except Exception as e:
+        print(f"ERROR: cannot connect to postgres: {e}", file=sys.stderr)
+        print(f"       DATABASE_URL={_database_url()}", file=sys.stderr)
+        print("       Ensure the compose stack is up and postgres is on localhost:5432", file=sys.stderr)
         return 2
 
     # Fold CLI overrides back into the module-level constants that the

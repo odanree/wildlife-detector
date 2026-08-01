@@ -1,148 +1,142 @@
-"""SQLite-backed persistent state for the wildlife detector.
+"""Postgres-backed persistent state for the wildlife detector.
 
-Phase 1 of the three-plane split (see docs/adr/002-three-plane-process-split.md).
-This module owns the alerts table today; more tables can land here without a
-schema migration story because we use ``CREATE TABLE IF NOT EXISTS`` and only
-ever add columns / indexes (never rename or drop in-place).
+Migrated from SQLite in the postgres-migration PR. Motivation: SQLite +
+Docker Desktop 9P bind-mount deadlocks (3 outages in ~10 days) — any
+host-side Python opening the DB left the 9P layer with cached lock
+state, causing container `unable to open database file` on next start.
+Postgres is TCP-only, no filesystem lock contract to violate.
 
 ## Concurrency contract
 
-- **Single writer, multi-reader.** The detector process (and its VLM harvest
-  thread) is the only writer. Flask worker threads read via the same
-  connection. WAL mode makes reads non-blocking against writes.
-- The wrapper serializes writes with a threading.Lock so two detector-side
-  callers can't interleave INSERTs. Reads are lock-free (SQLite handles it).
-- ``check_same_thread=False`` so Flask worker threads can read from the same
-  connection. Safe because we don't share cursors across threads.
+- **Connection pool via psycopg_pool.ConnectionPool.** Autocommit off;
+  each `with pool.connection()` block is a transaction that commits on
+  clean exit, rolls back on exception. Pool serializes acquisition so
+  we don't need a Python-level write lock.
+- **Multi-writer safe.** Postgres MVCC handles concurrent writes across
+  the two detector containers + web sidecar. No more single-writer
+  discipline needed (the old SQLite `_write_lock` is gone).
+- **Row factory: dict_row.** Cursors return `dict` per row so consumers
+  can `row["id"]` without column-index bookkeeping.
 
 ## Idempotency
 
-The ``alerts`` table has a UNIQUE (ts, species, snapshot) constraint with
-``ON CONFLICT IGNORE``. This makes the disk-backfill idempotent — walking
-``snapshots/YYYY-MM-DD/*.jpg`` on every startup and inserting each entry
-never produces duplicates, so we no longer need a separate "have I already
-loaded this?" check.
+The `alerts` table has a UNIQUE (ts, species, COALESCE(snapshot, ''))
+constraint. `INSERT ... ON CONFLICT DO NOTHING` makes the disk-backfill
+idempotent — walking `snapshots/YYYY-MM-DD/*.jpg` on every startup and
+inserting each entry never produces duplicates.
 
-Live inserts get a unique ts from time.time() at write moment, so they never
-collide with the backfill or each other.
+## Migration
+
+See `scripts/migrate_sqlite_to_postgres.py` for the one-shot import
+from the old SQLite `state.db`. Preserves alert IDs so downstream
+references (snapshot filenames, external caches) don't break.
 """
 from __future__ import annotations
 
 import logging
-import sqlite3
-import threading
+import os
 import time
-from pathlib import Path
+from typing import Any
+
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 logger = logging.getLogger(__name__)
 
-
-# Schema version bakes into the pragmas — bump if we ever need to migrate
-# with real ALTER TABLE (not just an additive CREATE IF NOT EXISTS).
 _SCHEMA_VERSION = 1
 
 
 class StateDB:
-    """Thread-safe SQLite wrapper for the wildlife detector's persistent state.
+    """Postgres wrapper for the wildlife detector's persistent state.
 
-    Single-writer discipline is enforced by convention (pipeline is the only
-    caller of append_alert). Reads are safe from any thread.
-
-    Instantiate once at process start, share the instance across the pipeline
-    and the Flask preview server.
+    Instantiate once at process start, share the instance across the
+    pipeline and the Flask web sidecar. Pool holds 2-10 connections;
+    scale `max_size` up if the sidecar becomes a bottleneck under
+    heavy SSE traffic.
     """
 
-    def __init__(self, path: str) -> None:
-        self._path = Path(path)
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        # isolation_level=None → autocommit; we manage transactions manually
-        # if needed (currently we don't, each INSERT auto-commits).
-        # check_same_thread=False so Flask worker threads can read.
-        self._conn = sqlite3.connect(
-            str(self._path),
-            check_same_thread=False,
-            isolation_level=None,
+    def __init__(self, conninfo: str | None = None) -> None:
+        # DATABASE_URL is the standard convention (12-factor, etc.) —
+        # accept explicit `conninfo` arg for tests, fall back to env.
+        self._conninfo = conninfo or os.environ.get("DATABASE_URL")
+        if not self._conninfo:
+            raise ValueError(
+                "DATABASE_URL not set — postgres migration requires it. "
+                "See docker-compose.yml and .env.example."
+            )
+        # Pool is opened lazily on first use; explicit `open()` here so
+        # a bad conninfo fails at StateDB construction rather than at
+        # first query. `open=True` also means the pool blocks until the
+        # min_size is ready — combined with docker-compose's
+        # `depends_on: postgres { condition: service_healthy }`, we
+        # never hit "connection refused" at startup.
+        self._pool = ConnectionPool(
+            conninfo=self._conninfo,
+            min_size=2,
+            max_size=10,
+            open=True,
+            timeout=30.0,
         )
-        self._conn.row_factory = sqlite3.Row
-        # WAL: readers don't block writers, writers don't block readers.
-        # NORMAL sync: durability trades a tiny fsync-per-transaction for
-        # ~4x write throughput. Safe unless the OS crashes mid-write.
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        self._write_lock = threading.Lock()
         self._migrate()
-        logger.info("StateDB opened at %s (WAL, schema v%d, alerts=%d)",
-                    self._path, _SCHEMA_VERSION, self.total_alerts())
+        logger.info(
+            "StateDB opened via psycopg pool (schema v%d, alerts=%d)",
+            _SCHEMA_VERSION,
+            self.total_alerts(),
+        )
 
     # ── Schema ──────────────────────────────────────────────────────────────
 
     def _migrate(self) -> None:
-        """Create tables if missing + additive schema migrations. Never DROPs.
-
-        Migration strategy: introspect existing columns; if a column we need
-        is absent, ALTER TABLE ADD COLUMN. New DBs get the full schema via the
-        CREATE TABLE below. Old DBs (from before multi-camera) get camera_id
-        appended with a 'yard' default so existing 150+ alerts stay attributable.
+        """Create tables + indexes if missing. Postgres supports
+        `ADD COLUMN IF NOT EXISTS` natively so we skip SQLite's
+        introspect-then-add dance. Never DROPs.
         """
-        self._conn.executescript("""
+        # BIGSERIAL for id so we can preserve migrated IDs via `setval` —
+        # the migration script sets the sequence to MAX(id)+1 after
+        # importing SQLite rows, so new inserts don't collide.
+        self._exec("""
             CREATE TABLE IF NOT EXISTS alerts (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts           REAL    NOT NULL,
-                camera_id    TEXT    NOT NULL DEFAULT 'yard',
-                species      TEXT    NOT NULL,
-                confidence   REAL,
+                id           BIGSERIAL PRIMARY KEY,
+                ts           DOUBLE PRECISION NOT NULL,
+                camera_id    TEXT NOT NULL DEFAULT 'yard',
+                species      TEXT NOT NULL,
+                confidence   DOUBLE PRECISION,
                 description  TEXT,
                 snapshot     TEXT,
                 track_id     INTEGER,
-                yolo_conf    REAL,
-                is_rodent    INTEGER NOT NULL DEFAULT 0,
-                historical   INTEGER NOT NULL DEFAULT 0,
-                created_at   REAL    NOT NULL DEFAULT (strftime('%s', 'now'))
-            );
-            CREATE INDEX IF NOT EXISTS idx_alerts_ts       ON alerts(ts DESC);
-            CREATE INDEX IF NOT EXISTS idx_alerts_species  ON alerts(species);
-            CREATE INDEX IF NOT EXISTS idx_alerts_snapshot ON alerts(snapshot);
-
-            -- Idempotent-backfill guard: two rows with the same timestamp,
-            -- species, and snapshot filename are treated as the same event.
-            -- INSERT OR IGNORE skips duplicates silently.
-            CREATE UNIQUE INDEX IF NOT EXISTS uniq_alerts_ts_species_snap
-                ON alerts(ts, species, COALESCE(snapshot, ''));
-        """)
-        # In-place upgrade for existing DBs — SQLite ALTER TABLE only supports
-        # ADD COLUMN, so old rows get camera_id='yard' via the DEFAULT.
-        cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(alerts)")}
-        if "camera_id" not in cols:
-            self._conn.execute(
-                "ALTER TABLE alerts ADD COLUMN camera_id TEXT NOT NULL DEFAULT 'yard'"
+                yolo_conf    DOUBLE PRECISION,
+                is_rodent    BOOLEAN NOT NULL DEFAULT FALSE,
+                historical   BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at   DOUBLE PRECISION NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW())
             )
-            logger.info("StateDB: added camera_id column (defaulted to 'yard' for existing rows)")
-        # Camera-scoped queries need an index once we're multi-camera.
-        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_camera ON alerts(camera_id)")
-
-        # Human-in-the-loop labeling columns — supervised training data
-        # collection for a downstream binary pre-filter or LoRA fine-tune.
-        # label_verdict: 'correct' | 'incorrect' | 'unclear' | None (unlabeled)
-        # label_species: fine-grained tag ('real_rat', 'real_mouse',
-        #   'FP:insect', 'FP:reflection', 'FP:human', 'FP:noise', ...);
-        #   nullable — quick-verdict rows don't require the picker.
-        # label_notes:   free-form operator context.
-        # label_ts:      when the label was applied (for staleness / audit).
-        cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(alerts)")}
-        for col, ddl in [
-            ("label_verdict", "ALTER TABLE alerts ADD COLUMN label_verdict TEXT"),
-            ("label_species", "ALTER TABLE alerts ADD COLUMN label_species TEXT"),
-            ("label_notes",   "ALTER TABLE alerts ADD COLUMN label_notes TEXT"),
-            ("label_ts",      "ALTER TABLE alerts ADD COLUMN label_ts REAL"),
+        """)
+        # Additive columns for the human-in-the-loop labeling workflow.
+        # Postgres 9.6+: ADD COLUMN IF NOT EXISTS is native, no
+        # introspection needed.
+        for col_ddl in [
+            "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS label_verdict TEXT",
+            "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS label_species TEXT",
+            "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS label_notes   TEXT",
+            "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS label_ts      DOUBLE PRECISION",
         ]:
-            if col not in cols:
-                self._conn.execute(ddl)
-                logger.info("StateDB: added %s column", col)
-        # Index for the "unlabeled alerts" backlog query on the batch page.
-        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_label_ts ON alerts(label_ts)")
+            self._exec(col_ddl)
+        # Indexes — one DDL statement each so a partial failure logs
+        # which index tripped.
+        for idx_ddl in [
+            "CREATE INDEX IF NOT EXISTS idx_alerts_ts       ON alerts(ts DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_alerts_species  ON alerts(species)",
+            "CREATE INDEX IF NOT EXISTS idx_alerts_snapshot ON alerts(snapshot)",
+            "CREATE INDEX IF NOT EXISTS idx_alerts_camera   ON alerts(camera_id)",
+            "CREATE INDEX IF NOT EXISTS idx_alerts_label_ts ON alerts(label_ts)",
+            # Idempotent-backfill guard — matches the SQLite unique
+            # index (ts, species, snapshot-or-empty). ON CONFLICT
+            # targets this constraint.
+            "CREATE UNIQUE INDEX IF NOT EXISTS uniq_alerts_ts_species_snap "
+            "  ON alerts(ts, species, COALESCE(snapshot, ''))",
+        ]:
+            self._exec(idx_ddl)
 
-    # ── Writes (detector-side only) ─────────────────────────────────────────
+    # ── Writes ──────────────────────────────────────────────────────────────
 
     def append_alert(
         self,
@@ -160,12 +154,14 @@ class StateDB:
         """Insert an alert row. Returns the row ID, or None if the unique
         constraint suppressed it (already exists).
         """
-        with self._write_lock:
-            cur = self._conn.execute(
-                """INSERT OR IGNORE INTO alerts
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO alerts
                    (ts, camera_id, species, confidence, description, snapshot,
                     track_id, yolo_conf, is_rodent, historical)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (ts, species, COALESCE(snapshot, '')) DO NOTHING
+                   RETURNING id""",
                 (
                     ts if ts is not None else time.time(),
                     camera_id,
@@ -175,36 +171,44 @@ class StateDB:
                     snapshot,
                     track_id,
                     round(yolo_conf, 3) if yolo_conf is not None else None,
-                    1 if is_rodent else 0,
-                    1 if historical else 0,
+                    is_rodent,
+                    historical,
                 ),
             )
-            return cur.lastrowid if cur.rowcount > 0 else None
+            row = cur.fetchone()
+            return row[0] if row else None
 
     def append_alerts_bulk(self, rows: list[dict]) -> int:
-        """Batch insert for backfill. Returns the number of new rows inserted
-        (existing rows are silently skipped by the unique constraint).
-
-        Each row dict must include camera_id; callers can fall back to 'yard'
-        for the historical single-camera path."""
+        """Batch insert for backfill. Returns the number of new rows
+        actually inserted (existing rows are silently skipped)."""
         if not rows:
             return 0
-        # Normalize — pre-camera_id backfills omit the field; default it here
-        # so the SQL bind never fails on missing key.
         for r in rows:
             r.setdefault("camera_id", "yard")
-        with self._write_lock:
-            cur = self._conn.executemany(
-                """INSERT OR IGNORE INTO alerts
-                   (ts, camera_id, species, confidence, description, snapshot,
-                    track_id, yolo_conf, is_rodent, historical)
-                   VALUES (:ts, :camera_id, :species, :confidence, :description, :snapshot,
-                           :track_id, :yolo_conf, :is_rodent, :historical)""",
-                rows,
-            )
-            return cur.rowcount
+            # Coerce int-shaped booleans (backfill callers still pass 0/1
+            # from the legacy SQLite schema) to Python bool so psycopg
+            # binds them as the BOOLEAN type postgres expects.
+            r["is_rodent"] = bool(r.get("is_rodent", False))
+            r["historical"] = bool(r.get("historical", False))
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            inserted = 0
+            for r in rows:
+                cur.execute(
+                    """INSERT INTO alerts
+                       (ts, camera_id, species, confidence, description, snapshot,
+                        track_id, yolo_conf, is_rodent, historical)
+                       VALUES (%(ts)s, %(camera_id)s, %(species)s, %(confidence)s,
+                               %(description)s, %(snapshot)s, %(track_id)s,
+                               %(yolo_conf)s, %(is_rodent)s, %(historical)s)
+                       ON CONFLICT (ts, species, COALESCE(snapshot, '')) DO NOTHING
+                       RETURNING id""",
+                    r,
+                )
+                if cur.fetchone():
+                    inserted += 1
+            return inserted
 
-    # ── Reads (any thread) ──────────────────────────────────────────────────
+    # ── Reads ───────────────────────────────────────────────────────────────
 
     def list_alerts(
         self,
@@ -215,61 +219,51 @@ class StateDB:
         scope: str | None = None,
         label_filter: str | None = None,
     ) -> list[dict]:
-        """Return alerts, newest first. Filters push into SQL, so page size
-        doesn't blow up memory. camera_id=None returns rows from ALL cameras
-        (unified view); pass a specific id for per-camera pages.
-
-        scope: 'historical' | 'live' | None (all) — pile of interest.
-        label_filter: 'unlabeled' | 'labeled' | None (all) — for the
-        sifting workflow: 'unlabeled' hides rows already voted on so
-        operator can walk the backlog without re-reviewing their own
-        work. Composes with scope: scope='historical' + label_filter=
-        'unlabeled' = "the un-voted piece of the old pile"."""
+        """Return alerts, newest first. Same filter semantics as the
+        SQLite version — see the pre-migration docstring for scope /
+        label_filter meanings."""
         query = "SELECT * FROM alerts"
         clauses: list[str] = []
-        params: list = []
+        params: list[Any] = []
         if species:
-            clauses.append("species = ?")
+            clauses.append("species = %s")
             params.append(species.lower())
         if since_ts is not None:
-            clauses.append("ts >= ?")
+            clauses.append("ts >= %s")
             params.append(since_ts)
         if camera_id:
-            clauses.append("camera_id = ?")
+            clauses.append("camera_id = %s")
             params.append(camera_id)
         if scope == "historical":
-            clauses.append("historical = 1")
+            clauses.append("historical = TRUE")
         elif scope == "live":
-            clauses.append("historical = 0")
+            clauses.append("historical = FALSE")
         if label_filter == "unlabeled":
             clauses.append("label_ts IS NULL")
         elif label_filter == "labeled":
             clauses.append("label_ts IS NOT NULL")
         elif label_filter in ("correct", "incorrect", "unclear"):
-            clauses.append("label_verdict = ?")
+            clauses.append("label_verdict = %s")
             params.append(label_filter)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY ts DESC LIMIT ?"
+        query += " ORDER BY ts DESC LIMIT %s"
         params.append(int(limit))
-        cur = self._conn.execute(query, params)
-        return [self._row_to_dict(row) for row in cur.fetchall()]
+        with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(query, params)
+            return [self._normalize(row) for row in cur.fetchall()]
 
     def latest_alert(self) -> dict | None:
-        cur = self._conn.execute(
-            "SELECT * FROM alerts ORDER BY ts DESC LIMIT 1"
-        )
-        row = cur.fetchone()
-        return self._row_to_dict(row) if row else None
+        with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT * FROM alerts ORDER BY ts DESC LIMIT 1")
+            row = cur.fetchone()
+            return self._normalize(row) if row else None
 
     def get_alert(self, alert_id: int) -> dict | None:
-        """Fetch a single alert by id. Used by the NVR playback endpoint
-        to look up ts + camera_id from an alert row."""
-        cur = self._conn.execute(
-            "SELECT * FROM alerts WHERE id = ? LIMIT 1", (int(alert_id),)
-        )
-        row = cur.fetchone()
-        return self._row_to_dict(row) if row else None
+        with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT * FROM alerts WHERE id = %s LIMIT 1", (int(alert_id),))
+            row = cur.fetchone()
+            return self._normalize(row) if row else None
 
     def set_label(
         self,
@@ -278,21 +272,20 @@ class StateDB:
         species: str | None = None,
         notes: str | None = None,
     ) -> bool:
-        """Apply a human label to an alert row. Returns True if the row
-        was found and updated. Pass verdict=None to clear all label fields
-        (undo). label_ts is set to now() on any update."""
-        import time as _time
-        if verdict is None:
-            cur = self._conn.execute(
-                "UPDATE alerts SET label_verdict=NULL, label_species=NULL, label_notes=NULL, label_ts=NULL WHERE id=?",
-                (int(alert_id),),
-            )
-        else:
-            cur = self._conn.execute(
-                "UPDATE alerts SET label_verdict=?, label_species=?, label_notes=?, label_ts=? WHERE id=?",
-                (verdict, species, notes, _time.time(), int(alert_id)),
-            )
-        return cur.rowcount > 0
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            if verdict is None:
+                cur.execute(
+                    "UPDATE alerts SET label_verdict=NULL, label_species=NULL, "
+                    "label_notes=NULL, label_ts=NULL WHERE id=%s",
+                    (int(alert_id),),
+                )
+            else:
+                cur.execute(
+                    "UPDATE alerts SET label_verdict=%s, label_species=%s, "
+                    "label_notes=%s, label_ts=%s WHERE id=%s",
+                    (verdict, species, notes, time.time(), int(alert_id)),
+                )
+            return cur.rowcount > 0
 
     def set_labels_bulk(
         self,
@@ -301,25 +294,23 @@ class StateDB:
         species: str | None = None,
         notes: str | None = None,
     ) -> int:
-        """Apply the same label to N alerts in one transaction. Returns
-        the count actually updated. Used by the mass-tag UI when operator
-        selects a batch of rows and applies one verdict."""
-        import time as _time
         if not alert_ids:
             return 0
-        placeholders = ",".join("?" * len(alert_ids))
-        if verdict is None:
-            cur = self._conn.execute(
-                f"UPDATE alerts SET label_verdict=NULL, label_species=NULL, label_notes=NULL, label_ts=NULL WHERE id IN ({placeholders})",
-                [int(x) for x in alert_ids],
-            )
-        else:
-            params = [verdict, species, notes, _time.time()] + [int(x) for x in alert_ids]
-            cur = self._conn.execute(
-                f"UPDATE alerts SET label_verdict=?, label_species=?, label_notes=?, label_ts=? WHERE id IN ({placeholders})",
-                params,
-            )
-        return cur.rowcount
+        ids_tuple = tuple(int(x) for x in alert_ids)
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            if verdict is None:
+                cur.execute(
+                    "UPDATE alerts SET label_verdict=NULL, label_species=NULL, "
+                    "label_notes=NULL, label_ts=NULL WHERE id = ANY(%s)",
+                    (list(ids_tuple),),
+                )
+            else:
+                cur.execute(
+                    "UPDATE alerts SET label_verdict=%s, label_species=%s, "
+                    "label_notes=%s, label_ts=%s WHERE id = ANY(%s)",
+                    (verdict, species, notes, time.time(), list(ids_tuple)),
+                )
+            return cur.rowcount
 
     def list_unlabeled(
         self,
@@ -327,27 +318,20 @@ class StateDB:
         camera_id: str | None = None,
         scope: str = "historical",
     ) -> list[dict]:
-        """Return unlabeled alerts (label_ts IS NULL) — the batch labeling
-        page walks this list. scope:
-          'historical' (default) → only backfilled/pre-tuning rows
-                                   (historical=1). Newest first inside
-                                   the historical pile.
-          'live'                 → only fresh VLM-fired rows (historical=0).
-          'all'                  → both, newest first."""
         query = "SELECT * FROM alerts WHERE label_ts IS NULL"
-        params: list = []
+        params: list[Any] = []
         if scope == "historical":
-            query += " AND historical = 1"
+            query += " AND historical = TRUE"
         elif scope == "live":
-            query += " AND historical = 0"
-        # scope='all' adds no filter
+            query += " AND historical = FALSE"
         if camera_id:
-            query += " AND camera_id = ?"
+            query += " AND camera_id = %s"
             params.append(camera_id)
-        query += " ORDER BY ts DESC LIMIT ?"
+        query += " ORDER BY ts DESC LIMIT %s"
         params.append(int(limit))
-        cur = self._conn.execute(query, params)
-        return [self._row_to_dict(row) for row in cur.fetchall()]
+        with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(query, params)
+            return [self._normalize(row) for row in cur.fetchall()]
 
     def list_labeled_for_export(
         self,
@@ -357,97 +341,83 @@ class StateDB:
         camera_id: str | None = None,
         verdict: str | None = None,
     ) -> list[dict]:
-        """Return all labeled rows (label_ts NOT NULL) suitable for training-
-        data export. Filters:
-          include_species / exclude_species: filter on the original detected
-            species (not label_species) — used to exclude 'human_heartbeat'
-            operational rows from the default export.
-          include_unclear: if False (default), skip verdict='unclear' rows
-            — those are labeled but explicitly ambiguous; don't inject
-            them into binary correct/incorrect splits.
-          camera_id / verdict: standard filters."""
         query = "SELECT * FROM alerts WHERE label_ts IS NOT NULL"
-        params: list = []
+        params: list[Any] = []
         if not include_unclear:
             query += " AND (label_verdict != 'unclear' OR label_verdict IS NULL)"
         if verdict:
-            query += " AND label_verdict = ?"
+            query += " AND label_verdict = %s"
             params.append(verdict)
         if camera_id:
-            query += " AND camera_id = ?"
+            query += " AND camera_id = %s"
             params.append(camera_id)
         if include_species:
-            placeholders = ",".join("?" * len(include_species))
-            query += f" AND species IN ({placeholders})"
-            params.extend(include_species)
+            query += " AND species = ANY(%s)"
+            params.append(list(include_species))
         if exclude_species:
-            placeholders = ",".join("?" * len(exclude_species))
-            query += f" AND species NOT IN ({placeholders})"
-            params.extend(exclude_species)
-        query += " ORDER BY ts ASC"  # chronological — natural training-set order
-        cur = self._conn.execute(query, params)
-        return [self._row_to_dict(row) for row in cur.fetchall()]
+            query += " AND species != ALL(%s)"
+            params.append(list(exclude_species))
+        query += " ORDER BY ts ASC"
+        with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(query, params)
+            return [self._normalize(row) for row in cur.fetchall()]
 
     def label_counts(self, include_historical: bool = True) -> dict:
-        """Per-verdict counts + total unlabeled across ALL rows (or
-        live-only when include_historical=False). Historical rows count
-        toward training data now that we allow labeling them."""
-        where = "" if include_historical else " WHERE historical = 0"
-        rows = self._conn.execute(
-            f"SELECT COALESCE(label_verdict, 'unlabeled') AS v, COUNT(*) AS n "
-            f"FROM alerts{where} GROUP BY v"
-        ).fetchall()
-        return {r["v"]: r["n"] for r in rows}
+        where = "" if include_historical else " WHERE historical = FALSE"
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT COALESCE(label_verdict, 'unlabeled') AS v, COUNT(*) AS n "
+                f"FROM alerts{where} GROUP BY v"
+            )
+            return {r[0]: r[1] for r in cur.fetchall()}
 
     def total_alerts(self, camera_id: str | None = None) -> int:
-        """Total alert count. Optional camera_id filter so the /api/alerts
-        response's `total` field matches the filter applied to `items` —
-        critical for per-camera unread-badge math (otherwise badge shows
-        cross-camera drift even when the caller only wants one camera)."""
-        if camera_id:
-            cur = self._conn.execute(
-                "SELECT COUNT(*) FROM alerts WHERE camera_id = ?", (camera_id,)
-            )
-        else:
-            cur = self._conn.execute("SELECT COUNT(*) FROM alerts")
-        return int(cur.fetchone()[0])
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            if camera_id:
+                cur.execute("SELECT COUNT(*) FROM alerts WHERE camera_id = %s", (camera_id,))
+            else:
+                cur.execute("SELECT COUNT(*) FROM alerts")
+            return int(cur.fetchone()[0])
 
     def unlabeled_alerts(self, camera_id: str | None = None) -> int:
-        """Count of alerts with label_verdict IS NULL — the "still needs
-        my verdict" queue depth. Feeds the amber unlabeled badge (see
-        AlertsNavLink) which shows how much labeling work is left, distinct
-        from the red "unread" badge (per-user watermark drift)."""
-        if camera_id:
-            cur = self._conn.execute(
-                "SELECT COUNT(*) FROM alerts WHERE camera_id = ? AND label_verdict IS NULL",
-                (camera_id,),
-            )
-        else:
-            cur = self._conn.execute(
-                "SELECT COUNT(*) FROM alerts WHERE label_verdict IS NULL"
-            )
-        return int(cur.fetchone()[0])
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            if camera_id:
+                cur.execute(
+                    "SELECT COUNT(*) FROM alerts WHERE camera_id = %s AND label_verdict IS NULL",
+                    (camera_id,),
+                )
+            else:
+                cur.execute("SELECT COUNT(*) FROM alerts WHERE label_verdict IS NULL")
+            return int(cur.fetchone()[0])
 
     def snapshots_present(self) -> set[str]:
-        """Return the set of snapshot filenames already stored — used by
-        backfill to short-circuit before hitting the unique constraint."""
-        cur = self._conn.execute(
-            "SELECT snapshot FROM alerts WHERE snapshot IS NOT NULL"
-        )
-        return {row[0] for row in cur.fetchall()}
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute("SELECT snapshot FROM alerts WHERE snapshot IS NOT NULL")
+            return {row[0] for row in cur.fetchall()}
 
     # ── Housekeeping ────────────────────────────────────────────────────────
 
     def close(self) -> None:
-        with self._write_lock:
-            self._conn.close()
+        self._pool.close()
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 
+    def _exec(self, sql: str, params: tuple | None = None) -> None:
+        """Fire-and-forget for DDL and migrations. Autocommit via
+        `with pool.connection()` context manager."""
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params or ())
+
     @staticmethod
-    def _row_to_dict(row: sqlite3.Row) -> dict:
+    def _normalize(row: dict | None) -> dict | None:
+        """Postgres returns BOOLEAN as Python bool already; SQLite returned
+        integers. Normalize just in case any consumer relies on 0/1 vs
+        True/False semantics — return native bool consistently."""
+        if row is None:
+            return None
         d = dict(row)
-        # SQLite stores bool as int; convert back for frontend consumers.
-        d["is_rodent"] = bool(d.get("is_rodent", 0))
-        d["historical"] = bool(d.get("historical", 0))
+        if "is_rodent" in d:
+            d["is_rodent"] = bool(d["is_rodent"])
+        if "historical" in d:
+            d["historical"] = bool(d["historical"])
         return d

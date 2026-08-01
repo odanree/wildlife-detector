@@ -683,20 +683,20 @@ def get_state_db() -> "StateDB | None":
 
 def init_alert_log(snapshot_dir: str, capacity: int = 500,
                    db_path: str | None = None) -> None:
-    """Open the SQLite state store, backfill historical snapshots, and wire
+    """Open the Postgres state store, backfill historical snapshots, and wire
     the AlertLog façade to it. Called once at pipeline startup.
 
-    db_path defaults to data/state.db — override via STATE_DB_PATH env for
-    tests or a non-default location.
+    Connects via DATABASE_URL env (set by docker-compose). The `db_path`
+    argument is preserved for API back-compat but no longer used —
+    Postgres is the sole backend after the migration.
     """
     global _alerts, _snapshot_dir, _state_db
     from src.storage.state_db import StateDB
     _snapshot_dir = Path(snapshot_dir).resolve()
-    resolved_db_path = db_path or os.getenv("STATE_DB_PATH", "data/state.db")
-    _state_db = StateDB(resolved_db_path)
+    _state_db = StateDB()
     _alerts = AlertLog(capacity=capacity)
     _alerts.bind_state(_state_db)
-    logger.info("AlertLog initialized (snapshots=%s, db=%s)", _snapshot_dir, resolved_db_path)
+    logger.info("AlertLog initialized (snapshots=%s, backend=postgres)", _snapshot_dir)
     # Backfill is a disaster-recovery path — re-imports JPEG snapshots
     # as alert rows when the DB was lost. Running it on every startup
     # was polluting the alerts view: each restart re-added rows for

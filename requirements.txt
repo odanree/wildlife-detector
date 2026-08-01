@@ -11,3 +11,8 @@ Flask>=3.0
 # own CPU/RSS on /status so the UI can chart resource spikes against
 # motion-event bursts. Falls back gracefully if not installed.
 psutil>=5.9
+# Postgres client + connection pool. `[binary]` pulls the pre-built
+# libpq so we don't need pg-dev in the container image (~50MB saved).
+# `[pool]` adds psycopg_pool for the connection pool StateDB uses
+# instead of a single shared sqlite3 connection.
+psycopg[binary,pool]>=3.2
