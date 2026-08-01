@@ -84,15 +84,25 @@ export function useUnreadAlerts(
   const [unlabeledCounts, setUnlabeledCounts] = useState<Record<string, number>>({});
   const [seens, setSeens] = useState<Record<string, number | null>>(() => readWatermarks(cams));
 
-  // Cameras change → re-read the new set's watermarks. Clear totals so
-  // the unread computation doesn't briefly mix old-set numbers with
-  // new-set state.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: cams identity tracked via camsKey
-  useEffect(() => {
+  // Adjust-state-during-rendering for the cams-change reset. Was a
+  // useEffect([camsKey]) that called three setStates in sequence —
+  // React docs call this the "no-adjust-state-when-a-prop-changes"
+  // anti-pattern because it delays the reset by a render (stale
+  // frame flashes) and inflates the anti-pattern-delta CI count.
+  //
+  // The `prevCamsKey` sentinel lets us detect the change during render:
+  // React sees the setStates, discards the current render output, and
+  // re-runs with the reset applied. No stale frame, no useEffect.
+  //
+  // Pattern: **React derived-state via prev-prop sentinel** — same
+  // shape as PR #43's zone/mask reset refactor.
+  const [prevCamsKey, setPrevCamsKey] = useState<string>(camsKey);
+  if (camsKey !== prevCamsKey) {
+    setPrevCamsKey(camsKey);
     setSeens(readWatermarks(cams));
     setTotals({});
     setUnlabeledCounts({});
-  }, [camsKey]);
+  }
 
   // Server-pushed counts via SSE — one persistent EventSource connection
   // per tab. Replaces the previous per-tab setInterval that hit
