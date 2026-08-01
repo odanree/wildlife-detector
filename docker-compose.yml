@@ -34,7 +34,17 @@ x-detector-common: &detector-common
     dockerfile: docker/detector/Dockerfile
   restart: unless-stopped
   env_file:
+    # DATABASE_URL and POSTGRES_* live in .env — NOT hoisted into an
+    # `environment:` block here because YAML anchor merge (<<:) does NOT
+    # recursively merge nested mappings. Each detector service defines
+    # its own `environment:` for CAMERA_ID etc., which would clobber the
+    # anchor's DATABASE_URL entry. env_file merges cleanly with per-
+    # service environment blocks (per Docker Compose semantics), so
+    # keeping shared config in .env is the least-surprise path.
     - .env
+  depends_on:
+    postgres:
+      condition: service_healthy
   extra_hosts:
     - "host.docker.internal:host-gateway"
   volumes:
@@ -46,6 +56,43 @@ x-detector-common: &detector-common
     - ./config:/app/config
 
 services:
+  # Postgres backing store — replaces the SQLite bind-mount we hit 3
+  # times in ~10 days for "unable to open database file" (9P + SQLite
+  # POSIX-lock impedance mismatch on Docker Desktop WSL2). TCP
+  # connections have no such hazard; host-side tools can hit it
+  # freely without breaking containers.
+  #
+  # Named volume (not bind mount) so the DB lives inside the WSL2
+  # ext4 filesystem — no 9P layer between anyone and the data.
+  # Trade-off: `scp state.db` portability is gone, replaced with
+  # `pg_dump` (net win, since pg_dump is online-safe).
+  postgres:
+    image: postgres:16-alpine
+    container_name: wildlife-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-wildlife}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-wildlife}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wildlife} -d ${POSTGRES_DB:-wildlife}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    ports:
+      # Exposed on host loopback so the sandbox harness + DBeaver/psql can
+      # hit it without going through `docker compose exec`. Bound to
+      # 127.0.0.1 (not 0.0.0.0) so it's not reachable from LAN. Compose
+      # network still reaches it as `postgres:5432` regardless.
+      #
+      # Host port 5433 (not 5432) — 5432 is often occupied on dev
+      # machines by other projects' postgres. Override via env if you
+      # want a different port.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
+
   detector-yard:
     <<: *detector-common
     container_name: wildlife-detector-yard
@@ -271,7 +318,8 @@ services:
       DETECTOR_INTERNAL_URL: http://detector-yard:8101
       PREVIEW_HOST: 0.0.0.0
       PREVIEW_PORT: 8100
-      STATE_DB_PATH: /app/data/state.db
+      # DATABASE_URL lives in .env — see the anchor comment on
+      # `x-detector-common.env_file` for the YAML-anchor merge rationale.
       SNAPSHOT_DIR: /app/snapshots
       # NVR playback channel per camera — used by /api/alerts/<id>/playback-url
       # to build the rtsp:// URL that opens the alert's timestamp in VLC/mpv.
@@ -301,6 +349,8 @@ services:
         condition: service_healthy
       detector-rooftop:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/status', timeout=2)"]
       interval: 30s
@@ -313,3 +363,8 @@ volumes:
   # `models` stays a named volume — YOLO auto-downloaded weights don't need
   # host visibility.
   models:
+  # `pg-data` is a named volume (not a bind-mount) so Postgres files live
+  # inside the WSL2 ext4 filesystem, avoiding the 9P + SQLite lock issues
+  # that motivated this migration in the first place. Backup via
+  # `docker compose exec postgres pg_dump ...` — online, no downtime.
+  pg-data:
