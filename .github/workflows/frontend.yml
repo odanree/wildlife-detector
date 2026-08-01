@@ -101,21 +101,25 @@ jobs:
           count=$(bun run lint:antipatterns:count 2>/dev/null | tail -n 1 || echo 0)
           echo "count=$count" >> "$GITHUB_OUTPUT"
           echo "PR head: $count you-might-not-need-an-effect findings"
-      - name: Checkout base branch
-        # `git checkout <ref> -- <paths>` overwrites tracked files with
-        # the base version but does NOT delete files that exist on
-        # HEAD but not on <ref>. Without `git clean -fd`, any file the
-        # PR adds (canary or real) survives into the base-count eslint
-        # run, inflating base_count to match head_count → delta 0 →
-        # gate silently passes. Discovered on the sticky-comment test
-        # PR (#58) which added a new anti-pattern file and unexpectedly
-        # got a green gate. `git clean -fd src` removes any untracked
-        # files inside src (my canary was one), respecting .gitignore
-        # so node_modules stays intact.
+      - name: Reset working tree to base branch
+        # `git checkout <ref> -- <paths>` and `git clean -fd` are BOTH
+        # inadequate here — checkout only writes files that exist in
+        # `<ref>` (skipping head-only files), and clean only removes
+        # untracked files (head-only files stay TRACKED in the index
+        # after the partial checkout). Result: a PR that adds a new
+        # anti-pattern-containing file gets base_count == head_count,
+        # delta 0, gate silently passes. First attempted fix in #59
+        # was a no-op for exactly this reason.
+        #
+        # `git reset --hard <ref>` is the only op that guarantees the
+        # working tree matches `<ref>` exactly — HEAD, index, and
+        # working tree all move to base, and head-only files are
+        # removed. node_modules stays (gitignored, reset doesn't touch
+        # untracked-and-ignored). We're in a detached-HEAD PR checkout
+        # so moving HEAD doesn't touch any branch pointer.
         run: |
           git fetch origin ${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}
-          git checkout refs/remotes/origin/${{ github.base_ref }} -- src eslint.config.js package.json 2>/dev/null || true
-          git clean -fd src 2>/dev/null || true
+          git reset --hard refs/remotes/origin/${{ github.base_ref }}
       - name: Count anti-patterns on base branch
         id: base_count
         run: |
