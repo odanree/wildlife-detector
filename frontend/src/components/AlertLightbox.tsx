@@ -62,12 +62,35 @@ export function AlertLightbox({
   busyIds,
   writeLabel,
 }: AlertLightboxProps) {
+  // Frozen work-scope on session entry: snapshot the filtered `items`
+  // when the modal opens, and keep navigating THAT list until close.
+  // Without this, labeling a row (which the parent's overlay hides
+  // from the filtered set — e.g. under label_filter=needs-species)
+  // would shrink `navList` mid-session and prevent back-nav to the
+  // just-labeled row. Operator wants to be able to ← after a mistyped
+  // shortcut and re-tag.
+  //
+  // Pattern: adjust state during rendering off a sentinel (React docs
+  // recommend this over useEffect for "run on X change"). Fires only
+  // on openId transitions, not on the parent's 5s polling.
+  const [frozenIds, setFrozenIds] = useState<number[] | null>(null);
+  const [openIdSentinel, setOpenIdSentinel] = useState(openId);
+  if (openId !== openIdSentinel) {
+    setOpenIdSentinel(openId);
+    setFrozenIds(openId == null ? null : items.filter((a) => a.snapshot).map((a) => a.id));
+  }
   // Memoized so `go` + the keydown-effect deps stay stable across parent
   // re-renders (AlertsPage polls every 5s → `items` array reference
   // changes → without useMemo, `navList` was fresh every render, `go`
   // fresh every render, and the window keydown listener churned on each
   // tick. See issue #32.)
-  const navList = useMemo(() => items.filter((a) => a.snapshot), [items]);
+  const navList = useMemo(() => {
+    if (frozenIds == null) return items.filter((a) => a.snapshot);
+    const byId = new Map(items.map((a) => [a.id, a] as const));
+    return frozenIds
+      .map((id) => byId.get(id))
+      .filter((a): a is AlertRow => a != null && !!a.snapshot);
+  }, [items, frozenIds]);
   const currentIdx = useMemo(
     () => (openId == null ? -1 : navList.findIndex((a) => a.id === openId)),
     [navList, openId],
