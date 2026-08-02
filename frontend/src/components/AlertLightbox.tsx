@@ -171,16 +171,51 @@ export function AlertLightbox({
     // side effect — optimistic overlay update, async server write, rollback
     // on error). Auto-advance after dispatch so operator can label a
     // hundred rows in a few minutes without leaving the keyboard.
-    const vote = (verdict: LabelVerdict) => {
+    //
+    // Compound-shortcut variant: pass a species tag alongside the verdict
+    // so a SINGLE keystroke applies BOTH — cuts species-tagging in the
+    // labeling workflow from mouse-drag-per-row to one key. `null` species
+    // preserves the original Y/N/U behavior (no fine-grained tag).
+    const vote = (verdict: LabelVerdict, species: string | null = null) => {
       if (!current) return;
       const alertId = current.id;
       // Fire-and-forget — writeLabel handles the optimistic update, so
       // the LabelPicker in the CURRENT frame already re-renders via the
       // overlay before we advance. Guards against wrap-around.
-      writeLabel?.(alertId, verdict, null).catch((e) => {
+      writeLabel?.(alertId, verdict, species).catch((e) => {
         console.error("keyboard vote failed:", e);
       });
       if (currentIdx < navList.length - 1) go(1);
+    };
+    // Compound species shortcuts — single-key correct/species combos, and
+    // Shift+letter for FP subcategories. Chosen to avoid conflict with the
+    // existing Y/N/U verdict keys AND with nav (arrows, Esc). Mnemonics:
+    // R=rodent (most common TP), C=cat, D=dog, A=raccoon, S=squirrel,
+    // B=bird, P=opossum, O=other. FP: I=insect, H=human, S=shadow (only
+    // ambiguous with correct-squirrel — shift disambiguates), L=reflection
+    // (R already taken by rodent), X=noise, O=other.
+    //
+    // Case-sensitive: species keys are LOWERCASE-only for correct combos;
+    // Shift+key produces uppercase which routes to the incorrect combos.
+    // The check runs after the verdict-only keys below so operator can't
+    // accidentally trigger correct+rodent when they meant plain Y.
+    const CORRECT_SPECIES_KEYS: Record<string, string> = {
+      r: "real_rodent",
+      c: "real_cat",
+      d: "real_dog",
+      a: "real_raccoon",
+      s: "real_squirrel",
+      b: "real_bird",
+      p: "real_opossum",
+      o: "real_other",
+    };
+    const INCORRECT_SPECIES_KEYS: Record<string, string> = {
+      I: "FP:insect",
+      H: "FP:human",
+      S: "FP:shadow",
+      L: "FP:reflection",
+      X: "FP:noise",
+      O: "FP:other",
     };
     function onKey(e: KeyboardEvent): void {
       // Skip when focus is on a form control — otherwise typing in a
@@ -188,6 +223,24 @@ export function AlertLightbox({
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) {
         return;
+      }
+      // Compound Shift+letter first — takes precedence over lowercase
+      // matches. Uses e.key (which is uppercase when shift is held) to
+      // distinguish "S" (FP:shadow) from "s" (correct+real_squirrel).
+      if (e.shiftKey) {
+        const fp = INCORRECT_SPECIES_KEYS[e.key];
+        if (fp) {
+          e.preventDefault();
+          vote("incorrect", fp);
+          return;
+        }
+      } else {
+        const tp = CORRECT_SPECIES_KEYS[e.key.toLowerCase()];
+        if (tp && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault();
+          vote("correct", tp);
+          return;
+        }
       }
       switch (e.key) {
         case "Escape":
@@ -383,6 +436,12 @@ export function AlertLightbox({
           <div className={styles.hintLine}>
             keys: Y correct · N incorrect · U unclear · ← / → nav · Esc close
             {zoom > 1 && ` · zoom ${zoom.toFixed(2)}× (double-click or "0" to reset)`}
+          </div>
+          <div className={styles.hintLine}>
+            species: R rodent · C cat · D dog · A raccoon · S squirrel · B bird · P opossum · O other
+          </div>
+          <div className={styles.hintLine}>
+            FP tag (shift+): I insect · H human · S shadow · L reflection · X noise · O other
           </div>
         </div>
       </div>
