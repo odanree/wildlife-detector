@@ -220,8 +220,18 @@ class DetectorRegistry:
 # ── State readers (SQLite + YAML + disk) ────────────────────────────────────
 
 _SNAPSHOT_DIR = Path(os.getenv("SNAPSHOT_DIR", "snapshots")).resolve()
+_CLIPS_DIR = Path(os.getenv("CLIPS_DIR", "clips")).resolve()
 _DATA_DIR = Path("data")
 _DETECTION_CFG = Path("config/detection.yaml")
+
+
+def _local_clip_path_for(alert_id: int, alert_ts: float) -> Path:
+    """Mirror of ClipArchiver.clip_path — kept in sync manually since
+    web doesn't import the archiver package (avoids the extra install
+    surface). Any change here must be applied to clip_archiver too."""
+    from datetime import datetime, timezone as _tz
+    day = datetime.fromtimestamp(alert_ts, tz=_tz.utc).strftime("%Y-%m-%d")
+    return _CLIPS_DIR / day / f"{alert_id}.mp4"
 
 
 # ── SSE counts pub-sub ─────────────────────────────────────────────────
@@ -716,6 +726,15 @@ def create_app(registry: DetectorRegistry) -> Flask:
         ok = _state.set_label(alert_id, verdict, species, notes)
         if not ok:
             return jsonify({"error": "alert not found"}), 404
+        # Fire archive-queue notify on TP verdict — archiver container
+        # picks it up and pulls the RTSP playback clip before the NVR's
+        # FIFO rotation eats the source. Best-effort: notify failure
+        # must NOT break the label write.
+        if verdict == "correct":
+            try:
+                _state.notify("archive_queue", str(alert_id))
+            except Exception:
+                logger.exception("archive_queue NOTIFY failed for alert=%d", alert_id)
         return jsonify({"ok": True, "alert_id": alert_id, "verdict": verdict, "species": species})
 
     @app.get("/api/labels/export.jsonl")
@@ -867,6 +886,15 @@ def create_app(registry: DetectorRegistry) -> Flask:
         if not _state:
             return jsonify({"error": "state db unavailable"}), 503
         n = _state.set_labels_bulk(ids, verdict, species, notes)
+        # Bulk TP labels fan out one NOTIFY per alert — the listener's
+        # bounded pool serializes ffmpeg pulls to 2 concurrent so we
+        # can't overwhelm the NVR.
+        if verdict == "correct":
+            for alert_id in ids:
+                try:
+                    _state.notify("archive_queue", str(int(alert_id)))
+                except Exception:
+                    logger.exception("archive_queue NOTIFY failed for alert=%s", alert_id)
         return jsonify({"updated": n, "verdict": verdict, "species": species})
 
     @app.get("/api/alerts/unlabeled")
@@ -935,6 +963,26 @@ def create_app(registry: DetectorRegistry) -> Flask:
                     f"the wrong channel or return no data. Set the env var to the "
                     f"NVR channel this camera records to.")
 
+        # Local-first: if the archiver has already pulled the clip,
+        # return its HTTP URL instead of the RTSP fallback. Local mp4
+        # opens instantly in VLC and doesn't depend on NVR retention.
+        local_clip = _local_clip_path_for(alert_id, ts)
+        if local_clip.exists() and local_clip.stat().st_size > 0:
+            try:
+                rel = local_clip.relative_to(_CLIPS_DIR).as_posix()
+            except ValueError:
+                rel = None
+            if rel:
+                return jsonify({
+                    "url":              request.host_url.rstrip("/") + f"/clips/{rel}",
+                    "camera_id":        camera_id,
+                    "ts":               ts,
+                    "channel":          channel,
+                    "pre_roll_seconds": pre_roll,
+                    "source":           "local",
+                    "note":             note,
+                })
+
         from src.stream.rtsp_handler import build_nvr_playback_url
         try:
             url = build_nvr_playback_url(
@@ -952,6 +1000,7 @@ def create_app(registry: DetectorRegistry) -> Flask:
             "ts":               ts,
             "channel":          channel,
             "pre_roll_seconds": pre_roll,
+            "source":           "nvr-rtsp",
             "note":             note,
         })
 
@@ -959,6 +1008,13 @@ def create_app(registry: DetectorRegistry) -> Flask:
     def serve_snapshot(filename: str):
         # send_from_directory blocks ../ traversal safely.
         return send_from_directory(_SNAPSHOT_DIR, filename, max_age=3600)
+
+    @app.get("/clips/<path:filename>")
+    def serve_clip(filename: str):
+        """Serve archived mp4 clips. send_from_directory blocks ../
+        traversal. Long max_age since alert_id-derived paths are
+        immutable — the clip for alert=156386 is always the same file."""
+        return send_from_directory(_CLIPS_DIR, filename, max_age=86400)
 
     # ── Zone (direct YAML read; write via detector command) ────────────────
 

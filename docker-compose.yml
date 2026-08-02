@@ -331,6 +331,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./snapshots:/app/snapshots:ro
+      - ./clips:/app/clips:ro
       - ./logs:/app/logs
       - ./config:/app/config
     ports:
@@ -358,10 +359,42 @@ services:
       retries: 3
       start_period: 15s
 
+  # ── Clip archiver ────────────────────────────────────────────────────
+  # Bounded-context service that pulls NVR playback footage to local
+  # disk before the NVR's FIFO rotation eats it. Triggered by
+  # LISTEN/NOTIFY on the `archive_queue` channel — web publishes on
+  # every TP-verified label, this service consumes and runs ffmpeg.
+  #
+  # No camera bindings, no OpenCV — one Python process listening on a
+  # DB channel and forking ffmpeg. Missed notifies are recovered by
+  # scripts/backfill_tp_clips.py; no durable outbox needed for MVP.
+  archiver:
+    build:
+      context: .
+      dockerfile: docker/archiver/Dockerfile
+    container_name: wildlife-archiver
+    restart: unless-stopped
+    env_file:
+      # AMCREST_HOST/USER/PASS for RTSP auth, DATABASE_URL for LISTEN,
+      # NVR_CHANNEL_* for per-camera routing. See .env.example.
+      - .env
+    environment:
+      CLIPS_DIR: /app/clips
+      # NVR playback channel per camera — same values as web's block,
+      # required so archiver knows which NVR channel to pull per camera.
+      NVR_CHANNEL_YARD: "5"
+      NVR_CHANNEL_ROOFTOP: "6"
+    volumes:
+      - ./clips:/app/clips
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
-  # Bind-mounts on ./data, ./snapshots, ./logs live in the service blocks.
-  # `models` stays a named volume — YOLO auto-downloaded weights don't need
-  # host visibility.
+  # Bind-mounts on ./data, ./snapshots, ./logs, ./clips live in the
+  # service blocks. `models` stays a named volume — YOLO auto-downloaded
+  # weights don't need host visibility.
   models:
   # `pg-data` is a named volume (not a bind-mount) so Postgres files live
   # inside the WSL2 ext4 filesystem, avoiding the 9P + SQLite lock issues

@@ -1,0 +1,3 @@
+# Archiver deps — minimal, no OpenCV / YOLO / ML runtime.
+# psycopg[binary] bundles libpq so no libpq-dev system package needed.
+psycopg[binary]>=3.2
