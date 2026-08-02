@@ -62,12 +62,39 @@ export function AlertLightbox({
   busyIds,
   writeLabel,
 }: AlertLightboxProps) {
+  // Frozen work-scope on session entry: snapshot the filtered `items`
+  // when the modal opens, and keep navigating THAT list until close.
+  // Applies to every label_filter (unlabeled, correct, needs-species,
+  // etc.) — any time the underlying poll response drops a just-labeled
+  // row, the operator loses back-nav to it.
+  //
+  // We snapshot FULL rows (not just IDs) so a poll tick that removes
+  // the row from `items` doesn't strand us — the fallback copy keeps
+  // the snapshot + timestamp visible. When the row IS still in
+  // `items`, we prefer the fresh copy so server-side label updates
+  // flow through.
+  //
+  // Pattern: adjust state during rendering off a sentinel (React docs
+  // recommend this over useEffect for "run on X change"). Fires only
+  // on openId transitions, not on the parent's 5s polling.
+  const [frozenRows, setFrozenRows] = useState<AlertRow[] | null>(null);
+  const [openIdSentinel, setOpenIdSentinel] = useState(openId);
+  if (openId !== openIdSentinel) {
+    setOpenIdSentinel(openId);
+    setFrozenRows(openId == null ? null : items.filter((a) => a.snapshot));
+  }
   // Memoized so `go` + the keydown-effect deps stay stable across parent
   // re-renders (AlertsPage polls every 5s → `items` array reference
   // changes → without useMemo, `navList` was fresh every render, `go`
   // fresh every render, and the window keydown listener churned on each
   // tick. See issue #32.)
-  const navList = useMemo(() => items.filter((a) => a.snapshot), [items]);
+  const navList = useMemo(() => {
+    if (frozenRows == null) return items.filter((a) => a.snapshot);
+    const byId = new Map(items.map((a) => [a.id, a] as const));
+    // Prefer fresh row (label updates from server) but fall back to
+    // the frozen copy when the poll drops the row from the filter.
+    return frozenRows.map((f) => byId.get(f.id) ?? f);
+  }, [items, frozenRows]);
   const currentIdx = useMemo(
     () => (openId == null ? -1 : navList.findIndex((a) => a.id === openId)),
     [navList, openId],
