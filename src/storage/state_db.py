@@ -293,6 +293,25 @@ class StateDB:
                 )
             return cur.rowcount > 0
 
+    def notify(self, channel: str, payload: str) -> None:
+        """Publish on a Postgres LISTEN/NOTIFY channel. Used by the
+        clip archiver (`archive_queue`) — see src/archiver/listener.py.
+        Payload must be ≤8000 bytes (Postgres NOTIFY limit); we
+        currently only send stringified alert IDs so we're nowhere near.
+
+        Uses the pg_notify() function rather than the NOTIFY statement
+        because the SQL statement form requires literal payload (no
+        parameter binding), while the function accepts parameters. Same
+        semantics, safe with untrusted payload strings.
+        """
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            # Channel name still can't be parameterized — pg_notify's
+            # first arg is text but Postgres syntax doesn't let us bind
+            # an identifier. Restrict to safe chars.
+            if not channel.replace("_", "").isalnum():
+                raise ValueError(f"invalid channel name: {channel!r}")
+            cur.execute("SELECT pg_notify(%s, %s)", (channel, payload))
+
     def set_labels_bulk(
         self,
         alert_ids: list[int],
