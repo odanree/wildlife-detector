@@ -596,12 +596,13 @@ def create_app(registry: DetectorRegistry) -> Flask:
         scope = (request.args.get("scope") or "").strip().lower() or None
         if scope not in (None, "historical", "live", "all"):
             scope = None
-        # label_filter=unlabeled|labeled|correct|incorrect|unclear|all
+        # label_filter=unlabeled|labeled|correct|incorrect|unclear|needs-species|all
         # — the sifting + review flow: 'unlabeled' hides voted rows,
         # 'correct'/'incorrect'/'unclear' isolates verdicts for reviewing
-        # your positive dataset or auditing FPs.
+        # your positive dataset or auditing FPs. 'needs-species' is the
+        # backfill worklist: correct verdict + missing species tag.
         lf = (request.args.get("label_filter") or "").strip().lower() or None
-        _lf_valid = {"unlabeled", "labeled", "correct", "incorrect", "unclear"}
+        _lf_valid = {"unlabeled", "labeled", "correct", "incorrect", "unclear", "needs-species"}
         if lf not in ({None, "all"} | _lf_valid):
             lf = None
         items = _state.list_alerts(

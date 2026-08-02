@@ -245,6 +245,12 @@ class StateDB:
         elif label_filter in ("correct", "incorrect", "unclear"):
             clauses.append("label_verdict = %s")
             params.append(label_filter)
+        elif label_filter == "needs-species":
+            # Worklist filter: TPs that still need a species tag.
+            # Species-tagging is a second pass over the "correct" verdict
+            # set — this filter surfaces just the rows still to do so the
+            # list drains as the operator labels.
+            clauses.append("label_verdict = 'correct' AND label_species IS NULL")
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY ts DESC LIMIT %s"
