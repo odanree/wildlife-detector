@@ -78,6 +78,7 @@ export type AlertsLabelFilter =
   | "correct"
   | "incorrect"
   | "unclear"
+  | "needs-species"
   | "all";
 
 export interface AlertsQuery {

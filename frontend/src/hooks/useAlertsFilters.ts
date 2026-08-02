@@ -32,6 +32,7 @@ export type AlertsLabelFilterUi =
   | "correct"
   | "incorrect"
   | "unclear"
+  | "needs-species"
   | "all";
 
 const LABEL_FILTER_VALUES: readonly AlertsLabelFilterUi[] = [
@@ -40,6 +41,7 @@ const LABEL_FILTER_VALUES: readonly AlertsLabelFilterUi[] = [
   "correct",
   "incorrect",
   "unclear",
+  "needs-species",
   "all",
 ];
 
