@@ -67,13 +67,18 @@ def build_nvr_playback_url(
     speed_suffix = f"&speedpara={speed}" if speed != 1 else ""
 
     if url is None:
+        # subtype=0 pins the main stream — Amcrest/Dahua /cam/playback
+        # returns nothing (VLC: "failed to open") without it.
+        # Post-roll defaults to 2min: long enough to capture the whole
+        # event, short enough that VLC doesn't chew through a 2h window
+        # of empty gaps between motion recordings.
         start     = dt - timedelta(seconds=pre_roll_seconds)
-        end       = start + timedelta(hours=2)
+        end       = dt + timedelta(minutes=2)
         start_str = start.strftime("%Y_%m_%d_%H_%M_%S")
         end_str   = end.strftime("%Y_%m_%d_%H_%M_%S")
         url = (
             f"rtsp://{user}:{pwd}@{host}:{port}"
-            f"/cam/playback?channel={ch}&starttime={start_str}&endtime={end_str}{speed_suffix}"
+            f"/cam/playback?channel={ch}&subtype=0&starttime={start_str}&endtime={end_str}{speed_suffix}"
         )
         logger.info("NVR playback (time-based fallback) ch=%s start=%s speed=%dx", ch, start_str, speed)
     else:
