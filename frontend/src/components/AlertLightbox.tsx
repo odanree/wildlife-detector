@@ -64,20 +64,24 @@ export function AlertLightbox({
 }: AlertLightboxProps) {
   // Frozen work-scope on session entry: snapshot the filtered `items`
   // when the modal opens, and keep navigating THAT list until close.
-  // Without this, labeling a row (which the parent's overlay hides
-  // from the filtered set — e.g. under label_filter=needs-species)
-  // would shrink `navList` mid-session and prevent back-nav to the
-  // just-labeled row. Operator wants to be able to ← after a mistyped
-  // shortcut and re-tag.
+  // Applies to every label_filter (unlabeled, correct, needs-species,
+  // etc.) — any time the underlying poll response drops a just-labeled
+  // row, the operator loses back-nav to it.
+  //
+  // We snapshot FULL rows (not just IDs) so a poll tick that removes
+  // the row from `items` doesn't strand us — the fallback copy keeps
+  // the snapshot + timestamp visible. When the row IS still in
+  // `items`, we prefer the fresh copy so server-side label updates
+  // flow through.
   //
   // Pattern: adjust state during rendering off a sentinel (React docs
   // recommend this over useEffect for "run on X change"). Fires only
   // on openId transitions, not on the parent's 5s polling.
-  const [frozenIds, setFrozenIds] = useState<number[] | null>(null);
+  const [frozenRows, setFrozenRows] = useState<AlertRow[] | null>(null);
   const [openIdSentinel, setOpenIdSentinel] = useState(openId);
   if (openId !== openIdSentinel) {
     setOpenIdSentinel(openId);
-    setFrozenIds(openId == null ? null : items.filter((a) => a.snapshot).map((a) => a.id));
+    setFrozenRows(openId == null ? null : items.filter((a) => a.snapshot));
   }
   // Memoized so `go` + the keydown-effect deps stay stable across parent
   // re-renders (AlertsPage polls every 5s → `items` array reference
@@ -85,12 +89,12 @@ export function AlertLightbox({
   // fresh every render, and the window keydown listener churned on each
   // tick. See issue #32.)
   const navList = useMemo(() => {
-    if (frozenIds == null) return items.filter((a) => a.snapshot);
+    if (frozenRows == null) return items.filter((a) => a.snapshot);
     const byId = new Map(items.map((a) => [a.id, a] as const));
-    return frozenIds
-      .map((id) => byId.get(id))
-      .filter((a): a is AlertRow => a != null && !!a.snapshot);
-  }, [items, frozenIds]);
+    // Prefer fresh row (label updates from server) but fall back to
+    // the frozen copy when the poll drops the row from the filter.
+    return frozenRows.map((f) => byId.get(f.id) ?? f);
+  }, [items, frozenRows]);
   const currentIdx = useMemo(
     () => (openId == null ? -1 : navList.findIndex((a) => a.id === openId)),
     [navList, openId],
