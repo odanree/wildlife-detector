@@ -334,6 +334,10 @@ services:
       - ./clips:/app/clips:ro
       - ./logs:/app/logs
       - ./config:/app/config
+      # scripts/ bind-mounted (not COPYed) so operational one-shots like
+      # backfill_tp_clips.py can be edited on the host and run in-container
+      # via `docker compose exec web python scripts/…` without a rebuild.
+      - ./scripts:/app/scripts:ro
     ports:
       - "8100:8100"   # user-facing UI
     depends_on:
