@@ -438,7 +438,8 @@ export function AlertLightbox({
             {zoom > 1 && ` · zoom ${zoom.toFixed(2)}× (double-click or "0" to reset)`}
           </div>
           <div className={styles.hintLine}>
-            species: R rodent · C cat · D dog · A raccoon · S squirrel · B bird · P opossum · O other
+            species: R rodent · C cat · D dog · A raccoon · S squirrel · B bird · P opossum · O
+            other
           </div>
           <div className={styles.hintLine}>
             FP tag (shift+): I insect · H human · S shadow · L reflection · X noise · O other
