@@ -187,18 +187,11 @@ export function AlertLightbox({
       });
       if (currentIdx < navList.length - 1) go(1);
     };
-    // Compound species shortcuts — single-key correct/species combos, and
-    // Shift+letter for FP subcategories. Chosen to avoid conflict with the
-    // existing Y/N/U verdict keys AND with nav (arrows, Esc). Mnemonics:
-    // R=rodent (most common TP), C=cat, D=dog, A=raccoon, S=squirrel,
-    // B=bird, P=opossum, O=other. FP: I=insect, H=human, S=shadow (only
-    // ambiguous with correct-squirrel — shift disambiguates), L=reflection
-    // (R already taken by rodent), X=noise, O=other.
-    //
-    // Case-sensitive: species keys are LOWERCASE-only for correct combos;
-    // Shift+key produces uppercase which routes to the incorrect combos.
-    // The check runs after the verdict-only keys below so operator can't
-    // accidentally trigger correct+rodent when they meant plain Y.
+    // Compound species shortcuts — single-key correct+species combos.
+    // Only TPs get species tags in our workflow (FPs are aggregated as
+    // "incorrect" without subcategory), so no shift-modifier branch.
+    // Mnemonics: R=rodent, C=cat, D=dog, A=raccoon, S=squirrel, B=bird,
+    // P=opossum, O=other.
     const CORRECT_SPECIES_KEYS: Record<string, string> = {
       r: "real_rodent",
       c: "real_cat",
@@ -209,14 +202,6 @@ export function AlertLightbox({
       p: "real_opossum",
       o: "real_other",
     };
-    const INCORRECT_SPECIES_KEYS: Record<string, string> = {
-      I: "FP:insect",
-      H: "FP:human",
-      S: "FP:shadow",
-      L: "FP:reflection",
-      X: "FP:noise",
-      O: "FP:other",
-    };
     function onKey(e: KeyboardEvent): void {
       // Skip when focus is on a form control — otherwise typing in a
       // textarea/select would trigger votes.
@@ -224,19 +209,9 @@ export function AlertLightbox({
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) {
         return;
       }
-      // Compound Shift+letter first — takes precedence over lowercase
-      // matches. Uses e.key (which is uppercase when shift is held) to
-      // distinguish "S" (FP:shadow) from "s" (correct+real_squirrel).
-      if (e.shiftKey) {
-        const fp = INCORRECT_SPECIES_KEYS[e.key];
-        if (fp) {
-          e.preventDefault();
-          vote("incorrect", fp);
-          return;
-        }
-      } else {
+      if (!e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
         const tp = CORRECT_SPECIES_KEYS[e.key.toLowerCase()];
-        if (tp && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (tp) {
           e.preventDefault();
           vote("correct", tp);
           return;
@@ -438,11 +413,8 @@ export function AlertLightbox({
             {zoom > 1 && ` · zoom ${zoom.toFixed(2)}× (double-click or "0" to reset)`}
           </div>
           <div className={styles.hintLine}>
-            species: R rodent · C cat · D dog · A raccoon · S squirrel · B bird · P opossum · O
-            other
-          </div>
-          <div className={styles.hintLine}>
-            FP tag (shift+): I insect · H human · S shadow · L reflection · X noise · O other
+            species (correct only): R rodent · C cat · D dog · A raccoon · S squirrel · B bird · P
+            opossum · O other
           </div>
         </div>
       </div>
