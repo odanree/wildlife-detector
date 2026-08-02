@@ -164,10 +164,11 @@ export function AlertsPage() {
                       | "correct"
                       | "incorrect"
                       | "unclear"
+                      | "needs-species"
                       | "all",
                   )
                 }
-                title="Filter by label state: unlabeled = still-to-vote; labeled = all voted; correct/incorrect/unclear = specific verdict"
+                title="Filter by label state: unlabeled = still-to-vote; labeled = all voted; correct/incorrect/unclear = specific verdict; needs-species = TP backfill worklist"
               >
                 <option value="all">all</option>
                 <option value="unlabeled">unlabeled (sift for TPs)</option>
@@ -175,6 +176,7 @@ export function AlertsPage() {
                 <option value="correct">correct only (positives)</option>
                 <option value="incorrect">incorrect only (FPs)</option>
                 <option value="unclear">unclear only</option>
+                <option value="needs-species">needs species (TP backfill)</option>
               </select>
             </label>
             <label className={styles.label}>
