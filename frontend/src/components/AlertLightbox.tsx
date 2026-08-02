@@ -171,16 +171,36 @@ export function AlertLightbox({
     // side effect — optimistic overlay update, async server write, rollback
     // on error). Auto-advance after dispatch so operator can label a
     // hundred rows in a few minutes without leaving the keyboard.
-    const vote = (verdict: LabelVerdict) => {
+    //
+    // Compound-shortcut variant: pass a species tag alongside the verdict
+    // so a SINGLE keystroke applies BOTH — cuts species-tagging in the
+    // labeling workflow from mouse-drag-per-row to one key. `null` species
+    // preserves the original Y/N/U behavior (no fine-grained tag).
+    const vote = (verdict: LabelVerdict, species: string | null = null) => {
       if (!current) return;
       const alertId = current.id;
       // Fire-and-forget — writeLabel handles the optimistic update, so
       // the LabelPicker in the CURRENT frame already re-renders via the
       // overlay before we advance. Guards against wrap-around.
-      writeLabel?.(alertId, verdict, null).catch((e) => {
+      writeLabel?.(alertId, verdict, species).catch((e) => {
         console.error("keyboard vote failed:", e);
       });
       if (currentIdx < navList.length - 1) go(1);
+    };
+    // Compound species shortcuts — single-key correct+species combos.
+    // Only TPs get species tags in our workflow (FPs are aggregated as
+    // "incorrect" without subcategory), so no shift-modifier branch.
+    // Mnemonics: R=rodent, C=cat, D=dog, A=raccoon, S=squirrel, B=bird,
+    // P=opossum, O=other.
+    const CORRECT_SPECIES_KEYS: Record<string, string> = {
+      r: "real_rodent",
+      c: "real_cat",
+      d: "real_dog",
+      a: "real_raccoon",
+      s: "real_squirrel",
+      b: "real_bird",
+      p: "real_opossum",
+      o: "real_other",
     };
     function onKey(e: KeyboardEvent): void {
       // Skip when focus is on a form control — otherwise typing in a
@@ -188,6 +208,14 @@ export function AlertLightbox({
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) {
         return;
+      }
+      if (!e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const tp = CORRECT_SPECIES_KEYS[e.key.toLowerCase()];
+        if (tp) {
+          e.preventDefault();
+          vote("correct", tp);
+          return;
+        }
       }
       switch (e.key) {
         case "Escape":
@@ -383,6 +411,10 @@ export function AlertLightbox({
           <div className={styles.hintLine}>
             keys: Y correct · N incorrect · U unclear · ← / → nav · Esc close
             {zoom > 1 && ` · zoom ${zoom.toFixed(2)}× (double-click or "0" to reset)`}
+          </div>
+          <div className={styles.hintLine}>
+            species (correct only): R rodent · C cat · D dog · A raccoon · S squirrel · B bird · P
+            opossum · O other
           </div>
         </div>
       </div>
