@@ -218,6 +218,7 @@ class StateDB:
         camera_id: str | None = None,
         scope: str | None = None,
         label_filter: str | None = None,
+        label_species: str | None = None,
     ) -> list[dict]:
         """Return alerts, newest first. Same filter semantics as the
         SQLite version — see the pre-migration docstring for scope /
@@ -251,6 +252,14 @@ class StateDB:
             # set — this filter surfaces just the rows still to do so the
             # list drains as the operator labels.
             clauses.append("label_verdict = 'correct' AND label_species IS NULL")
+        if label_species:
+            # Filter by human-assigned species tag (real_rodent, real_cat,
+            # FP:human, etc.) — distinct from the `species` filter above
+            # which targets the detector-assigned species. Composable
+            # with label_filter so operator can view e.g. all correct
+            # real_rodent rows, or all incorrect FP:human rows.
+            clauses.append("label_species = %s")
+            params.append(label_species)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY ts DESC LIMIT %s"
