@@ -55,6 +55,7 @@ export function AlertsPage() {
       camera: filters.camera || undefined,
       scope: filters.scope === "all" ? undefined : filters.scope,
       label_filter: filters.labelFilter === "all" ? undefined : filters.labelFilter,
+      label_species: filters.labelSpecies || undefined,
     },
     filters.autoRefresh ? 5000 : 3600_000,
   );
@@ -177,6 +178,35 @@ export function AlertsPage() {
                 <option value="incorrect">incorrect only (FPs)</option>
                 <option value="unclear">unclear only</option>
                 <option value="needs-species">needs species (TP backfill)</option>
+              </select>
+            </label>
+            <label className={styles.label}>
+              species
+              <select
+                className={styles.select}
+                value={filters.labelSpecies}
+                onChange={(e) => filters.setLabelSpecies(e.target.value)}
+                title="Filter by human-assigned species tag. Composable with the label filter — e.g. 'correct' + 'rodent' shows only rodent TPs."
+              >
+                <option value="">any</option>
+                <optgroup label="TPs">
+                  <option value="real_rodent">rodent</option>
+                  <option value="real_cat">cat</option>
+                  <option value="real_dog">dog</option>
+                  <option value="real_raccoon">raccoon</option>
+                  <option value="real_squirrel">squirrel</option>
+                  <option value="real_bird">bird</option>
+                  <option value="real_opossum">opossum</option>
+                  <option value="real_other">other</option>
+                </optgroup>
+                <optgroup label="FPs">
+                  <option value="FP:human">human</option>
+                  <option value="FP:insect">insect</option>
+                  <option value="FP:shadow">shadow</option>
+                  <option value="FP:reflection">reflection</option>
+                  <option value="FP:noise">noise</option>
+                  <option value="FP:other">other</option>
+                </optgroup>
               </select>
             </label>
             <label className={styles.label}>

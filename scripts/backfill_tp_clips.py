@@ -110,7 +110,10 @@ def main() -> int:
                 print(f"  [would enqueue] alert={alert_id} camera={camera_id} ts={alert_ts}")
                 continue
             with conn.cursor() as cur:
-                cur.execute("NOTIFY archive_queue, %s", (str(alert_id),))
+                # pg_notify() function form accepts bound parameters;
+                # the SQL NOTIFY statement doesn't. Same fix as
+                # StateDB.notify() — see that method's docstring.
+                cur.execute("SELECT pg_notify(%s, %s)", ("archive_queue", str(alert_id)))
             enqueued += 1
             if enqueued % 25 == 0:
                 print(f"  enqueued {enqueued}/{total - already} (already-archived: {already})")
