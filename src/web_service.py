@@ -615,11 +615,19 @@ def create_app(registry: DetectorRegistry) -> Flask:
         _lf_valid = {"unlabeled", "labeled", "correct", "incorrect", "unclear", "needs-species"}
         if lf not in ({None, "all"} | _lf_valid):
             lf = None
+        # label_species=real_rodent|real_cat|... filter on the
+        # human-assigned species tag. Composable with label_filter so
+        # operator can view all correct real_rodent rows or all
+        # incorrect FP:human rows. Free-form pass-through (no allowlist)
+        # so we don't have to widen this list every time a new species
+        # tag joins the vocabulary — bad values just return 0 rows.
+        label_species_filter = (request.args.get("label_species") or "").strip() or None
         items = _state.list_alerts(
             limit=limit, species=species_filter,
             camera_id=camera_filter,
             scope=scope if scope in ("historical", "live") else None,
             label_filter=lf if lf in _lf_valid else None,
+            label_species=label_species_filter,
         )
         return jsonify({
             # Scope total to the same camera filter as items — otherwise

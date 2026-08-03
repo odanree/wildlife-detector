@@ -92,6 +92,10 @@ export interface AlertsQuery {
    *  'labeled'   → only show rows you've labeled,
    *  'all'       → both. */
   label_filter?: AlertsLabelFilter;
+  /** Filter on the human-assigned label_species (real_rodent, FP:human, ...).
+   *  Distinct from `species` (detector-assigned like "rat", "mouse"). Composable
+   *  with label_filter — e.g. label_filter='correct' + label_species='real_rodent'. */
+  label_species?: string;
 }
 
 export async function fetchAlerts(
@@ -104,6 +108,7 @@ export async function fetchAlerts(
   if (query.camera) params.set("camera", query.camera);
   if (query.scope) params.set("scope", query.scope);
   if (query.label_filter) params.set("label_filter", query.label_filter);
+  if (query.label_species) params.set("label_species", query.label_species);
   const r = await fetch(`/api/alerts?${params.toString()}`, { signal });
   if (!r.ok) throw new Error(`/api/alerts ${r.status}`);
   return (await r.json()) as AlertsResponse;

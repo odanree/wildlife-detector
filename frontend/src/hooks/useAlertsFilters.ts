@@ -52,12 +52,14 @@ export interface AlertsFiltersApi {
   camera: string;
   scope: AlertsScope;
   labelFilter: AlertsLabelFilterUi;
+  labelSpecies: string;
   autoRefresh: boolean;
   grouped: boolean;
   setSpecies: (v: string) => void;
   setCamera: (v: string) => void;
   setScope: (v: AlertsScope) => void;
   setLabelFilter: (v: AlertsLabelFilterUi) => void;
+  setLabelSpecies: (v: string) => void;
   setAutoRefresh: (v: boolean) => void;
   setGrouped: (v: boolean) => void;
 }
@@ -78,6 +80,9 @@ export function useAlertsFilters(): AlertsFiltersApi {
   );
   const [labelFilter, setLabelFilterState] = useState<AlertsLabelFilterUi>(() =>
     readLocal("alertsLabelFilter", LABEL_FILTER_VALUES, "all"),
+  );
+  const [labelSpecies, setLabelSpeciesState] = useState<string>(
+    () => localStorage.getItem("alertsLabelSpecies") ?? "",
   );
   const [grouped, setGrouped] = useState<boolean>(true);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
@@ -114,17 +119,25 @@ export function useAlertsFilters(): AlertsFiltersApi {
     localStorage.setItem("alertsLabelFilter", v);
   }, []);
 
+  const setLabelSpecies = useCallback((v: string) => {
+    setLabelSpeciesState(v);
+    if (v) localStorage.setItem("alertsLabelSpecies", v);
+    else localStorage.removeItem("alertsLabelSpecies");
+  }, []);
+
   return {
     species,
     camera,
     scope,
     labelFilter,
+    labelSpecies,
     autoRefresh,
     grouped,
     setSpecies,
     setCamera,
     setScope,
     setLabelFilter,
+    setLabelSpecies,
     setAutoRefresh,
     setGrouped,
   };
