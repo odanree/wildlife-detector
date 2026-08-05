@@ -91,9 +91,16 @@ def main() -> int:
     ambiguous = 0
 
     with dst.cursor() as cur:
+        # Also pull camera_id — the disk-backfill on fresh Postgres
+        # tags every row 'yard' by default (snapshot filenames don't
+        # embed camera info), so we need SQLite's authoritative value
+        # to fix rows that actually belong to rooftop. Without this,
+        # rooftop labels get filed under yard and the rooftop UI shows
+        # empty even though the labels exist in the DB.
         rows = src.execute(
-            "SELECT ts, snapshot, species, label_verdict, label_species, "
-            "label_notes, label_ts FROM alerts WHERE label_ts IS NOT NULL"
+            "SELECT ts, snapshot, species, camera_id, label_verdict, "
+            "label_species, label_notes, label_ts FROM alerts "
+            "WHERE label_ts IS NOT NULL"
         ).fetchall()
 
     for r in rows:
@@ -126,9 +133,10 @@ def main() -> int:
 
         with dst.cursor() as cur:
             cur.execute(
-                "UPDATE alerts SET label_verdict=%s, label_species=%s, "
-                "label_notes=%s, label_ts=%s WHERE id=%s",
+                "UPDATE alerts SET camera_id=%s, label_verdict=%s, "
+                "label_species=%s, label_notes=%s, label_ts=%s WHERE id=%s",
                 (
+                    r["camera_id"],
                     r["label_verdict"],
                     r["label_species"],
                     r["label_notes"],
