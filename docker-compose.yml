@@ -93,6 +93,50 @@ services:
       # want a different port.
       - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
 
+  # ── Daily pg_dump backup sidecar ────────────────────────────────────
+  # Wakes once a day, dumps the DB to ./backups/wildlife-YYYY-MM-DD.dump
+  # (custom format, compressed), then prunes anything older than 14
+  # days. Bind-mounted to host so backups survive a volume wipe — the
+  # exact failure mode that motivated this after Aug 5 2026's prune
+  # wiped pg-data.
+  #
+  # Pattern: **infrastructure-as-code backup discipline** — cron lives
+  # in the repo, not in Windows Task Scheduler / host cron. Portable
+  # across any machine that runs the compose file.
+  #
+  # Failure mode: dump fails silently on individual runs (network blip,
+  # postgres down) — the sleep loop keeps trying tomorrow. Watch with
+  # `docker compose logs pg-backup`.
+  pg-backup:
+    image: postgres:16-alpine
+    container_name: wildlife-pg-backup
+    restart: unless-stopped
+    environment:
+      # PGPASSWORD is the standard convention for scripted pg_dump auth.
+      # Reuses the same POSTGRES_PASSWORD the DB itself uses.
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      PGUSER: ${POSTGRES_USER:-wildlife}
+      PGDATABASE: ${POSTGRES_DB:-wildlife}
+      PGHOST: postgres
+    volumes:
+      - ./backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Runs pg_dump immediately on start (so `docker compose up` produces
+    # a fresh backup within seconds), then daily at 24h intervals. The
+    # inline `set -e` guards so a failed dump doesn't get counted as
+    # "pruned" — we want visible errors, not silent gaps.
+    command: >
+      sh -c 'set -e;
+      while true; do
+        OUT=/backups/wildlife-$$(date +%Y-%m-%d-%H%M).dump;
+        echo "[backup] dumping to $$OUT";
+        pg_dump -F c -f $$OUT && echo "[backup] ok $$OUT ($$(du -h $$OUT | cut -f1))";
+        find /backups -name "wildlife-*.dump" -mtime +14 -delete;
+        sleep 86400;
+      done'
+
   detector-yard:
     <<: *detector-common
     container_name: wildlife-detector-yard
