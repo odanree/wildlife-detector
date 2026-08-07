@@ -40,7 +40,15 @@ exec docker compose run --rm --no-deps \
     -e VIDEO_PATH="$CLIP" \
     -e SNAPSHOT_DIR=/tmp/eph \
     -e STATE_DB_PATH=/tmp/replay.db \
+    -e STATE_DRY_RUN=1 \
     -e VLM_INTERVAL_S=0 \
     -v "$(pwd)/snapshots/_ephemeral/replay_last:/tmp/eph" \
     "$@" \
     detector-rooftop
+
+# STATE_DRY_RUN=1 is the load-bearing bulkhead against Postgres. Without
+# it, the detector inherits DATABASE_URL from .env and writes replay
+# events to the live alerts table (this bit us Aug 7 — see the deleted
+# replay-contamination rows). STATE_DB_PATH is kept for back-compat with
+# any code that still checks it, but the postgres path is what actually
+# needs to be silenced.

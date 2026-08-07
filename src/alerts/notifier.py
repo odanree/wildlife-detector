@@ -124,6 +124,10 @@ class Notifier:
             return None
 
     def _fire_ha(self, event_type: str, payload: dict) -> None:
+        # STATE_DRY_RUN silences outbound integrations — replay / sandbox
+        # runs shouldn't page Home Assistant on synthetic detections.
+        if os.environ.get("STATE_DRY_RUN", "0") == "1":
+            return
         webhook_id = self._cfg.get("home_assistant", {}).get(f"{event_type}_webhook_id")
         if not webhook_id or not self._ha_base:
             return
@@ -136,6 +140,8 @@ class Notifier:
             logger.warning("HA webhook %s failed", webhook_id, exc_info=True)
 
     def _fire_generic(self, payload: dict) -> None:
+        if os.environ.get("STATE_DRY_RUN", "0") == "1":
+            return
         cfg = self._cfg.get("generic_webhook", {})
         url = cfg.get("url")
         if not url:
