@@ -332,6 +332,22 @@ services:
       # "ground contact" and "moving vs static" cues.
       VLM_CROP_PAD_MULT: "1.5"
       VLM_CROP_MIN_PAD: "40"
+      # Temporal multi-frame VLM — rooftop-only rollout. Buffers the last
+      # N frames and sends the sequence to the VLM so it can reason about
+      # MOTION SIGNATURE instead of a single still. Biggest lever for
+      # small overhead targets against textured backgrounds (rat crawling
+      # along fence slats): a single frame confidently rejects at 0.10
+      # conf even with baseline-compare, but the same track across 4
+      # frames shows a directed low-speed trajectory that only rodents
+      # produce. See src/pipeline.py and src/vlm/analyzer.py (_TEMPORAL_USER_PROMPT).
+      #
+      # Cost: ~2-3x per-call latency (4 frames vs 1-2). Neutral or better
+      # per-track total compute because a temporal hit on the first VLM
+      # call eliminates the 6-8 rejected calls the current pipeline
+      # emits per active rat in fence area.
+      VLM_TEMPORAL_ENABLED: "1"
+      VLM_TEMPORAL_FRAMES: "4"
+      VLM_TEMPORAL_WINDOW_S: "1.0"
       # Second detector needs its own internal HTTP port — 8102 keeps it
       # outside the 8100/8101 range so port confusion is unlikely.
       OLLAMA_URL: http://host.docker.internal:11434
