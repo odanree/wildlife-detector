@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 
 import cv2
@@ -553,6 +554,27 @@ def run(stream_url: str | None = None, video_path: str | None = None,
         logger.info("VLM_MOTION_OVERLAY=1 — VLM crops will get motion-contour outline "
                     "(escalation for camouflaged targets in high-texture backgrounds)")
 
+    # Temporal multi-frame VLM: buffer the last N raw frames, then on VLM
+    # dispatch crop the same bbox from each and send the sequence. Gives
+    # the VLM motion evidence across frames — biggest lever for small-
+    # target detections against high-texture backgrounds (e.g. rooftop
+    # rat crawling along a fence with slat interference) where a single
+    # still confidently rejects even with a baseline diff.
+    #
+    # Off by default (memory + per-call latency cost). Enable per-camera
+    # via env: VLM_TEMPORAL_ENABLED=1 in the detector-rooftop compose
+    # block.
+    _temporal_enabled = os.getenv("VLM_TEMPORAL_ENABLED", "0") == "1"
+    _temporal_frames = int(os.getenv("VLM_TEMPORAL_FRAMES", "4"))
+    _temporal_window_s = float(os.getenv("VLM_TEMPORAL_WINDOW_S", "1.0"))
+    _recent_frames: deque[tuple[float, np.ndarray]] = deque(maxlen=_temporal_frames)
+    if _temporal_enabled:
+        logger.info(
+            "VLM_TEMPORAL_ENABLED=1 — buffering last %d raw frames (%.1fs window) "
+            "for temporal VLM dispatch",
+            _temporal_frames, _temporal_window_s,
+        )
+
     # Track IDs that fired a positive alert this frame — drawn red on the preview.
     # Cleared each iteration; brief flash is fine, cooldown suppresses re-fires anyway.
     alert_ids: set[int] = set()
@@ -581,6 +603,13 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             fh, fw = frame.shape[:2]
             if (fw, fh) != (det_w, det_h):
                 frame = cv2.resize(frame, (det_w, det_h))
+
+            # Temporal buffer: keep the last N frames so a VLM dispatch
+            # can pull recent history and crop the same bbox from each.
+            # frame.copy() is unavoidable — subsequent iterations mutate
+            # in-place through resize etc.
+            if _temporal_enabled:
+                _recent_frames.append((time.time(), frame.copy()))
 
             # ── Zone hot-reload check ────────────────────────────────────
             # The preview editor bumps the polygon version on POST; rebuild
@@ -1009,15 +1038,31 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     crop = _crop_wide_bytes(frame, det.bbox, osd_masks=osd_masks)
                 if not crop:
                     continue
-                # If we have a baseline, also crop the SAME region from it and pass
-                # both frames to the VLM. Prompt in analyzer.py detects two-image
-                # mode and instructs the model to identify what changed.
+                # VLM input selection, in priority order:
+                #   1. Temporal (3+ recent frames within the window) — motion
+                #      signature across time; analyzer switches to temporal
+                #      prompt. Biggest lever for small targets on textured
+                #      backgrounds; motion beats single-frame silhouette.
+                #   2. Baseline compare (baseline + current) — what changed;
+                #      static motion context from a paired reference.
+                #   3. Single frame — no reference, VLM classifies the crop
+                #      standalone.
                 # Baseline crop is NEVER annotated — it's the reference for "what
                 # was here before"; overlay would create a spurious diff.
                 # Both frames get the same OSD blackout so timestamp burn-in
                 # doesn't become the dominant "what changed" signal for VLM.
                 _vlm_input = [crop]
-                if _baseline_np is not None:
+                if _temporal_enabled and len(_recent_frames) >= 3:
+                    _cutoff = now - _temporal_window_s
+                    _recent_crops = [
+                        _crop_wide_bytes(f, det.bbox, osd_masks=osd_masks)
+                        for ts, f in _recent_frames
+                        if ts >= _cutoff
+                    ]
+                    _recent_crops = [c for c in _recent_crops if c]
+                    if len(_recent_crops) >= 3:
+                        _vlm_input = _recent_crops
+                elif _baseline_np is not None:
                     _baseline_crop = _crop_wide_from_ndarray(_baseline_np, det.bbox, osd_masks=osd_masks)
                     if _baseline_crop:
                         _vlm_input = [_baseline_crop, crop]   # order: baseline first, current second

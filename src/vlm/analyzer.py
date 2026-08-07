@@ -113,6 +113,49 @@ _USER_PROMPT = (
 )
 
 
+_TEMPORAL_USER_PROMPT = (
+    "You are given N CONSECUTIVE frames of the same scene captured within ~1 s.\n"
+    "The frames are ordered oldest-first. Motion detection flagged a candidate\n"
+    "and your job is to decide whether the moving thing is a rodent by observing\n"
+    "its MOTION SIGNATURE across the frames.\n"
+    "\n"
+    "Prioritize motion evidence over single-frame silhouette clarity. A small\n"
+    "dark shape that WALKS with a rodent's gait across 3+ frames is a rodent\n"
+    "even when any single frame looks ambiguous. Single-frame pattern rules\n"
+    "still apply as secondary evidence.\n"
+    "\n"
+    "MOTION DISCRIMINATORS (temporal-only signals not available in single frames):\n"
+    "  - RODENT: low-to-ground scurrying gait. The body TRANSLATES position\n"
+    "    across frames but keeps roughly the same silhouette. A tail may\n"
+    "    trail behind as a snaking line that follows the body.\n"
+    "  - STATIONARY DEBRIS (twig, leaf, stick): identical position and shape\n"
+    "    in every frame. If the shape doesn't MOVE across frames, reject.\n"
+    "  - WIND-BLOWN FOLIAGE: shape jitters or oscillates around a fixed\n"
+    "    center, no directed trajectory. Reject.\n"
+    "  - INSECT (moth, flying bug): erratic direction changes between frames,\n"
+    "    soft blurry edges, no ground contact. Return species='insect'.\n"
+    "  - LIGHTING / IR ARTIFACT: bright shape appearing then vanishing without\n"
+    "    intermediate motion frames = flicker artifact, not an animal. Reject.\n"
+    "\n"
+    "OVERHEAD ROOFTOP (top-down camera): the primary use case for temporal\n"
+    "mode. A rat/mouse from overhead is a small dark shape (30-50 px) that\n"
+    "may be near-invisible in any single frame against fence slats or tile\n"
+    "grout, but is UNMISTAKABLE across 4 frames because only a rodent moves\n"
+    "along the ground with a directed low-speed trajectory. Give confident\n"
+    "positive answers (conf 0.7-0.85) when you see this motion pattern even\n"
+    "if the individual crops each look ambiguous.\n"
+    "\n"
+    "Return JSON with these exact keys:\n"
+    "{\n"
+    '  "wildlife_detected": <bool>,\n'
+    '  "species":           <string>,\n'
+    '  "is_rodent":         <bool>,\n'
+    '  "confidence":        <0..1>,\n'
+    '  "description":       <one factual sentence — mention the motion evidence>\n'
+    "}\n"
+)
+
+
 _COMPARE_USER_PROMPT = (
     "You are given TWO images of the same scene:\n"
     "  IMAGE 1 = the empty baseline. Nothing of interest is in this frame.\n"
@@ -457,9 +500,17 @@ class VLMAnalyzer:
             return dict(_MOCK_RESULT)
 
         frames = image_bytes if isinstance(image_bytes, list) else [image_bytes]
-        # Two-frame mode → pass the comparison prompt through as a per-call
-        # override so concurrent workers don't race on self._user_prompt.
-        base_prompt = _COMPARE_USER_PROMPT if len(frames) == 2 else self._user_prompt
+        # Prompt selection by frame count. Per-call override so concurrent
+        # workers don't race on self._user_prompt.
+        #   3+ frames → temporal mode (motion signature across time)
+        #   2 frames  → baseline compare (what changed vs reference)
+        #   1 frame   → single-shot silhouette classification
+        if len(frames) >= 3:
+            base_prompt = _TEMPORAL_USER_PROMPT
+        elif len(frames) == 2:
+            base_prompt = _COMPARE_USER_PROMPT
+        else:
+            base_prompt = self._user_prompt
         # Prepend day/night context so the model knows when Pattern 2 is invalid.
         mode_prefix = self._mode_prefix(is_daytime)
         user_prompt = mode_prefix + base_prompt
@@ -469,12 +520,9 @@ class VLMAnalyzer:
                 # so the static bulk can join the cached system prompt — otherwise
                 # Anthropic prompt caching silently ignores our tiny system prompt
                 # (below 1024-token threshold) and every call pays full input rate.
-                # For 1-frame calls, _user_prompt alone is only ~700 tokens; even
-                # combined with _system_prompt (~290) that's below the 1024 floor,
-                # so cache silently no-ops. Always ship _COMPARE_USER_PROMPT as the
-                # cacheable bulk — it's a superset of the rules Sonnet uses in
-                # either mode, and clears the cache floor unconditionally.
-                cacheable = _COMPARE_USER_PROMPT
+                # Ship the mode-appropriate bulk as cacheable so temporal-mode
+                # calls actually see the temporal rules.
+                cacheable = base_prompt
                 raw = self._analyze_claude(
                     frames, user_prompt=mode_prefix, cacheable_bulk=cacheable,
                 )
