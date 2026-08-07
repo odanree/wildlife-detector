@@ -693,6 +693,21 @@ def init_alert_log(snapshot_dir: str, capacity: int = 500,
     global _alerts, _snapshot_dir, _state_db
     from src.storage.state_db import StateDB
     _snapshot_dir = Path(snapshot_dir).resolve()
+    # STATE_DRY_RUN=1: skip StateDB entirely so replay/sandbox runs never
+    # write to the live Postgres. AlertLog.append() has a self._state is
+    # None short-circuit; leaving _state_db as None + skipping
+    # bind_state() flows through that no-op path cleanly. Also skips the
+    # disk backfill (which would double-insert rows the live DB already
+    # has). Snapshots still write to /tmp/eph (or wherever SNAPSHOT_DIR
+    # points) so the operator can inspect replay results as JPEGs.
+    if os.environ.get("STATE_DRY_RUN", "0") == "1":
+        _state_db = None
+        _alerts = AlertLog(capacity=capacity)
+        logger.warning(
+            "STATE_DRY_RUN=1 — StateDB skipped; alerts will NOT persist to Postgres "
+            "(replay/sandbox mode; snapshots still land at %s)", _snapshot_dir,
+        )
+        return
     _state_db = StateDB()
     _alerts = AlertLog(capacity=capacity)
     _alerts.bind_state(_state_db)
