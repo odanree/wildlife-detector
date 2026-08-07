@@ -185,6 +185,15 @@ services:
       # conservative than rooftop's 0.40 but not the default cliff.
       # If daytime rats get missed, drop to 0.40 to match rooftop.
       DAYTIME_RODENT_MIN_CONF: "0.55"
+      # Yard chair FP mitigation (2026-08-07): YOLO was flagging a
+      # bar-height chair as `person` at 0.75 conf, triggering
+      # human_heartbeat + suppressing all wildlife detection in the
+      # frame. Default gate is 0.70; bumping to 0.90 filters the chair
+      # while still catching real people (they typically fire at 0.90+
+      # on this camera). Follow-up: motion-gate person detections by
+      # MOG overlap so static objects can't produce person FPs
+      # regardless of conf.
+      EXCLUSION_MIN_CONF: "0.90"
       # Cost-cutover: moved yard from cascade to pure Ollama after prod-
       # scale burn showed $2/night. qwen2.5vl:7b handles yard's side-angle
       # rat crops (was working fine as the cascade primary). Loses
