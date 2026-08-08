@@ -524,6 +524,17 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     # touching low-conf mammal crops that are already dark. Bump higher
     # if legit rodents get mis-flagged; lower if moths still slip through.
     _NIGHT_INSECT_BRIGHTNESS_MIN = float(os.getenv("NIGHT_INSECT_BRIGHTNESS_MIN", "130"))
+    # Insect pre-filter is a moth-specific hard rail. Moths are
+    # physically small (usually ~15-40 px per axis, sometimes up to
+    # ~50 px with wing-motion blur). Cats, raccoons, opossums at
+    # overhead angle project as 45-100+ px blobs — they inherit the
+    # "bright IR reflection" property of moths (fur/pale patches
+    # against IR) but they're an order of magnitude larger. Bounding
+    # the insect filter to bbox area < INSECT_FILTER_MAX_AREA_PX keeps
+    # the moth-suppression benefit without falsely rejecting mammal-
+    # sized crops. Default 2000 = 45x45 blob; anything bigger goes to
+    # the VLM regardless of brightness.
+    _INSECT_FILTER_MAX_AREA_PX = int(os.getenv("INSECT_FILTER_MAX_AREA_PX", "2000"))
     vlm_pool = ThreadPoolExecutor(max_workers=_VLM_WORKERS, thread_name_prefix="vlm")
     logger.info("VLM pool: workers=%d max_inflight=%d max_alert_age=%.1fs",
                 _VLM_WORKERS, _VLM_MAX_INFLIGHT, _VLM_MAX_ALERT_AGE_S)
@@ -1008,18 +1019,24 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 # Runs regardless of day/night flag: rooftop under street/
                 # courtyard lighting stays in "day" baseline mode even at
                 # 2 AM local, so gating on mode==night misses the majority
-                # of overnight moth activity. Env-tunable via
-                # NIGHT_INSECT_BRIGHTNESS_MIN (name kept for continuity)
-                # — bump if legit pale-fur rodents are being flagged.
+                # of overnight moth activity.
+                #
+                # Size guard: also require bbox area < INSECT_FILTER_MAX_AREA_PX.
+                # Moths are physically small; a large bright blob is a mammal
+                # with pale fur or IR reflection off the ground under it,
+                # NOT a moth. Without this guard, cats/raccoons at overhead
+                # angle get silently rejected (see Aug 8 02:23 cat incident).
+                # Env-tunable via NIGHT_INSECT_BRIGHTNESS_MIN + INSECT_FILTER_MAX_AREA_PX.
                 _bx1, _by1, _bx2, _by2 = det.bbox
+                _bbox_area = max(0, _bx2 - _bx1) * max(0, _by2 - _by1)
                 _bcrop = frame[max(0, _by1):_by2, max(0, _bx1):_bx2]
-                if _bcrop.size > 0:
+                if _bcrop.size > 0 and _bbox_area < _INSECT_FILTER_MAX_AREA_PX:
                     _gray = cv2.cvtColor(_bcrop, cv2.COLOR_BGR2GRAY) if _bcrop.ndim == 3 else _bcrop
                     _mean_brightness = float(_gray.mean())
                     if _mean_brightness >= _NIGHT_INSECT_BRIGHTNESS_MIN:
                         logger.info(
-                            "Insect pre-filter: track=%d bbox=%s mean_brightness=%.0f >= %.0f mode=%s → classify as insect, skip VLM",
-                            det.track_id, det.bbox, _mean_brightness, _NIGHT_INSECT_BRIGHTNESS_MIN,
+                            "Insect pre-filter: track=%d bbox=%s area=%d mean_brightness=%.0f >= %.0f mode=%s → classify as insect, skip VLM",
+                            det.track_id, det.bbox, _bbox_area, _mean_brightness, _NIGHT_INSECT_BRIGHTNESS_MIN,
                             _baseline_cache[0][1] if _baseline_np is not None else "?",
                         )
                         _preview_stats.record_vlm_insect()
