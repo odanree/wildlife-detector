@@ -59,7 +59,15 @@ export function SlewPresetPanel({ editor, onEnterEdit }: SlewPresetPanelProps) {
           </span>
         )}
         <span className={styles.spacer} />
-        <span className={styles.metaBit}>home: P{editor.homePreset}</span>
+        <button
+          type="button"
+          className={styles.smallBtn}
+          onClick={() => editor.goto(editor.homePreset)}
+          title="Snap camera back to home preset (does not change any polygon)"
+        >
+          ⌂ home
+        </button>
+        <span className={styles.metaBit}>P{editor.homePreset}</span>
         <span className={styles.metaBit}>PTZ cam: {editor.ptzCameraId}</span>
       </div>
 
