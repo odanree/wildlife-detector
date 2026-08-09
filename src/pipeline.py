@@ -43,6 +43,10 @@ from src.detection.object_detector import Detection, ObjectDetector
 from src.detection.zone_filter import ZoneFilter
 from src.stream.rtsp_handler import RTSPHandler
 from src.stream.slew import maybe_slew
+from src.stream.self_slew import (
+    is_in_transition as _self_slew_in_transition,
+    maybe_self_slew,
+)
 from src.stream.video_file_handler import VideoFileHandler
 from src.vlm.analyzer import VLMAnalyzer
 
@@ -615,6 +619,14 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             if (fw, fh) != (det_w, det_h):
                 frame = cv2.resize(frame, (det_w, det_h))
 
+            # Self-slew transition guard: while the PTZ is physically
+            # panning, MOG would see the whole frame as motion. Skip
+            # this iteration's MOG/YOLO work — no detections, no VLM
+            # calls, no baseline update. Camera settles within
+            # transition_pause_s (default 2 s, ~40 frames at 20 fps).
+            if _self_slew_in_transition():
+                continue
+
             # Temporal buffer: keep the last N frames so a VLM dispatch
             # can pull recent history and crop the same bbox from each.
             # frame.copy() is unavoidable — subsequent iterations mutate
@@ -865,6 +877,11 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 sh, sw = snap_fr.shape[:2]
                 maybe_slew(bbox=bbox, event_key=("rodent", tid),
                            frame_width=sw, frame_height=sh)
+                # Self-slew: for cameras that own their own PTZ (backyard),
+                # pan to the zone-matched preset. No-op when SELF_SLEW_ENABLED
+                # is false or the per-camera config block is disabled.
+                maybe_self_slew(bbox=bbox, event_key=("rodent", tid),
+                                frame_width=sw, frame_height=sh)
                 # Flag the track for a red bbox flash on the preview.
                 alert_ttl[tid] = ALERT_FLASH_FRAMES
                 # snapshot field stores the RELATIVE path from snapshots/ so
@@ -964,6 +981,8 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     sh, sw = frame.shape[:2]
                     maybe_slew(bbox=det.bbox, event_key=(det.class_name, det.track_id),
                                frame_width=sw, frame_height=sh)
+                    maybe_self_slew(bbox=det.bbox, event_key=(det.class_name, det.track_id),
+                                    frame_width=sw, frame_height=sh)
                     alert_ttl[det.track_id] = ALERT_FLASH_FRAMES
                     _snap_ref = None
                     if snap_path:
