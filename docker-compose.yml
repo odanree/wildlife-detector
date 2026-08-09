@@ -421,6 +421,19 @@ services:
       # rooftop=8102, backyard=8103. Web fan-out registry keys on the
       # URL so this port must be unique across the compose network.
       DETECTOR_INTERNAL_PORT: 8103
+      # Self-slew PTZ (backyard's own PTZ camera pans on positive
+      # detection). Master kill-switch — flip to "true" AFTER presets
+      # are saved on the camera's onboard PTZ web UI AND the polygons
+      # in config/detection.yaml (slew.backyard.presets) are drawn to
+      # match. See src/stream/self_slew.py for the lifecycle.
+      SELF_SLEW_ENABLED: "false"
+      # PTZ command target — camera_id=2 in the config maps to these
+      # env vars. Sends /cgi-bin/ptz.cgi commands to the camera's own
+      # HTTP interface (not to the NVR).
+      PTZ_HOST_2: "192.168.1.118"
+      PTZ_USER_2: "admin"
+      PTZ_PASS_2: "123456"
+      PTZ_CHANNEL_2: "1"
     expose:
       - "8103"
     healthcheck:

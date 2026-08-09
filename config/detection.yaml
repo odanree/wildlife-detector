@@ -10,7 +10,8 @@ osd_masks:
   - [0.0092, 0.0212, 0.2932, 0.0637]
   rooftop:
   - [0.3516, 0.0075, 0.7349, 0.0787]
-  backyard: []
+  backyard:
+  - [0.0239, 0.0302, 0.3809, 0.0787]
 zones:
   yard_zone:
     polygon:
@@ -34,16 +35,20 @@ zones:
     - [0.7222, 0.3901]
     - [0.6587, 0.3319]
     - [0.394, 0.8308]
-  # Placeholder full-frame zone — draw the real polygon via the zone
-  # editor in the UI (camera picker → backyard → click points on the
-  # preview) after the detector comes up. Full-frame catches all motion
-  # in the meantime so you can eyeball which regions to mask.
   backyard_zone:
     polygon:
-    - [0.0, 0.0]
-    - [1.0, 0.0]
-    - [1.0, 1.0]
-    - [0.0, 1.0]
+    - [0.041, 0.0571]
+    - [0.7104, 0.0647]
+    - [0.7769, 0.0894]
+    - [0.8154, 0.1099]
+    - [0.9453, 0.2317]
+    - [0.9854, 0.6379]
+    - [0.9858, 0.8782]
+    - [0.959, 0.9838]
+    - [0.5908, 0.9892]
+    - [0.0171, 0.9731]
+    - [0.0132, 0.5226]
+    - [0.0156, 0.1832]
 slew_presets:
 - name: default
   polygon:
@@ -52,3 +57,27 @@ slew_presets:
   - [1280, 720]
   - [0, 720]
   preset: 1
+
+# Self-slew (PTZ-on-positive) — for cameras that both detect AND pan.
+# Keyed by CAMERA_ID. Polygon points are NORMALIZED (0.0-1.0) so they
+# survive INPUT_WIDTH/HEIGHT changes. See src/stream/self_slew.py for
+# the state machine + coordination hazards.
+#
+# Prereq: presets 1..N must be saved on the camera itself via its
+# onboard PTZ web UI before enabling. Preset 1 is home (wide scene).
+slew:
+  backyard:
+    # Off until presets are saved on the camera and polygons are drawn
+    # to match. Flip to true after that one-time bootstrap.
+    enabled: false
+    camera_id: 2                  # PTZ command target (PTZ_HOST_2 in env)
+    home_preset: 1
+    return_home_after_s: 30
+    lockout_seconds: 10
+    transition_pause_s: 2.0
+    # Placeholder — replace with real zone polygons once the operator
+    # walks the camera through its saved presets and marks each field.
+    presets:
+      - name: placeholder_full_frame
+        polygon: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+        preset: 2
