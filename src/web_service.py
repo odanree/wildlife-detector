@@ -1100,7 +1100,9 @@ def create_app(registry: DetectorRegistry) -> Flask:
     def put_slew_presets():
         """Persist per-preset polygons. Body sends polygons in PIXEL
         coords; we normalize to (0-1) before forwarding to the detector
-        so yaml stays resolution-independent."""
+        so yaml stays resolution-independent. Scalar overrides
+        (enabled, home_preset, etc.) pass through unmodified — only
+        polygon coords need conversion."""
         detector = _pick(request)
         try:
             st = detector.status()
@@ -1116,8 +1118,13 @@ def create_app(registry: DetectorRegistry) -> Flask:
                  max(0.0, min(1.0, pt[1] / det_h))]
                 for pt in poly
             ]
+        # Forward the FULL body so scalar overrides (enabled,
+        # home_preset, return_home_after_s, etc.) also make it through.
+        # Overwrite presets with the normalized version.
+        forward = dict(body)
+        forward["presets"] = presets_in
         result, status_code = detector.post_command(
-            "/internal/slew/presets", json_body={"presets": presets_in},
+            "/internal/slew/presets", json_body=forward,
         )
         return jsonify(result), status_code
 
