@@ -145,6 +145,116 @@ def create_app() -> Flask:
         _, ver = m.snapshot()
         return jsonify({"ok": True, "version": ver})
 
+    @app.post("/internal/slew/presets")
+    def post_slew_presets():
+        """Persist per-preset polygons to detection.yaml under
+        slew.<CAMERA_ID>.presets. Preserves scalar fields (enabled,
+        camera_id, home_preset, etc.) unless the caller overwrites them
+        explicitly. Also resets the SelfSlewController singleton so the
+        running pipeline picks up the new polygons on the next positive
+        detection — no detector restart needed.
+
+        Pattern: **write-through cache with reset on invalidate** — yaml
+        is the source of truth; the in-memory controller is a cache
+        that's dropped whenever the yaml changes.
+        """
+        auth_err = _require_auth()
+        if auth_err:
+            return auth_err
+        import yaml as _yaml
+        camera_id = os.getenv("CAMERA_ID", "")
+        if not camera_id:
+            return jsonify({"error": "CAMERA_ID env not set"}), 500
+        cfg_path = os.getenv("DETECTION_CFG", "config/detection.yaml")
+        body = request.get_json(silent=True) or {}
+        presets_in = body.get("presets")
+        if presets_in is None or not isinstance(presets_in, list):
+            return jsonify({"error": "body must include 'presets' list"}), 400
+
+        # Validate: each entry needs name (str) + preset (int) + polygon
+        # (list of [x,y] pairs, 3+ points, values in [0,1]).
+        cleaned = []
+        for i, p in enumerate(presets_in):
+            if not isinstance(p, dict):
+                return jsonify({"error": f"preset[{i}] must be an object"}), 400
+            try:
+                name = str(p.get("name") or f"preset_{i}")
+                preset_num = int(p.get("preset"))
+                poly = p.get("polygon") or []
+                if len(poly) < 3:
+                    return jsonify({"error": f"preset[{i}] polygon needs 3+ points"}), 400
+                poly_clean = []
+                for pt in poly:
+                    x, y = float(pt[0]), float(pt[1])
+                    if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+                        return jsonify({"error": f"preset[{i}] point ({x},{y}) out of [0,1]"}), 400
+                    poly_clean.append([x, y])
+                cleaned.append({"name": name, "preset": preset_num, "polygon": poly_clean})
+            except (TypeError, ValueError, KeyError) as e:
+                return jsonify({"error": f"preset[{i}] invalid: {e}"}), 400
+
+        # Load-modify-save, preserving other slew.<camera_id> fields.
+        try:
+            with open(cfg_path, encoding="utf-8") as fh:
+                cfg = _yaml.safe_load(fh) or {}
+        except FileNotFoundError:
+            cfg = {}
+        slew_block = cfg.setdefault("slew", {}).setdefault(camera_id, {})
+        slew_block["presets"] = cleaned
+        for k in ("enabled", "camera_id", "home_preset",
+                  "return_home_after_s", "lockout_seconds", "transition_pause_s"):
+            if k in body:
+                slew_block[k] = body[k]
+
+        tmp = cfg_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            _yaml.safe_dump(cfg, fh, sort_keys=False)
+        os.replace(tmp, cfg_path)
+
+        try:
+            from src.stream.self_slew import reset_controller
+            reset_controller()
+        except Exception:
+            logger.exception("slew: reset_controller failed after preset save")
+        return jsonify({"ok": True, "count": len(cleaned)})
+
+    @app.post("/internal/ptz/preset")
+    def post_ptz_preset():
+        """Manually command a PTZ preset. Used by the slew-preset editor
+        so the operator can 'go here' to verify what a given preset
+        looks like before drawing its polygon.
+
+        Body: {"preset": <int>, "camera_id": <int-optional>}
+        camera_id defaults to the PTZ target from this detector's
+        slew.<CAMERA_ID>.camera_id config.
+        """
+        auth_err = _require_auth()
+        if auth_err:
+            return auth_err
+        import yaml as _yaml
+        body = request.get_json(silent=True) or {}
+        try:
+            preset = int(body.get("preset"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "body must include integer 'preset'"}), 400
+        cam_id = body.get("camera_id")
+        if cam_id is None:
+            our_cam = os.getenv("CAMERA_ID", "")
+            cfg_path = os.getenv("DETECTION_CFG", "config/detection.yaml")
+            try:
+                with open(cfg_path, encoding="utf-8") as fh:
+                    cfg = _yaml.safe_load(fh) or {}
+                cam_id = ((cfg.get("slew") or {}).get(our_cam) or {}).get("camera_id", 2)
+            except FileNotFoundError:
+                cam_id = 2
+        try:
+            cam_id = int(cam_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "camera_id must be int"}), 400
+        from src.stream.ptz import ptz_preset as _ptz_preset
+        ok = _ptz_preset(camera_id=cam_id, preset=preset)
+        return jsonify({"ok": ok, "camera_id": cam_id, "preset": preset})
+
     @app.post("/internal/baseline/capture")
     def post_baseline_capture():
         auth_err = _require_auth()
