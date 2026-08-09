@@ -371,6 +371,82 @@ services:
       retries: 3
       start_period: 30s
 
+  # ── detector-backyard ───────────────────────────────────────────────
+  # Third camera (2026-08-08). Side-angle view — inherits yard's motion
+  # tuning + VLM prompt path (Pattern 1/2 evidence, not Pattern 3
+  # overhead silhouette). Source is a 4K HEVC Hikvision-family cam;
+  # downsampled to 2048x928 to preserve small-target detail (yard's
+  # 1088x612 would waste 4x resolution).
+  detector-backyard:
+    <<: *detector-common
+    container_name: wildlife-detector-backyard
+    environment:
+      CAMERA_ID: backyard
+      ZONE_KEY: backyard_zone
+      # 4K main stream from the Hikvision path — /stream1 on this cam
+      # is only 720x480 sub-stream, insufficient for small-target
+      # detection.
+      RTSP_URL: rtsp://admin:123456@192.168.1.118:554/Streaming/Channels/101
+      BASELINE_PATH: data/baseline_backyard.jpg
+      # 4K source → downsample to 2048x928. Same rationale as rooftop:
+      # yard's 1088x612 default would collapse a 30 px rat crop to
+      # ~8 px, below MOG2's discrimination floor.
+      INPUT_WIDTH: "2048"
+      INPUT_HEIGHT: "928"
+      # Inherits yard's side-angle motion tune. Bump MIN_MOTION_BBOX_PX
+      # or MOTION_VAR_THRESHOLD after gathering ground-truth on
+      # backyard-specific FP patterns.
+      MIN_MOTION_BBOX_PX: "22"
+      VLM_INTERVAL_S: "3"
+      NIGHT_INSECT_BRIGHTNESS_MIN: "110"
+      MOTION_BACKEND: mog2
+      MOTION_HISTORY: "400"
+      MOTION_VAR_THRESHOLD: "18"
+      MOTION_MIN_AREA: "80"
+      MOTION_DETECT_SHADOWS: "1"
+      BASELINE_DIFF_THRESHOLD: "0.06"
+      DAY_BASELINE_DIFF_THRESHOLD: "0.18"
+      DAYTIME_RODENT_MIN_CONF: "0.55"
+      # Match yard's chair-FP fix — bumped from default 0.70 so weak
+      # YOLO person hits (chairs, coats, tools) don't trip
+      # human_heartbeat + suppress wildlife.
+      EXCLUSION_MIN_CONF: "0.90"
+      VLM_BACKEND: ollama
+      OLLAMA_MODEL: qwen2.5vl:7b
+      CLAUDE_MODEL: claude-sonnet-5
+      CASCADE_CONFIRM_MODEL: claude-sonnet-5
+      OLLAMA_URL: http://host.docker.internal:11434
+      DETECTOR_INTERNAL_HOST: 0.0.0.0
+      # Third detector needs its own internal HTTP port — yard=8101,
+      # rooftop=8102, backyard=8103. Web fan-out registry keys on the
+      # URL so this port must be unique across the compose network.
+      DETECTOR_INTERNAL_PORT: 8103
+      # Self-slew PTZ (backyard's own PTZ camera pans on positive
+      # detection). Master kill-switch — flip to "true" AFTER presets
+      # are saved on the camera's onboard PTZ web UI AND the polygons
+      # in config/detection.yaml (slew.backyard.presets) are drawn to
+      # match. See src/stream/self_slew.py for the lifecycle.
+      SELF_SLEW_ENABLED: "false"
+      # PTZ command target — camera_id=2 in the config maps to these
+      # env vars. Jennov cams (Hikvision-family firmware, ONVIF-only)
+      # don't have Dahua CGI; go through /onvif/ptz SOAP with
+      # WS-Security digest instead.
+      PTZ_HOST_2: "192.168.1.118"
+      PTZ_USER_2: "admin"
+      PTZ_PASS_2: "123456"
+      PTZ_BACKEND_2: "onvif"
+      # ONVIF media ProfileToken. Discover via GetProfiles if this
+      # camera model differs; MainStream is the Jennov default.
+      PTZ_ONVIF_PROFILE_2: "MainStream"
+    expose:
+      - "8103"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8103/internal/health', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
   web:
     build:
       context: .
@@ -382,7 +458,7 @@ services:
     environment:
       # Comma-separated so the sidecar can fan-out /status + fan-in /api/alerts.
       # Order defines display order in the UI.
-      DETECTOR_URLS: http://detector-yard:8101,http://detector-rooftop:8102
+      DETECTOR_URLS: http://detector-yard:8101,http://detector-rooftop:8102,http://detector-backyard:8103
       # Back-compat: legacy single-detector consumers read this one.
       DETECTOR_INTERNAL_URL: http://detector-yard:8101
       PREVIEW_HOST: 0.0.0.0
@@ -397,6 +473,7 @@ services:
       # 'note' warning and defaults to channel 1 (likely wrong).
       NVR_CHANNEL_YARD: "5"
       NVR_CHANNEL_ROOFTOP: "6"
+      NVR_CHANNEL_BACKYARD: "8"
     volumes:
       - ./data:/app/data
       - ./snapshots:/app/snapshots:ro
@@ -422,6 +499,8 @@ services:
       detector-yard:
         condition: service_healthy
       detector-rooftop:
+        condition: service_healthy
+      detector-backyard:
         condition: service_healthy
       postgres:
         condition: service_healthy
@@ -457,6 +536,7 @@ services:
       # required so archiver knows which NVR channel to pull per camera.
       NVR_CHANNEL_YARD: "5"
       NVR_CHANNEL_ROOFTOP: "6"
+      NVR_CHANNEL_BACKYARD: "8"
     volumes:
       - ./clips:/app/clips
       - ./logs:/app/logs
