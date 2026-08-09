@@ -10,6 +10,24 @@ interface SlewPresetsOverlayProps {
   activePreset: number | null;
 }
 
+// Warm/saturated palette that reads well against IR greyscale. Cycled
+// by preset number so adjacent presets don't clash and the operator
+// can tell "the yellow zone" vs "the green zone" without reading the
+// label. Kept out of CSS so per-preset color assignment stays inline
+// with the render pass.
+const PRESET_COLORS = [
+  "#ffcc4a", // amber — highest contrast against IR
+  "#4ade80", // green
+  "#f87171", // coral
+  "#a78bfa", // violet
+  "#22d3ee", // cyan
+  "#fb923c", // orange
+];
+
+function colorForPreset(preset: number): string {
+  return PRESET_COLORS[preset % PRESET_COLORS.length];
+}
+
 /**
  * Read-only outlines of all slew presets EXCEPT the one currently
  * being edited (that one is rendered by ZoneOverlay). Each polygon
@@ -29,6 +47,10 @@ export function SlewPresetsOverlay({
 }: SlewPresetsOverlayProps) {
   const visible = presets.filter((p) => p.polygon.length >= 3 && p.preset !== activePreset);
   if (visible.length === 0) return null;
+  // Scale label size with frame — 22 px on a 928 px frame = ~2.4% of
+  // frame height. Same ratio at any resolution.
+  const labelSize = Math.max(18, Math.round(baseH * 0.024));
+  const strokeWidth = Math.max(3, Math.round(baseH * 0.004));
   return (
     <svg
       className={styles.svg}
@@ -41,23 +63,47 @@ export function SlewPresetsOverlay({
       {visible.map((p) => {
         const points = p.polygon.map((pt) => pt.join(",")).join(" ");
         const c = centroid(p.polygon);
+        const color = colorForPreset(p.preset);
         return (
           <g key={p.preset}>
-            <polygon className={styles.polygon} points={points} />
+            <polygon
+              points={points}
+              fill={color}
+              fillOpacity={0.14}
+              stroke={color}
+              strokeWidth={strokeWidth}
+              strokeDasharray={`${strokeWidth * 3} ${strokeWidth * 2}`}
+            />
             <text
-              className={styles.label}
               x={c[0]}
               y={c[1]}
               textAnchor="middle"
               dominantBaseline="middle"
+              fill={color}
+              style={{
+                fontFamily: "var(--font-mono, monospace)",
+                fontSize: `${labelSize * 1.5}px`,
+                fontWeight: 800,
+                paintOrder: "stroke",
+                stroke: "rgba(0, 0, 0, 0.85)",
+                strokeWidth: strokeWidth,
+              }}
             >
               {`P${p.preset}`}
             </text>
             <text
-              className={styles.labelSub}
               x={c[0]}
-              y={c[1] + Math.max(24, baseH * 0.03)}
+              y={c[1] + labelSize * 1.5}
               textAnchor="middle"
+              fill="rgba(255, 255, 255, 0.95)"
+              style={{
+                fontFamily: "var(--font-mono, monospace)",
+                fontSize: `${labelSize * 0.75}px`,
+                fontWeight: 600,
+                paintOrder: "stroke",
+                stroke: "rgba(0, 0, 0, 0.85)",
+                strokeWidth: strokeWidth * 0.75,
+              }}
             >
               {p.name}
             </text>
