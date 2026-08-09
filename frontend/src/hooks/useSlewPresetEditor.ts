@@ -131,10 +131,16 @@ export function useSlewPresetEditor(camera: string): SlewPresetEditorApi {
         });
       }
       setActivePreset(preset);
-      setMode("tweak");
+      // Empty polygon → auto-route to draw mode instead of tweak
+      // (nothing to tweak on an empty polygon; operator clearly wants
+      // to lay down vertices). Same UX shortcut vim's `cc` uses when
+      // the target range is empty.
+      const target = server ?? workingPresets.find((p) => p.preset === preset);
+      const isEmpty = !target || target.polygon.length === 0;
+      setMode(isEmpty ? "draw" : "tweak");
       setSaveErr(null);
     },
-    [serverPresets],
+    [serverPresets, workingPresets],
   );
 
   const removeActive = useCallback(() => {
