@@ -58,6 +58,22 @@ export function LivePreviewPage() {
   const setViewModeFor = (camera: string) => (mode: ViewMode) =>
     setViewModes((prev) => ({ ...prev, [camera]: mode }));
 
+  // Slew preset overlay visibility. Off by default — the read-only
+  // outlines clutter the main view when the operator isn't editing
+  // slew polygons. Persisted to localStorage so the choice survives
+  // reloads. Force-shown while editing (see slewOverlaysVisible below)
+  // so the operator has context for the polygon they're working on.
+  const [slewOverlaysToggle, setSlewOverlaysToggle] = useState<boolean>(
+    () => localStorage.getItem("slewOverlaysVisible") === "1",
+  );
+  const toggleSlewOverlays = () => {
+    setSlewOverlaysToggle((v) => {
+      const next = !v;
+      localStorage.setItem("slewOverlaysVisible", next ? "1" : "0");
+      return next;
+    });
+  };
+
   // Editors target the primary camera. detW/detH come from primary's
   // status with useDetectionSize's cache filling the gap during a
   // camera-change so overlay viewBox coords don't briefly render at
@@ -113,6 +129,11 @@ export function LivePreviewPage() {
       : zone.workingPolygon;
   const zoneOverlayOnChange = slewActive ? slew.setActivePolygon : zone.setWorkingPolygon;
   const zoneOverlayOnClose = slewActive ? slew.closeDrawing : zone.closeDrawing;
+
+  // Show slew preset outlines when toggled on OR when actively
+  // editing — operator needs context on the other zones to place
+  // vertices sensibly.
+  const slewOverlaysVisible = slewOverlaysToggle || slewActive;
 
   return (
     <div className={styles.wrap}>
@@ -188,7 +209,12 @@ export function LivePreviewPage() {
               </button>
             )}
           </div>
-          <SlewPresetPanel editor={slew} onEnterEdit={enterSlewEdit} />
+          <SlewPresetPanel
+            editor={slew}
+            onEnterEdit={enterSlewEdit}
+            overlaysVisible={slewOverlaysToggle}
+            onToggleOverlays={toggleSlewOverlays}
+          />
         </>
       )}
 
@@ -204,12 +230,14 @@ export function LivePreviewPage() {
             viewMode={viewModes[primary] ?? "live"}
             onViewModeChange={setViewModeFor(primary)}
           >
-            <SlewPresetsOverlay
-              baseW={detW}
-              baseH={detH}
-              presets={slew.workingPresets}
-              activePreset={slew.activePreset}
-            />
+            {slewOverlaysVisible && (
+              <SlewPresetsOverlay
+                baseW={detW}
+                baseH={detH}
+                presets={slew.workingPresets}
+                activePreset={slew.activePreset}
+              />
+            )}
             <ZoneOverlay
               baseW={detW}
               baseH={detH}

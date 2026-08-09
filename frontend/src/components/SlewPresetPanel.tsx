@@ -7,6 +7,11 @@ interface SlewPresetPanelProps {
   /** Called when the operator enters edit mode — parent should cancel
    *  zone + mask editors to maintain the mutual-exclusion invariant. */
   onEnterEdit: () => void;
+  /** Whether SlewPresetsOverlay is currently rendering. Toggled via
+   *  the "show zones" button in the header. Editing implicitly forces
+   *  overlays on (see LivePreviewPage) so the operator has context. */
+  overlaysVisible: boolean;
+  onToggleOverlays: () => void;
 }
 
 /**
@@ -27,7 +32,12 @@ interface SlewPresetPanelProps {
  * The list is scrollable when N presets exceeds the panel height so
  * cameras with 10+ presets don't blow out the toolbar row.
  */
-export function SlewPresetPanel({ editor, onEnterEdit }: SlewPresetPanelProps) {
+export function SlewPresetPanel({
+  editor,
+  onEnterEdit,
+  overlaysVisible,
+  onToggleOverlays,
+}: SlewPresetPanelProps) {
   const [newPreset, setNewPreset] = useState("");
   const [newName, setNewName] = useState("");
   const editing = editor.mode !== "idle";
@@ -59,6 +69,18 @@ export function SlewPresetPanel({ editor, onEnterEdit }: SlewPresetPanelProps) {
           </span>
         )}
         <span className={styles.spacer} />
+        <button
+          type="button"
+          className={styles.smallBtn}
+          onClick={onToggleOverlays}
+          title={
+            overlaysVisible
+              ? "Hide zone outlines on the preview (auto-shows during editing)"
+              : "Show zone outlines on the preview"
+          }
+        >
+          {overlaysVisible ? "hide zones" : "show zones"}
+        </button>
         <button
           type="button"
           className={styles.smallBtn}
