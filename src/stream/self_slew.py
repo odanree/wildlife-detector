@@ -168,18 +168,25 @@ class SelfSlewController:
 
         with self._lock:
             now = time.monotonic()
+            # ANY positive in a mapped zone extends the watchdog's idle
+            # timer — decoupled from the GotoPreset lockout so a
+            # stationary target with a stable track_id can't run out
+            # the return_home_after_s window while it's still there.
+            # (Was previously nested INSIDE the lockout branch, which
+            # meant a rat with a persistent track_id could only refresh
+            # the timer every lockout_seconds — theoretically letting
+            # the watchdog snap home while the rat was still visible.)
+            self._last_positive_ts = now
             last = self._last_fire.get(event_key, 0.0)
             if now - last < self.cfg.lockout_seconds:
                 logger.debug(
-                    "self-slew: lockout active for %s (%.1fs < %.1fs) — no-op",
+                    "self-slew: lockout active for %s (%.1fs < %.1fs) — idle-reset only",
                     event_key, now - last, self.cfg.lockout_seconds,
                 )
                 return False
             self._last_fire[event_key] = now
             # Same-preset short-circuit: don't fire GotoPreset if we're
-            # already there. Still update _last_positive_ts so the
-            # watchdog's idle timer resets — target is still active.
-            self._last_positive_ts = now
+            # already there. Idle timer already updated above.
             if preset.preset == self._current_preset:
                 logger.debug("self-slew: already at preset=%d for zone=%s — idle-reset only",
                              preset.preset, preset.name)
