@@ -531,6 +531,15 @@ services:
       - .env
     environment:
       CLIPS_DIR: /app/clips
+      # NVR flush-lag guard: how long to wait after alert_ts before
+      # dispatching ffmpeg. Amcrest/Dahua NVRs buffer recordings in
+      # memory ~10-30s before flushing to disk; asking for a playback
+      # window that ends inside the unflushed buffer causes the NVR to
+      # silently return a fallback (channel-1) stream. 90s default =
+      # ~30s NVR flush + ~60s buffer for the post-roll window to be
+      # queryable. Bump if you see channel-1 clips leak into non-yard
+      # cameras (see the Aug 9 backyard incident that motivated this).
+      ARCHIVE_DELAY_SECONDS: "90"
       # NVR playback channel per camera — same values as web's block,
       # required so archiver knows which NVR channel to pull per camera.
       NVR_CHANNEL_YARD: "5"

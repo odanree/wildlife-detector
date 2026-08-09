@@ -133,7 +133,8 @@ def main() -> None:
     from pathlib import Path
 
     clips_dir = Path(os.environ.get("CLIPS_DIR", "/app/clips"))
-    archiver = ClipArchiver(clips_dir=clips_dir)
+    archive_delay = float(os.environ.get("ARCHIVE_DELAY_SECONDS", "90"))
+    archiver = ClipArchiver(clips_dir=clips_dir, archive_delay_seconds=archive_delay)
     logger.info("Archiver service starting: clips_dir=%s", clips_dir)
     ArchiveListener(_dsn_from_env(), archiver).run()
 

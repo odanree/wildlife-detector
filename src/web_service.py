@@ -971,25 +971,40 @@ def create_app(registry: DetectorRegistry) -> Flask:
                     f"the wrong channel or return no data. Set the env var to the "
                     f"NVR channel this camera records to.")
 
-        # Local-first: if the archiver has already pulled the clip,
-        # return its HTTP URL instead of the RTSP fallback. Local mp4
-        # opens instantly in VLC and doesn't depend on NVR retention.
+        # Local-first (WITH INTEGRITY GATE): the archiver waits for the
+        # NVR to flush before writing, so a clip's mtime should be well
+        # after alert_ts. Files younger than that gap are either
+        # in-flight (partial ffmpeg output) or leftover from before the
+        # flush-lag fix landed — fall through to RTSP rather than
+        # serving polluted content. Pattern: **write-once integrity
+        # gate on read** — trust the file only if timing rules out the
+        # known corruption mode.
+        _min_age_after_alert = float(os.getenv("PLAYBACK_LOCAL_MIN_AGE_S", "60"))
         local_clip = _local_clip_path_for(alert_id, ts)
         if local_clip.exists() and local_clip.stat().st_size > 0:
-            try:
-                rel = local_clip.relative_to(_CLIPS_DIR).as_posix()
-            except ValueError:
-                rel = None
-            if rel:
-                return jsonify({
-                    "url":              request.host_url.rstrip("/") + f"/clips/{rel}",
-                    "camera_id":        camera_id,
-                    "ts":               ts,
-                    "channel":          channel,
-                    "pre_roll_seconds": pre_roll,
-                    "source":           "local",
-                    "note":             note,
-                })
+            mtime = local_clip.stat().st_mtime
+            age_from_alert = mtime - ts
+            trusted = age_from_alert >= _min_age_after_alert
+            if trusted:
+                try:
+                    rel = local_clip.relative_to(_CLIPS_DIR).as_posix()
+                except ValueError:
+                    rel = None
+                if rel:
+                    return jsonify({
+                        "url":              request.host_url.rstrip("/") + f"/clips/{rel}",
+                        "camera_id":        camera_id,
+                        "ts":               ts,
+                        "channel":          channel,
+                        "pre_roll_seconds": pre_roll,
+                        "source":           "local",
+                        "note":             note,
+                    })
+            else:
+                logger.info(
+                    "playback: local clip for alert=%d exists but mtime-age=%.0fs < %.0fs — falling through to RTSP",
+                    alert_id, age_from_alert, _min_age_after_alert,
+                )
 
         from src.stream.rtsp_handler import build_nvr_playback_url
         try:

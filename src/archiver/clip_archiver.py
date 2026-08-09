@@ -69,11 +69,21 @@ class ClipArchiver:
         duration_seconds: int = 45,
         max_workers: int = 2,
         ffmpeg_binary: str = "ffmpeg",
+        archive_delay_seconds: float = 90.0,
     ) -> None:
         self.clips_dir = Path(clips_dir)
         self.pre_roll_seconds = pre_roll_seconds
         self.duration_seconds = duration_seconds
         self.ffmpeg_binary = ffmpeg_binary
+        # NVR flush-lag guard: Amcrest/Dahua buffer recordings in memory
+        # for ~10-30s before writing to disk. If we dispatch ffmpeg
+        # sooner, the NVR silently returns a fallback (channel-1 stream)
+        # for cameras whose latest chunk isn't flushed yet — the pull
+        # succeeds but the file contains WRONG footage. Waiting
+        # archive_delay_seconds past the alert covers the flush window
+        # plus our own 2-min post-roll (default 90s = 30s NVR flush +
+        # 60s buffer for the post-roll to be queryable).
+        self.archive_delay_seconds = archive_delay_seconds
         self._pool = ThreadPoolExecutor(
             max_workers=max_workers,
             thread_name_prefix="clip-archiver",
@@ -137,6 +147,20 @@ class ClipArchiver:
     def _pull(self, alert_id: int, alert_ts: float, camera_id: str) -> Optional[Path]:
         out_path = self.clip_path(alert_id, alert_ts)
         out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # NVR flush-lag guard: wait until (alert_ts + archive_delay_seconds)
+        # before dispatching ffmpeg. If enough real time has already
+        # passed (e.g. backfill on old alerts), no sleep. Backfilled
+        # alerts and delayed-notify pulls skip the wait entirely.
+        import time
+        wait_until = alert_ts + self.archive_delay_seconds
+        remaining = wait_until - time.time()
+        if remaining > 0:
+            logger.info(
+                "Archiver: waiting %.0fs for NVR flush before pulling alert=%d",
+                remaining, alert_id,
+            )
+            time.sleep(remaining)
 
         # Per-camera NVR channel from env, matching web_service.api_alert_playback.
         env_channel = os.environ.get(f"NVR_CHANNEL_{camera_id.upper()}")
