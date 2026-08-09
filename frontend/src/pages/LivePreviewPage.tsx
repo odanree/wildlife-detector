@@ -45,7 +45,18 @@ export function LivePreviewPage() {
   const cameras = camerasData?.cameras ?? [];
   const defaultCam = camerasData?.default ?? "";
   const [searchParams, setSearchParams] = useSearchParams();
-  const primary = searchParams.get("camera") ?? defaultCam;
+  // Primary camera resolution order:
+  //   1. ?camera= in URL (deep-link, share, in-tab nav preserves)
+  //   2. localStorage (across-nav persistence — clicking Alerts and
+  //      back loses the URL param, so this restores the last choice)
+  //   3. server-provided default (yard, per registry)
+  // Persist to localStorage inline when the operator picks a new
+  // camera — no useEffect subscribing to `primary` changes (avoids
+  // the sync-via-effect anti-pattern the audit flagged).
+  const primary =
+    searchParams.get("camera") ??
+    (typeof window !== "undefined" ? localStorage.getItem("previewPrimaryCam") : null) ??
+    defaultCam;
 
   const pane = useSecondaryPane(cameras, primary);
   const zone = useZoneEditor(primary);
@@ -143,7 +154,13 @@ export function LivePreviewPage() {
             <select
               className={styles.select}
               value={primary}
-              onChange={(e) => setSearchParams({ camera: e.target.value })}
+              onChange={(e) => {
+                const cam = e.target.value;
+                // Persist inline so cross-nav (Alerts → Preview) restores
+                // this choice even though the URL param is lost.
+                localStorage.setItem("previewPrimaryCam", cam);
+                setSearchParams({ camera: cam });
+              }}
               aria-label="Primary camera"
             >
               {cameras.length === 0 && <option value="">(loading)</option>}

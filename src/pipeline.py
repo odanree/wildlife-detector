@@ -35,6 +35,13 @@ import numpy as np
 import yaml
 from dotenv import load_dotenv
 
+from src.config_bootstrap import ensure_detection_config
+
+# Copy detection.yaml.example → detection.yaml on first startup. The
+# file is gitignored (runtime-mutable via zone editor + slew preset
+# editor); ships as .example. No-op after first boot on any host.
+ensure_detection_config()
+
 load_dotenv()
 
 from src.alerts.notifier import Notifier

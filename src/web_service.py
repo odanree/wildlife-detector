@@ -41,7 +41,15 @@ import yaml
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request, send_from_directory, abort
 
+from src.config_bootstrap import ensure_detection_config
+
 load_dotenv()
+
+# First thing after env load: make sure detection.yaml exists on disk.
+# The file is gitignored (runtime-mutable — see .gitignore comment);
+# ships as detection.yaml.example. This is a no-op after the first
+# container boot on any given host.
+ensure_detection_config()
 
 Path("logs").mkdir(exist_ok=True)
 logging.basicConfig(

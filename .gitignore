@@ -16,6 +16,15 @@ data/
 clips/
 backups/
 
+# detection.yaml is BOTH shipped defaults AND runtime-mutable state
+# (operator polygons, zone edits written via the UI). Two roles, one
+# file = git operations can silently clobber runtime state — happened
+# Aug 9 when a `git reset --hard` wiped drawn slew polygons. Fix:
+# gitignore the actual file; ship `detection.yaml.example` as the
+# defaults; each container copies example→real on first startup if
+# missing (see src/config_bootstrap.py).
+config/detection.yaml
+
 # IDE
 .vscode/
 .idea/
