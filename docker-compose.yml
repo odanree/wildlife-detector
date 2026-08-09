@@ -428,12 +428,16 @@ services:
       # match. See src/stream/self_slew.py for the lifecycle.
       SELF_SLEW_ENABLED: "false"
       # PTZ command target — camera_id=2 in the config maps to these
-      # env vars. Sends /cgi-bin/ptz.cgi commands to the camera's own
-      # HTTP interface (not to the NVR).
+      # env vars. Jennov cams (Hikvision-family firmware, ONVIF-only)
+      # don't have Dahua CGI; go through /onvif/ptz SOAP with
+      # WS-Security digest instead.
       PTZ_HOST_2: "192.168.1.118"
       PTZ_USER_2: "admin"
       PTZ_PASS_2: "123456"
-      PTZ_CHANNEL_2: "1"
+      PTZ_BACKEND_2: "onvif"
+      # ONVIF media ProfileToken. Discover via GetProfiles if this
+      # camera model differs; MainStream is the Jennov default.
+      PTZ_ONVIF_PROFILE_2: "MainStream"
     expose:
       - "8103"
     healthcheck:
