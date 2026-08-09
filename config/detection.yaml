@@ -10,6 +10,7 @@ osd_masks:
   - [0.0092, 0.0212, 0.2932, 0.0637]
   rooftop:
   - [0.3516, 0.0075, 0.7349, 0.0787]
+  backyard: []
 zones:
   yard_zone:
     polygon:
@@ -22,17 +23,27 @@ zones:
     - [0.7463, 0.1176]
   rooftop_zone:
     polygon:
-    - [0.1274, 0.0388]
-    - [0.0796, 0.111]
-    - [0.0142, 0.7414]
+    - [0.1318, 0.0593]
+    - [0.0815, 0.1282]
+    - [0.0059, 0.7403]
     - [0.0068, 0.9892]
-    - [0.9751, 0.986]
-    - [0.9751, 0.903]
-    - [0.8652, 0.5474]
-    - [0.7227, 0.528]
-    - [0.7266, 0.4784]
-    - [0.6431, 0.3793]
+    - [0.9878, 0.9828]
+    - [0.9922, 0.8761]
+    - [0.8462, 0.4472]
+    - [0.7192, 0.4838]
+    - [0.7222, 0.3901]
+    - [0.6587, 0.3319]
     - [0.394, 0.8308]
+  # Placeholder full-frame zone — draw the real polygon via the zone
+  # editor in the UI (camera picker → backyard → click points on the
+  # preview) after the detector comes up. Full-frame catches all motion
+  # in the meantime so you can eyeball which regions to mask.
+  backyard_zone:
+    polygon:
+    - [0.0, 0.0]
+    - [1.0, 0.0]
+    - [1.0, 1.0]
+    - [0.0, 1.0]
 slew_presets:
 - name: default
   polygon:
