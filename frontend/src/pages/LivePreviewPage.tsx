@@ -3,11 +3,14 @@ import { useSearchParams } from "react-router-dom";
 import { CameraPane, type ViewMode } from "../components/CameraPane";
 import { GlobalHeader } from "../components/GlobalHeader";
 import { type MaskMode, MaskOverlay } from "../components/MaskOverlay";
+import { SlewPresetPanel } from "../components/SlewPresetPanel";
+import { SlewPresetsOverlay } from "../components/SlewPresetsOverlay";
 import { type EditMode, ZoneOverlay } from "../components/ZoneOverlay";
 import { useCameras } from "../hooks/useCameras";
 import { useDetectionSize } from "../hooks/useDetectionSize";
 import { useMaskEditor } from "../hooks/useMaskEditor";
 import { useSecondaryPane } from "../hooks/useSecondaryPane";
+import { useSlewPresetEditor } from "../hooks/useSlewPresetEditor";
 import { useStatus } from "../hooks/useStatus";
 import { useZoneEditor } from "../hooks/useZoneEditor";
 import styles from "./LivePreviewPage.module.css";
@@ -47,12 +50,29 @@ export function LivePreviewPage() {
   const pane = useSecondaryPane(cameras, primary);
   const zone = useZoneEditor(primary);
   const mask = useMaskEditor(primary);
+  const slew = useSlewPresetEditor(primary);
 
   // View mode is keyed by camera (not pane slot) so it follows a
   // camera across a promote-swap. Session-only.
   const [viewModes, setViewModes] = useState<Record<string, ViewMode>>({});
   const setViewModeFor = (camera: string) => (mode: ViewMode) =>
     setViewModes((prev) => ({ ...prev, [camera]: mode }));
+
+  // Slew preset overlay visibility. Off by default — the read-only
+  // outlines clutter the main view when the operator isn't editing
+  // slew polygons. Persisted to localStorage so the choice survives
+  // reloads. Force-shown while editing (see slewOverlaysVisible below)
+  // so the operator has context for the polygon they're working on.
+  const [slewOverlaysToggle, setSlewOverlaysToggle] = useState<boolean>(
+    () => localStorage.getItem("slewOverlaysVisible") === "1",
+  );
+  const toggleSlewOverlays = () => {
+    setSlewOverlaysToggle((v) => {
+      const next = !v;
+      localStorage.setItem("slewOverlaysVisible", next ? "1" : "0");
+      return next;
+    });
+  };
 
   // Editors target the primary camera. detW/detH come from primary's
   // status with useDetectionSize's cache filling the gap during a
@@ -61,25 +81,59 @@ export function LivePreviewPage() {
   const { data: primaryStatus } = useStatus(primary || undefined);
   const [detW, detH] = useDetectionSize(primary, primaryStatus?.detection_size);
 
-  // Displayed polygons/masks: server value when idle, working value
-  // otherwise. Replaces the H4 sync-via-effect the audit flagged.
-  const displayedPolygon = zone.mode === "idle" ? zone.serverPolygon : zone.workingPolygon;
+  // Displayed masks: server value when idle, working value otherwise.
+  // Replaces the H4 sync-via-effect the audit flagged. (Displayed
+  // polygon is computed below along with the slew-aware overlay
+  // routing — see zoneOverlayPolygon.)
   const displayedMasks = mask.mode === "idle" ? mask.serverMasks : mask.workingMasks;
 
   // Mutual-exclusion enforced at the page layer — before entering an
-  // editor mode, cancel the other. Only one editor active at a time.
+  // editor mode, cancel the other two. Only one editor active at a
+  // time. (Third editor landed → still not extracting useEditorRegistry
+  // per YAGNI; hand-wired mutual-cancel is 6 lines.)
   const enterZoneDraw = () => {
     mask.cancel();
+    slew.cancel();
     zone.enterDraw();
   };
   const enterZoneTweak = () => {
     mask.cancel();
+    slew.cancel();
     zone.enterTweak();
   };
   const enterMaskEdit = () => {
     zone.cancel();
+    slew.cancel();
     mask.enterEdit();
   };
+  const enterSlewEdit = () => {
+    zone.cancel();
+    mask.cancel();
+  };
+
+  // Which polygon does ZoneOverlay display + edit? Priority:
+  //   1. Active slew preset (draw/tweak) — polygon of the editing preset
+  //   2. Zone editor working polygon (draw/tweak)
+  //   3. Zone server polygon (idle)
+  // When slew is active, zone editor is forcibly idle (mutual-exclusion
+  // above), so the zone-editor branch collapses to server view.
+  const slewActive = slew.mode !== "idle" && slew.activePreset !== null;
+  const activeSlewPolygon = slewActive
+    ? (slew.workingPresets.find((p) => p.preset === slew.activePreset)?.polygon ?? [])
+    : null;
+  const zoneOverlayMode: EditMode = slewActive ? slew.mode : zone.mode;
+  const zoneOverlayPolygon = slewActive
+    ? (activeSlewPolygon ?? [])
+    : zone.mode === "idle"
+      ? zone.serverPolygon
+      : zone.workingPolygon;
+  const zoneOverlayOnChange = slewActive ? slew.setActivePolygon : zone.setWorkingPolygon;
+  const zoneOverlayOnClose = slewActive ? slew.closeDrawing : zone.closeDrawing;
+
+  // Show slew preset outlines when toggled on OR when actively
+  // editing — operator needs context on the other zones to place
+  // vertices sensibly.
+  const slewOverlaysVisible = slewOverlaysToggle || slewActive;
 
   return (
     <div className={styles.wrap}>
@@ -115,45 +169,53 @@ export function LivePreviewPage() {
       />
 
       {primary && (
-        <div className={styles.editorToolbar}>
-          <span className={styles.editorScope}>editing: primary</span>
-          <ZoneEditorButtons
-            mode={zone.mode}
-            vertexCount={zone.workingPolygon.length}
-            isSimple={zone.isSimple}
-            saving={zone.saving}
-            saveErr={zone.saveErr}
-            onDraw={enterZoneDraw}
-            onTweak={enterZoneTweak}
-            onSave={zone.save}
-            onCancel={zone.cancel}
+        <>
+          <div className={styles.editorToolbar}>
+            <span className={styles.editorScope}>editing: primary</span>
+            <ZoneEditorButtons
+              mode={zone.mode}
+              vertexCount={zone.workingPolygon.length}
+              isSimple={zone.isSimple}
+              saving={zone.saving}
+              saveErr={zone.saveErr}
+              onDraw={enterZoneDraw}
+              onTweak={enterZoneTweak}
+              onSave={zone.save}
+              onCancel={zone.cancel}
+            />
+            <MaskEditorButtons
+              mode={mask.mode}
+              count={mask.workingMasks.length}
+              saving={mask.saving}
+              saveErr={mask.saveErr}
+              onEdit={enterMaskEdit}
+              onSave={mask.save}
+              onCancel={mask.cancel}
+            />
+            <span className={styles.spacer} />
+            {pane.secondary ? null : (
+              <button
+                type="button"
+                className={styles.linkBtn}
+                onClick={pane.add}
+                disabled={!pane.canAdd}
+                title={
+                  cameras.length < 2
+                    ? "Need at least two cameras to open a secondary pane"
+                    : "Show a second camera below the primary"
+                }
+              >
+                + Add camera pane
+              </button>
+            )}
+          </div>
+          <SlewPresetPanel
+            editor={slew}
+            onEnterEdit={enterSlewEdit}
+            overlaysVisible={slewOverlaysToggle}
+            onToggleOverlays={toggleSlewOverlays}
           />
-          <MaskEditorButtons
-            mode={mask.mode}
-            count={mask.workingMasks.length}
-            saving={mask.saving}
-            saveErr={mask.saveErr}
-            onEdit={enterMaskEdit}
-            onSave={mask.save}
-            onCancel={mask.cancel}
-          />
-          <span className={styles.spacer} />
-          {pane.secondary ? null : (
-            <button
-              type="button"
-              className={styles.linkBtn}
-              onClick={pane.add}
-              disabled={!pane.canAdd}
-              title={
-                cameras.length < 2
-                  ? "Need at least two cameras to open a secondary pane"
-                  : "Show a second camera below the primary"
-              }
-            >
-              + Add camera pane
-            </button>
-          )}
-        </div>
+        </>
       )}
 
       {!primary ? (
@@ -168,13 +230,21 @@ export function LivePreviewPage() {
             viewMode={viewModes[primary] ?? "live"}
             onViewModeChange={setViewModeFor(primary)}
           >
+            {slewOverlaysVisible && (
+              <SlewPresetsOverlay
+                baseW={detW}
+                baseH={detH}
+                presets={slew.workingPresets}
+                activePreset={slew.activePreset}
+              />
+            )}
             <ZoneOverlay
               baseW={detW}
               baseH={detH}
-              polygon={displayedPolygon}
-              mode={zone.mode}
-              onChange={zone.setWorkingPolygon}
-              onClose={zone.closeDrawing}
+              polygon={zoneOverlayPolygon}
+              mode={zoneOverlayMode}
+              onChange={zoneOverlayOnChange}
+              onClose={zoneOverlayOnClose}
             />
             <MaskOverlay
               baseW={detW}

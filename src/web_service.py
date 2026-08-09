@@ -1051,6 +1051,95 @@ def create_app(registry: DetectorRegistry) -> Flask:
         result, status_code = detector.post_command("/internal/zone", json_body=body)
         return jsonify(result), status_code
 
+    # ── Slew presets (direct YAML read; write via detector command) ───────
+    # Same shape as zone/masks: web reads yaml on GET (no detector round-
+    # trip), forwards mutations to /internal/slew/presets so the detector
+    # can reset its SelfSlewController singleton in-process.
+
+    @app.get("/api/slew/presets")
+    def get_slew_presets():
+        detector = _pick(request)
+        cam_id = request.args.get("camera") or registry.default
+        try:
+            st = detector.status()
+            det_w, det_h = st.get("detection_size", [1280, 720])
+        except Exception:
+            det_w, det_h = 1280, 720
+        import yaml as _yaml
+        try:
+            with open(_DETECTION_CFG, encoding="utf-8") as fh:
+                cfg = _yaml.safe_load(fh) or {}
+        except FileNotFoundError:
+            return jsonify({"error": "detection.yaml not found"}), 404
+        block = (cfg.get("slew") or {}).get(cam_id) or {}
+        presets = []
+        for p in block.get("presets", []):
+            norm = p.get("polygon", []) or []
+            # Scale normalized (0-1) polygon → pixel coords for the UI
+            # overlay, same as _scale_normalized_polygon does for zones.
+            px_poly = [
+                [int(pt[0] * det_w), int(pt[1] * det_h)] for pt in norm
+            ]
+            presets.append({
+                "name":    p.get("name", "unnamed"),
+                "preset":  int(p.get("preset", 0)),
+                "polygon": px_poly,
+            })
+        return jsonify({
+            "camera_id":           cam_id,
+            "enabled":             bool(block.get("enabled", False)),
+            "ptz_camera_id":       int(block.get("camera_id", 2)),
+            "home_preset":         int(block.get("home_preset", 1)),
+            "return_home_after_s": float(block.get("return_home_after_s", 30.0)),
+            "frame_width":         det_w,
+            "frame_height":        det_h,
+            "presets":             presets,
+        })
+
+    @app.put("/api/slew/presets")
+    def put_slew_presets():
+        """Persist per-preset polygons. Body sends polygons in PIXEL
+        coords; we normalize to (0-1) before forwarding to the detector
+        so yaml stays resolution-independent. Scalar overrides
+        (enabled, home_preset, etc.) pass through unmodified — only
+        polygon coords need conversion."""
+        detector = _pick(request)
+        try:
+            st = detector.status()
+            det_w, det_h = st.get("detection_size", [1280, 720])
+        except Exception:
+            det_w, det_h = 1280, 720
+        body = request.get_json(silent=True) or {}
+        presets_in = body.get("presets") or []
+        for p in presets_in:
+            poly = p.get("polygon") or []
+            p["polygon"] = [
+                [max(0.0, min(1.0, pt[0] / det_w)),
+                 max(0.0, min(1.0, pt[1] / det_h))]
+                for pt in poly
+            ]
+        # Forward the FULL body so scalar overrides (enabled,
+        # home_preset, return_home_after_s, etc.) also make it through.
+        # Overwrite presets with the normalized version.
+        forward = dict(body)
+        forward["presets"] = presets_in
+        result, status_code = detector.post_command(
+            "/internal/slew/presets", json_body=forward,
+        )
+        return jsonify(result), status_code
+
+    @app.post("/api/ptz/preset")
+    def post_ptz_preset():
+        """Fire a manual GotoPreset — used by the slew-preset editor's
+        'go here' button so the operator can verify what each preset
+        views before drawing its polygon."""
+        detector = _pick(request)
+        body = request.get_json(silent=True) or {}
+        result, status_code = detector.post_command(
+            "/internal/ptz/preset", json_body=body,
+        )
+        return jsonify(result), status_code
+
     # ── OSD masks (direct YAML read; write via detector command) ───────────
 
     @app.get("/api/masks")

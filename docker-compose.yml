@@ -422,11 +422,10 @@ services:
       # URL so this port must be unique across the compose network.
       DETECTOR_INTERNAL_PORT: 8103
       # Self-slew PTZ (backyard's own PTZ camera pans on positive
-      # detection). Master kill-switch — flip to "true" AFTER presets
-      # are saved on the camera's onboard PTZ web UI AND the polygons
-      # in config/detection.yaml (slew.backyard.presets) are drawn to
-      # match. See src/stream/self_slew.py for the lifecycle.
-      SELF_SLEW_ENABLED: "false"
+      # detection). Enabled 2026-08-09 after 6 zone polygons drawn +
+      # per-preset PTZ presets saved on the camera. See
+      # src/stream/self_slew.py for the lifecycle.
+      SELF_SLEW_ENABLED: "true"
       # PTZ command target — camera_id=2 in the config maps to these
       # env vars. Jennov cams (Hikvision-family firmware, ONVIF-only)
       # don't have Dahua CGI; go through /onvif/ptz SOAP with
