@@ -577,6 +577,14 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     # sized crops. Default 2000 = 45x45 blob; anything bigger goes to
     # the VLM regardless of brightness.
     _INSECT_FILTER_MAX_AREA_PX = int(os.getenv("INSECT_FILTER_MAX_AREA_PX", "2000"))
+    # Daytime detection skip — hard-off during daylight hours when shadow
+    # FPs dominate signal on some cameras. Uses same brightness threshold
+    # as the baseline picker (DAY_NIGHT_BRIGHTNESS_THRESHOLD). When the
+    # frame's mean grayscale >= threshold, skip the whole detection path;
+    # preview still publishes with a "daytime paused" banner so operator
+    # sees the camera isn't dead. Set 0/false to disable (default).
+    _SKIP_DAYTIME_DETECTION = os.getenv("SKIP_DAYTIME_DETECTION", "0") == "1"
+    _DAY_NIGHT_THRESHOLD = int(os.getenv("DAY_NIGHT_BRIGHTNESS_THRESHOLD", "100"))
     # Scene-chaos bulkhead — two orthogonal signals that gate the per-det
     # inner loop when the frame isn't worth processing. Isolates chaotic
     # frames from the stable detection path so one bad frame doesn't drag
@@ -715,6 +723,36 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             # transition_pause_s (default 2 s, ~40 frames at 20 fps).
             if _self_slew_in_transition():
                 continue
+
+            # Daytime detection skip — some cameras (yard, backyard) have
+            # dominant shadow FPs during daylight that overwhelm MOG.
+            # Hard-off entire detection path when SKIP_DAYTIME_DETECTION=1
+            # and the frame is bright enough to be day. Cheap check on the
+            # same 160x90 downsample the scene-change gate builds a moment
+            # later, so ~0.1ms cost. Preview still publishes with a banner
+            # so operator knows the pause is intentional.
+            if _SKIP_DAYTIME_DETECTION:
+                _small_dt = cv2.resize(frame, (160, 90))
+                _mean_brightness = float(
+                    (cv2.cvtColor(_small_dt, cv2.COLOR_BGR2GRAY) if _small_dt.ndim == 3 else _small_dt).mean()
+                )
+                if _mean_brightness >= _DAY_NIGHT_THRESHOLD:
+                    _frame_count += 1
+                    if _frame_count % PREVIEW_EVERY_N == 0:
+                        ok_raw, buf_raw = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        if ok_raw:
+                            _publish_raw_frame(buf_raw.tobytes())
+                        _daytime_annotated = frame.copy()
+                        cv2.putText(
+                            _daytime_annotated,
+                            f"detection paused (daytime, brightness={_mean_brightness:.0f} >= {_DAY_NIGHT_THRESHOLD})",
+                            (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                            (0, 200, 255), 2, cv2.LINE_AA,
+                        )
+                        ok, buf = cv2.imencode(".jpg", _daytime_annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                        if ok:
+                            _publish_preview_frame(buf.tobytes())
+                    continue
 
             # Chaos-cooldown decay: after any chaos-gate fire (scene-
             # change or bbox-flood), we hold the skip for N more frames
