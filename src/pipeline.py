@@ -1082,6 +1082,12 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                             # alert (only snapshot lands, no HA webhook,
                             # no DB row, no ALERT log line).
                             "bypass_min_confidence": True,
+                            # bypass_cooldown: overrides are per-event
+                            # labeling triggers, not operator alerts —
+                            # every event should reach the human. Default
+                            # 120s cooldown was dropping 12/14 overrides
+                            # in sandbox on the 2341 cat clip.
+                            "bypass_cooldown": True,
                             "description": (
                                 f"[VLM-REJECT-OVERRIDE] VLM said {_rejected_species!r} "
                                 f"(conf={result.get('confidence', 0.0):.2f}); MOG + baseline "
