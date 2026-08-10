@@ -908,6 +908,61 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                                               result.get("description", ""))
                         except Exception:
                             logger.exception("Failed to save rejected crop for track=%d", tid)
+                    # Alert-on-VLM-reject: when VLM says "no wildlife"
+                    # but MOG + baseline-diff already agreed something
+                    # meaningful is there, fire an 'other' alert anyway
+                    # so the operator sees + labels it. **Fires per
+                    # motion event by default (VLM_REJECT_ALERT_MIN_AREA_PX=0)**
+                    # — silent misses are worse than misclassifications
+                    # (human can relabel a wrong species, can't recover
+                    # a dropped alert). Set the env to a positive px area
+                    # to gate on bbox size if the alert volume becomes
+                    # a problem.
+                    #
+                    # Insect classification excluded (species='insect' is
+                    # count-only by design). The upstream gates
+                    # (MIN_MOTION_BBOX_PX + baseline diff threshold +
+                    # insect brightness pre-filter) still control the
+                    # firing floor.
+                    _reject_alert_min_area = int(os.getenv("VLM_REJECT_ALERT_MIN_AREA_PX", "0"))
+                    _rejected_species = str(result.get("species", "")).lower()
+                    _bbox_area = _bw * _bh
+                    if (
+                        _rejected_species != "insect"
+                        and _bbox_area >= _reject_alert_min_area
+                    ):
+                        logger.info(
+                            "VLM-reject override: track=%d bbox=%dx%d area=%d — firing 'other' for human review",
+                            tid, _bw, _bh, _bbox_area,
+                        )
+                        _override_result = {
+                            "wildlife_detected": True,
+                            "species": "other",
+                            "is_rodent": False,
+                            "confidence": 0.5,
+                            "description": (
+                                f"[VLM-REJECT-OVERRIDE] VLM said {_rejected_species!r} "
+                                f"(conf={result.get('confidence', 0.0):.2f}); MOG + baseline "
+                                f"agreed motion is here (bbox {_bw}x{_bh}={_bbox_area}px). "
+                                f"Filing as 'other' for human review. Original: "
+                                f"{result.get('description', '')[:120]}"
+                            ),
+                        }
+                        snap_path = notifier.send("other", _override_result, snap_fr, bbox, yolo_conf=yolo_conf)
+                        _snap_ref = None
+                        if snap_path:
+                            try:
+                                _snap_ref = str(snap_path.relative_to(snap_path.parent.parent)).replace('\\', '/')
+                            except Exception:
+                                _snap_ref = snap_path.name
+                        _preview_stats.record_alert(
+                            species="other",
+                            confidence=0.5,
+                            description=_override_result["description"],
+                            snapshot=_snap_ref,
+                            track_id=tid,
+                            yolo_conf=yolo_conf,
+                        )
                     continue
 
                 # Positive rodent — fire alert + slew secondary camera
@@ -1004,6 +1059,26 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     if det.class_name not in _WILDLIFE_COCO:
                         logger.debug("YOLO drop: non-wildlife class '%s' track=%d",
                                      det.class_name, det.track_id)
+                        continue
+                    # Cat/bird sanity check: overhead + IR silhouettes of
+                    # cats commonly trip YOLO's 'bird' class at 0.5-0.7
+                    # confidence (observed on backyard 23:40-23:41). When
+                    # YOLO says a low-confidence bird, DON'T take the
+                    # fast-path — fall through to MOG/VLM so the VLM has a
+                    # chance to reclassify (usually cat when the silhouette
+                    # is cat-sized). Env-tunable via
+                    # YOLO_FASTPATH_MIN_CONF_BIRD (default 0.85).
+                    _bird_min_conf = float(os.getenv("YOLO_FASTPATH_MIN_CONF_BIRD", "0.85"))
+                    if det.class_name == "bird" and det.confidence < _bird_min_conf:
+                        logger.info(
+                            "YOLO bird-conf gate: track=%d conf=%.2f < %.2f → fall through to VLM",
+                            det.track_id, det.confidence, _bird_min_conf,
+                        )
+                        # Don't `continue` — we want the normal cascade to
+                        # handle this track. But this is inside the YOLO
+                        # fast-path branch; drop THROUGH to the MOG path
+                        # by returning early from the branch. Easiest: just
+                        # skip the alert-fire + slew for this loop iter.
                         continue
                     _yolo_result = {
                         "wildlife_detected": True,
