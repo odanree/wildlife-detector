@@ -577,6 +577,26 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     # sized crops. Default 2000 = 45x45 blob; anything bigger goes to
     # the VLM regardless of brightness.
     _INSECT_FILTER_MAX_AREA_PX = int(os.getenv("INSECT_FILTER_MAX_AREA_PX", "2000"))
+    # Scene-chaos bulkhead — two orthogonal signals that gate the per-det
+    # inner loop when the frame isn't worth processing. Isolates chaotic
+    # frames from the stable detection path so one bad frame doesn't drag
+    # loop latency (and downstream VLM queue pressure) for the next 30.
+    #
+    # (a) frame-diff scene-change: >X fraction of pixels changed vs
+    #     previous frame. Catches manual PTZ (via camera app), zoom,
+    #     PIR light kick-on, brief loss-of-sync — any whole-scene
+    #     shift MOG would misread as motion. 0.4 = 40% of the 160x90
+    #     downsampled frame differing by ≥30 grayscale levels.
+    # (b) bbox-flood: too many raw dets in one frame means MOG stormed
+    #     (foliage wind, IR flicker on textured surfaces, first frames
+    #     post-restart before MOG warmup). Skip the whole per-det inner
+    #     loop rather than pay ~5ms/det on garbage. Complements the
+    #     softer PREVIEW_ANNOTATE_MAX_DETS annotation guard: annotation
+    #     suppression at 40, full processing skip at 60.
+    _SCENE_CHANGE_SKIP_FRACTION = float(os.getenv("SCENE_CHANGE_SKIP_FRACTION", "0.4"))
+    _SCENE_CHANGE_PIXEL_DELTA = int(os.getenv("SCENE_CHANGE_PIXEL_DELTA", "30"))
+    _MAX_DETS_PER_FRAME_SKIP = int(os.getenv("MAX_DETS_PER_FRAME_SKIP", "60"))
+    _prev_scene_gray: np.ndarray | None = None
     vlm_pool = ThreadPoolExecutor(max_workers=_VLM_WORKERS, thread_name_prefix="vlm")
     logger.info("VLM pool: workers=%d max_inflight=%d max_alert_age=%.1fs",
                 _VLM_WORKERS, _VLM_MAX_INFLIGHT, _VLM_MAX_ALERT_AGE_S)
@@ -665,6 +685,29 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             if _self_slew_in_transition():
                 continue
 
+            # Scene-change bulkhead — catches whole-scene shifts the
+            # self-slew guard misses (manual PTZ via camera app, zoom,
+            # PIR light kick, brief loss-of-sync). Downsample to 160x90,
+            # abs-diff vs previous frame, skip when >SCENE_CHANGE_SKIP_
+            # FRACTION of pixels differ by >= SCENE_CHANGE_PIXEL_DELTA
+            # grayscale levels. ~1ms overhead per frame; catches events
+            # ONVIF GetStatus polling would miss on non-ONVIF cameras
+            # (yard Reolink, rooftop Annke).
+            if _SCENE_CHANGE_SKIP_FRACTION < 1.0:
+                _small = cv2.resize(frame, (160, 90))
+                _gray_now = cv2.cvtColor(_small, cv2.COLOR_BGR2GRAY) if _small.ndim == 3 else _small
+                if _prev_scene_gray is not None:
+                    _diff = cv2.absdiff(_gray_now, _prev_scene_gray)
+                    _changed_frac = float((_diff > _SCENE_CHANGE_PIXEL_DELTA).sum()) / _diff.size
+                    if _changed_frac > _SCENE_CHANGE_SKIP_FRACTION:
+                        logger.info(
+                            "Scene-change skip: changed=%.2f > %.2f (pan/zoom/lighting)",
+                            _changed_frac, _SCENE_CHANGE_SKIP_FRACTION,
+                        )
+                        _prev_scene_gray = _gray_now
+                        continue
+                _prev_scene_gray = _gray_now
+
             # Temporal buffer: keep the last N frames so a VLM dispatch
             # can pull recent history and crop the same bbox from each.
             # frame.copy() is unavoidable — subsequent iterations mutate
@@ -714,6 +757,21 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             all_dets = all_dets + motion_dets
             if motion_dets:
                 _preview_stats.record_motion(len(motion_dets))
+
+            # Bbox-flood bulkhead — chaotic frames aren't worth the per-det
+            # inner loop (baseline diff + insect check + VLM submit per
+            # bbox at ~5ms each). Common triggers: MOG storm from wind-
+            # swayed foliage, IR flicker on brick/tarp textures, first
+            # frames post-restart before MOG background stabilizes.
+            # Complements the softer PREVIEW_ANNOTATE_MAX_DETS annotation
+            # guard: annotation suppression fires at 40, full processing
+            # skip at 60. Set MAX_DETS_PER_FRAME_SKIP=0 to disable.
+            if _MAX_DETS_PER_FRAME_SKIP > 0 and len(all_dets) > _MAX_DETS_PER_FRAME_SKIP:
+                logger.info(
+                    "Bbox-flood skip: %d dets > %d — skipping frame per-det loop",
+                    len(all_dets), _MAX_DETS_PER_FRAME_SKIP,
+                )
+                continue
             # Surface the kinematic-gate reject counts (populated inside
             # MotionDetector.detect above) so the funnel chip can show
             # how much the velocity + persistence gates are killing.
