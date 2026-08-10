@@ -551,6 +551,21 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     # touching low-conf mammal crops that are already dark. Bump higher
     # if legit rodents get mis-flagged; lower if moths still slip through.
     _NIGHT_INSECT_BRIGHTNESS_MIN = float(os.getenv("NIGHT_INSECT_BRIGHTNESS_MIN", "130"))
+    # Peak-brightness gate: a moth streak against dark ground averages
+    # ~40-60 mean but pixel max hits 255. Rodent fur under IR maxes
+    # around 180. Any small bbox whose brightest pixel is at or above
+    # this threshold gets classified as insect. Catches the thin-fuzzy-
+    # streak failure mode the mean-brightness gate misses. 220/255 is
+    # tight enough to avoid mammal false-positives while catching moth
+    # wing IR reflections.
+    _NIGHT_INSECT_MAX_BRIGHTNESS_MIN = float(os.getenv("NIGHT_INSECT_MAX_BRIGHTNESS_MIN", "220"))
+    # Elongation gate: moth wings/streaks are aspect-ratio > 2.5 (thin
+    # bright line). Rodents in overhead crops are roughly square (AR
+    # ~1.0-1.6). Small bbox + high AR + bright pixel = insect regardless
+    # of mean brightness. Guards against blur-elongated moth streaks
+    # that avoid both the mean and max gates by having lots of dark
+    # background pixels padding one axis.
+    _NIGHT_INSECT_ELONGATION_MIN = float(os.getenv("NIGHT_INSECT_ELONGATION_MIN", "2.5"))
     # Insect pre-filter is a moth-specific hard rail. Moths are
     # physically small (usually ~15-40 px per axis, sometimes up to
     # ~50 px with wing-motion blur). Cats, raccoons, opossums at
@@ -1053,32 +1068,50 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         continue
 
                 # Insect pre-filter (physical hard rail) — mammal fur absorbs
-                # IR/light, moth wings reflect it. A bbox whose mean pixel
-                # brightness exceeds threshold is physically-can't-be-a-
-                # mammal → classify as insect, skip VLM. Deterministic,
-                # faster than a VLM call, immune to the small-VLM failure
-                # mode where qwen hallucinates rodent anatomy on moth crops.
-                # Runs regardless of day/night flag: rooftop under street/
-                # courtyard lighting stays in "day" baseline mode even at
-                # 2 AM local, so gating on mode==night misses the majority
-                # of overnight moth activity.
+                # IR/light, moth wings reflect it. A bbox that looks like a
+                # moth is physically-can't-be-a-mammal → classify as insect,
+                # skip VLM. Deterministic, faster than a VLM call, immune to
+                # the small-VLM failure mode where qwen hallucinates rodent
+                # anatomy on moth crops. Runs regardless of day/night flag:
+                # rooftop under street/courtyard lighting stays in "day"
+                # baseline mode even at 2 AM local, so gating on mode==night
+                # misses the majority of overnight moth activity.
                 #
+                # Three orthogonal signatures, ANY one triggers insect:
+                #   (a) mean_brightness   — whole crop is IR-hot (near-white
+                #       moth against near-white ground)
+                #   (b) max_brightness    — a bright streak on dark ground
+                #       averages down but has 255-pixel peaks (the failure
+                #       mode of mean-only: yard IR at 00:55 8/10)
+                #   (c) elongation ratio  — thin fuzzy line = moth wing
+                #       blur; rodents in overhead crops are ~square
                 # Size guard: also require bbox area < INSECT_FILTER_MAX_AREA_PX.
                 # Moths are physically small; a large bright blob is a mammal
                 # with pale fur or IR reflection off the ground under it,
                 # NOT a moth. Without this guard, cats/raccoons at overhead
                 # angle get silently rejected (see Aug 8 02:23 cat incident).
-                # Env-tunable via NIGHT_INSECT_BRIGHTNESS_MIN + INSECT_FILTER_MAX_AREA_PX.
                 _bx1, _by1, _bx2, _by2 = det.bbox
-                _bbox_area = max(0, _bx2 - _bx1) * max(0, _by2 - _by1)
+                _bw = max(0, _bx2 - _bx1)
+                _bh = max(0, _by2 - _by1)
+                _bbox_area = _bw * _bh
                 _bcrop = frame[max(0, _by1):_by2, max(0, _bx1):_bx2]
                 if _bcrop.size > 0 and _bbox_area < _INSECT_FILTER_MAX_AREA_PX:
                     _gray = cv2.cvtColor(_bcrop, cv2.COLOR_BGR2GRAY) if _bcrop.ndim == 3 else _bcrop
                     _mean_brightness = float(_gray.mean())
-                    if _mean_brightness >= _NIGHT_INSECT_BRIGHTNESS_MIN:
+                    _max_brightness = float(_gray.max())
+                    _elongation = max(_bw, _bh) / max(1, min(_bw, _bh))
+                    _mean_hit = _mean_brightness >= _NIGHT_INSECT_BRIGHTNESS_MIN
+                    _max_hit = _max_brightness >= _NIGHT_INSECT_MAX_BRIGHTNESS_MIN
+                    _elong_hit = (
+                        _elongation >= _NIGHT_INSECT_ELONGATION_MIN
+                        and _max_brightness >= _NIGHT_INSECT_MAX_BRIGHTNESS_MIN
+                    )
+                    if _mean_hit or _max_hit or _elong_hit:
+                        _trigger = "mean" if _mean_hit else ("max" if _max_hit else "elong")
                         logger.info(
-                            "Insect pre-filter: track=%d bbox=%s area=%d mean_brightness=%.0f >= %.0f mode=%s → classify as insect, skip VLM",
-                            det.track_id, det.bbox, _bbox_area, _mean_brightness, _NIGHT_INSECT_BRIGHTNESS_MIN,
+                            "Insect pre-filter: track=%d bbox=%s area=%d mean=%.0f max=%.0f AR=%.2f trigger=%s mode=%s → classify as insect, skip VLM",
+                            det.track_id, det.bbox, _bbox_area,
+                            _mean_brightness, _max_brightness, _elongation, _trigger,
                             _baseline_cache[0][1] if _baseline_np is not None else "?",
                         )
                         _preview_stats.record_vlm_insect()
