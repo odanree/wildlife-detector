@@ -597,8 +597,22 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     # missed slow/blurry pans where per-pixel delta was 15-25 on most
     # pixels. 0.2 + delta=15 catches those without triggering on
     # rodent-scale motion (a rat is <1% of the 160x90 downsample).
-    _SCENE_CHANGE_SKIP_FRACTION = float(os.getenv("SCENE_CHANGE_SKIP_FRACTION", "0.2"))
+    # Raised 0.2 → 0.5 after 08/10 10:46 cat-crossing incident: a cat
+    # crossing the yard generates whole-frame secondary motion (branches,
+    # ground debris, cat contour itself) that hit ~60% pixel change and
+    # falsely tripped scene-change gate. Cat's frames got skipped, only
+    # eyeshine moment survived (misclassified as mouse). 0.5 lets normal
+    # large-animal crossings through while still catching real pans
+    # (typically 70-90% pixel change).
+    _SCENE_CHANGE_SKIP_FRACTION = float(os.getenv("SCENE_CHANGE_SKIP_FRACTION", "0.5"))
     _SCENE_CHANGE_PIXEL_DELTA = int(os.getenv("SCENE_CHANGE_PIXEL_DELTA", "15"))
+    # Large-bbox exemption: chaos gates (scene-change + bbox-flood) should
+    # NOT gate when a single large bbox is present — that's a big animal
+    # (cat, opossum, raccoon, dog) whose crossing looks like a pan to the
+    # whole-frame signals. 15000 px = ~123x123 blob = definitely-not-noise.
+    # Cats project as 300-500 px per side at yard's geometry so 15000 is
+    # a conservative floor. Set 0 to disable exemption.
+    _CHAOS_EXEMPT_MIN_BBOX_AREA = int(os.getenv("CHAOS_EXEMPT_MIN_BBOX_AREA", "15000"))
     # Cooldown-after-fire (hysteresis): a pan is 10-30 frames long.
     # Single-frame gate leaks 1-3 frames through, and any single leaked
     # frame that alerts sticks on the preview for ALERT_FLASH_FRAMES.
@@ -814,12 +828,28 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             # guard: annotation suppression fires at 40, full processing
             # skip at 60. Set MAX_DETS_PER_FRAME_SKIP=0 to disable.
             if _MAX_DETS_PER_FRAME_SKIP > 0 and len(all_dets) > _MAX_DETS_PER_FRAME_SKIP:
-                _chaos_cooldown_remaining = _SCENE_CHANGE_COOLDOWN_FRAMES
-                logger.info(
-                    "Bbox-flood skip: %d dets > %d — skipping frame per-det loop, cooldown=%d frames",
-                    len(all_dets), _MAX_DETS_PER_FRAME_SKIP, _chaos_cooldown_remaining,
+                # Large-bbox exemption: if any single bbox is big enough
+                # to be a real animal (cat, opossum, raccoon), process
+                # the frame despite the flood. Otherwise a cat crossing
+                # + wind-moved foliage gets treated like a pure pan-
+                # storm (08/10 10:46 yard incident).
+                _biggest_bbox_area = max(
+                    (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1])
+                    for d in all_dets
                 )
-                continue
+                if (_CHAOS_EXEMPT_MIN_BBOX_AREA > 0
+                        and _biggest_bbox_area >= _CHAOS_EXEMPT_MIN_BBOX_AREA):
+                    logger.info(
+                        "Bbox-flood EXEMPT: %d dets but biggest=%d px >= %d — processing (large animal likely)",
+                        len(all_dets), _biggest_bbox_area, _CHAOS_EXEMPT_MIN_BBOX_AREA,
+                    )
+                else:
+                    _chaos_cooldown_remaining = _SCENE_CHANGE_COOLDOWN_FRAMES
+                    logger.info(
+                        "Bbox-flood skip: %d dets > %d biggest=%d px — skipping frame per-det loop, cooldown=%d frames",
+                        len(all_dets), _MAX_DETS_PER_FRAME_SKIP, _biggest_bbox_area, _chaos_cooldown_remaining,
+                    )
+                    continue
             # Surface the kinematic-gate reject counts (populated inside
             # MotionDetector.detect above) so the funnel chip can show
             # how much the velocity + persistence gates are killing.
