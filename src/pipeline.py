@@ -607,7 +607,11 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     # driven instead of command-driven. 20 frames ≈ 1s at 20fps,
     # covering the typical pan duration.
     _SCENE_CHANGE_COOLDOWN_FRAMES = int(os.getenv("SCENE_CHANGE_COOLDOWN_FRAMES", "20"))
-    _MAX_DETS_PER_FRAME_SKIP = int(os.getenv("MAX_DETS_PER_FRAME_SKIP", "60"))
+    # Aligned with PREVIEW_ANNOTATE_MAX_DETS (40) so the annotation-
+    # suppressed + processing-skipped states converge — the 40-59 window
+    # was paying full per-det cost while already showing the "pan-storm
+    # suppressed" banner. Now: >40 dets → skip both.
+    _MAX_DETS_PER_FRAME_SKIP = int(os.getenv("MAX_DETS_PER_FRAME_SKIP", "40"))
     _prev_scene_gray: np.ndarray | None = None
     _chaos_cooldown_remaining = 0
     vlm_pool = ThreadPoolExecutor(max_workers=_VLM_WORKERS, thread_name_prefix="vlm")
@@ -703,8 +707,28 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             # to cover the tail of a pan/zoom/lighting event. Same
             # bulkhead shape as _self_slew_in_transition() but signal-
             # driven instead of command-driven.
+            #
+            # Preview MUST still publish during cooldown or the video
+            # freezes for the whole skip window — operator reads that as
+            # "the app crashed" not "detection intentionally paused".
+            # Stamp a banner on the frame so the pause is legible.
             if _chaos_cooldown_remaining > 0:
                 _chaos_cooldown_remaining -= 1
+                _frame_count += 1
+                if _frame_count % PREVIEW_EVERY_N == 0:
+                    ok_raw, buf_raw = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    if ok_raw:
+                        _publish_raw_frame(buf_raw.tobytes())
+                    _cooldown_annotated = frame.copy()
+                    cv2.putText(
+                        _cooldown_annotated,
+                        f"detection paused (chaos gate, {_chaos_cooldown_remaining} frames left)",
+                        (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                        (0, 200, 255), 2, cv2.LINE_AA,
+                    )
+                    ok, buf = cv2.imencode(".jpg", _cooldown_annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                    if ok:
+                        _publish_preview_frame(buf.tobytes())
                 continue
 
             # Scene-change bulkhead — catches whole-scene shifts the
