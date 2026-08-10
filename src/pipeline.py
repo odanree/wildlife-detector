@@ -584,7 +584,22 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     # preview still publishes with a "daytime paused" banner so operator
     # sees the camera isn't dead. Set 0/false to disable (default).
     _SKIP_DAYTIME_DETECTION = os.getenv("SKIP_DAYTIME_DETECTION", "0") == "1"
-    _DAY_NIGHT_THRESHOLD = int(os.getenv("DAY_NIGHT_BRIGHTNESS_THRESHOLD", "100"))
+    # Two-signal daytime detection — fires when EITHER trigger is active.
+    # Rationale: brightness alone is fragile (Reolink auto-exposure sits
+    # yard at grayscale 108 at 3PM despite being clearly daylight); time-
+    # of-day alone doesn't adapt to overcast dawn/dusk edges.
+    #
+    # (a) Brightness signal — separate knob from DAY_NIGHT_BRIGHTNESS_
+    #     THRESHOLD (which drives baseline picker). Baseline needs HIGH
+    #     threshold (150) so Reolink IR night correctly classifies as
+    #     night. Skip needs LOW threshold (90) to fire on shaded daytime.
+    # (b) Time signal — local hour in [SKIP_DAYTIME_START_HOUR,
+    #     SKIP_DAYTIME_END_HOUR). Wraps around midnight if end<start.
+    #     Deterministic, no camera-exposure dependency.
+    _DAYTIME_SKIP_BRIGHTNESS_THRESHOLD = int(os.getenv("DAYTIME_SKIP_BRIGHTNESS_THRESHOLD",
+                                                        os.getenv("DAY_NIGHT_BRIGHTNESS_THRESHOLD", "100")))
+    _DAYTIME_SKIP_START_HOUR = int(os.getenv("SKIP_DAYTIME_START_HOUR", "7"))
+    _DAYTIME_SKIP_END_HOUR = int(os.getenv("SKIP_DAYTIME_END_HOUR", "19"))
     # Scene-chaos bulkhead — two orthogonal signals that gate the per-det
     # inner loop when the frame isn't worth processing. Isolates chaotic
     # frames from the stable detection path so one bad frame doesn't drag
@@ -726,17 +741,28 @@ def run(stream_url: str | None = None, video_path: str | None = None,
 
             # Daytime detection skip — some cameras (yard, backyard) have
             # dominant shadow FPs during daylight that overwhelm MOG.
-            # Hard-off entire detection path when SKIP_DAYTIME_DETECTION=1
-            # and the frame is bright enough to be day. Cheap check on the
-            # same 160x90 downsample the scene-change gate builds a moment
-            # later, so ~0.1ms cost. Preview still publishes with a banner
-            # so operator knows the pause is intentional.
+            # Fires when EITHER trigger is active:
+            #   (a) mean frame brightness >= DAYTIME_SKIP_BRIGHTNESS_THRESHOLD
+            #   (b) local hour in [SKIP_DAYTIME_START_HOUR, SKIP_DAYTIME_END_HOUR)
+            # (a) alone fails on shaded/overcast daylight where Reolink
+            # auto-exposure sits at ~108 grayscale (below threshold);
+            # (b) alone doesn't catch overcast dawn/dusk edges. Belt +
+            # suspenders per operator.
             if _SKIP_DAYTIME_DETECTION:
                 _small_dt = cv2.resize(frame, (160, 90))
                 _mean_brightness = float(
                     (cv2.cvtColor(_small_dt, cv2.COLOR_BGR2GRAY) if _small_dt.ndim == 3 else _small_dt).mean()
                 )
-                if _mean_brightness >= _DAY_NIGHT_THRESHOLD:
+                _bright_hit = _mean_brightness >= _DAYTIME_SKIP_BRIGHTNESS_THRESHOLD
+                _hour = time.localtime().tm_hour
+                if _DAYTIME_SKIP_START_HOUR <= _DAYTIME_SKIP_END_HOUR:
+                    _time_hit = _DAYTIME_SKIP_START_HOUR <= _hour < _DAYTIME_SKIP_END_HOUR
+                else:  # wraps midnight
+                    _time_hit = _hour >= _DAYTIME_SKIP_START_HOUR or _hour < _DAYTIME_SKIP_END_HOUR
+                if _bright_hit or _time_hit:
+                    _trigger = "bright" if _bright_hit and not _time_hit else (
+                        "time" if _time_hit and not _bright_hit else "both"
+                    )
                     _frame_count += 1
                     if _frame_count % PREVIEW_EVERY_N == 0:
                         ok_raw, buf_raw = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -745,8 +771,8 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         _daytime_annotated = frame.copy()
                         cv2.putText(
                             _daytime_annotated,
-                            f"detection paused (daytime, brightness={_mean_brightness:.0f} >= {_DAY_NIGHT_THRESHOLD})",
-                            (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                            f"detection paused (daytime, {_trigger}: b={_mean_brightness:.0f}/{_DAYTIME_SKIP_BRIGHTNESS_THRESHOLD} h={_hour}/{_DAYTIME_SKIP_START_HOUR}-{_DAYTIME_SKIP_END_HOUR})",
+                            (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                             (0, 200, 255), 2, cv2.LINE_AA,
                         )
                         ok, buf = cv2.imencode(".jpg", _daytime_annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
