@@ -288,6 +288,14 @@ def _annotate(
 ) -> np.ndarray:
     """Draw YOLO boxes (green) + motion boxes (yellow) + zone polygon (cyan) +
     alert overlays (red) onto a copy of the frame. Used for the preview stream.
+
+    Pan-storm guard: when the detection count blows past
+    PREVIEW_ANNOTATE_MAX_DETS (default 40), the camera is almost certainly
+    mid-pan — MOG fires everywhere as the scene shifts, YOLO labels many
+    tall-thin blobs as `person 50%`, and the resulting overlay is dense
+    visual noise that doesn't inform anyone. In that case we skip
+    drawing individual det boxes (still draw the zone polygon so
+    orientation is preserved) and stamp the frame with a hint.
     """
     out = frame.copy()
     zone_ids = {d.track_id for d in zone_dets}
@@ -295,6 +303,14 @@ def _annotate(
     if zone_polygon:
         pts = np.array(zone_polygon, dtype=np.int32).reshape((-1, 1, 2))
         cv2.polylines(out, [pts], isClosed=True, color=(255, 200, 0), thickness=2)
+
+    _max_dets = int(os.getenv("PREVIEW_ANNOTATE_MAX_DETS", "40"))
+    if len(all_dets) > _max_dets:
+        # Pan storm — skip individual boxes; stamp a hint.
+        label = f"pan-storm: {len(all_dets)} dets (annotation suppressed)"
+        cv2.putText(out, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    (0, 200, 255), 2, cv2.LINE_AA)
+        return out
 
     for det in all_dets:
         x1, y1, x2, y2 = det.bbox
