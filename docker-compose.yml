@@ -159,6 +159,13 @@ services:
       # Per-mode baseline files: derives baseline_day.jpg + baseline_night.jpg.
       # Keeping the legacy path so existing baselines migrate for free.
       BASELINE_PATH: data/baseline.jpg
+      # 4K source (Reolink swap 2026-08-09) → downsample to 2048x928
+      # to preserve small-target detail. Old cam was 1080p and the
+      # yaml default 1280x720 was fine, but 4K → 1280x720 is a 3x
+      # downsample that costs meaningful pixels-per-rat. Matches
+      # rooftop + backyard which are also 4K sources.
+      INPUT_WIDTH: "2048"
+      INPUT_HEIGHT: "928"
       # Yard is optimized for rodent detection — small bbox floor.
       MIN_MOTION_BBOX_PX: "22"
       # VLM per-track throttle: 3s between VLM calls for the same

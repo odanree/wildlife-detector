@@ -56,18 +56,21 @@ export function SlewPresetPanel({
     <div className={styles.wrap}>
       <div className={styles.header}>
         <span className={styles.title}>Slew presets</span>
-        {editor.enabled ? (
-          <span className={styles.badgeOn} title="Self-slew is enabled in detection.yaml">
-            enabled
-          </span>
-        ) : (
-          <span
-            className={styles.badgeOff}
-            title="Self-slew disabled — flip enabled=true in yaml to activate"
-          >
-            disabled
-          </span>
-        )}
+        {/* Click the badge to flip enabled true↔false. Use this to
+         *  pause auto-return-home during manual PTZ operation (via
+         *  camera's onboard app), then click again to resume. */}
+        <button
+          type="button"
+          className={editor.enabled ? styles.badgeOn : styles.badgeOff}
+          onClick={editor.toggleEnabled}
+          title={
+            editor.enabled
+              ? "Self-slew is ON — click to pause (stops auto-return-home so manual PTZ work isn't overridden)"
+              : "Self-slew is OFF — click to resume auto-pan-on-positive"
+          }
+        >
+          {editor.enabled ? "enabled" : "disabled"}
+        </button>
         <span className={styles.spacer} />
         <button
           type="button"
