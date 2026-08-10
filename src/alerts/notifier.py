@@ -64,9 +64,16 @@ class Notifier:
                          event_type, vlm_result.get("confidence", 0.0), min_conf)
             return snapshot_path
 
+        # bypass_cooldown: same rationale as bypass_min_confidence — the
+        # VLM-reject-override path fires for human labeling, and dropping
+        # 12/14 events to cooldown defeats the purpose. Positive VLM
+        # verdicts still cooldown-throttled to avoid spam on continuous
+        # tracks. Sandbox on 2026-08-09 yard cat clip: 14 overrides fired
+        # but only 2 landed as ALERT lines due to 120s cooldown.
+        _bypass_cooldown = bool(vlm_result.get("bypass_cooldown", False))
         cooldown = self._cfg.get("cooldown_seconds", {}).get(event_type, 120)
         now = time.monotonic()
-        if now - self._last_fire.get(event_type, 0.0) < cooldown:
+        if not _bypass_cooldown and now - self._last_fire.get(event_type, 0.0) < cooldown:
             logger.debug("Alert suppressed (%s) — cooldown active", event_type)
             return snapshot_path
         self._last_fire[event_type] = now
