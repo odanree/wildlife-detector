@@ -174,6 +174,13 @@ services:
       # Bumping to 150 makes the picker correctly identify IR frames
       # as night (uses 0.06 threshold + night baseline).
       DAY_NIGHT_BRIGHTNESS_THRESHOLD: "150"
+      # Daytime is dominated by shadow FPs (side-angle view, long cast
+      # shadows on brick + wall from swaying trees). Rooftop is unaffected
+      # because its overhead geometry has no cast shadows. Skip entire
+      # detection path when mean frame brightness >= 150 (matches the
+      # baseline picker's day/night boundary). Preview still publishes
+      # with a "detection paused (daytime)" banner.
+      SKIP_DAYTIME_DETECTION: "1"
       # Yard is optimized for rodent detection — small bbox floor.
       MIN_MOTION_BBOX_PX: "22"
       # VLM per-track throttle: 3s between VLM calls for the same
@@ -433,6 +440,10 @@ services:
       # detection.
       RTSP_URL: rtsp://admin:123456@192.168.1.118:554/Streaming/Channels/101
       BASELINE_PATH: data/baseline_backyard.jpg
+      # Match yard: skip detection during daytime (shadow FPs dominate on
+      # side-angle view). Uses default DAY_NIGHT_BRIGHTNESS_THRESHOLD=100
+      # since backyard's IR night mode is dimmer than yard's Reolink.
+      SKIP_DAYTIME_DETECTION: "1"
       # 4K source → downsample to 2048x928. Same rationale as rooftop:
       # yard's 1088x612 default would collapse a 30 px rat crop to
       # ~8 px, below MOG2's discrimination floor.
