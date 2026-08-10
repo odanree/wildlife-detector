@@ -56,6 +56,10 @@ export interface SlewPresetEditorApi {
   /** Fire GotoPreset via /api/ptz/preset. Non-editing action — for
    *  aligning polygon with the actual zoomed view. */
   goto: (preset: number) => Promise<void>;
+  /** Flip enabled true↔false and persist. Used by the operator's
+   *  master toggle in the panel (pause self-slew during manual PTZ
+   *  work, resume after). */
+  toggleEnabled: () => Promise<void>;
 }
 
 export function useSlewPresetEditor(camera: string): SlewPresetEditorApi {
@@ -207,6 +211,20 @@ export function useSlewPresetEditor(camera: string): SlewPresetEditorApi {
     [camera],
   );
 
+  const toggleEnabled = useCallback(async () => {
+    // Server truth over working state — the user may have unsaved
+    // polygon edits and we don't want the toggle to also flush those.
+    // Backend PUT accepts scalar overrides alongside presets; we
+    // send the SERVER preset list back with just `enabled` flipped.
+    const nextEnabled = !(data?.enabled ?? false);
+    try {
+      await saveSlewPresets(camera, serverPresets, { enabled: nextEnabled });
+      refresh();
+    } catch (e) {
+      setSaveErr(e instanceof Error ? e.message : String(e));
+    }
+  }, [camera, data, serverPresets, refresh]);
+
   const active = findActive();
   return {
     mode,
@@ -230,5 +248,6 @@ export function useSlewPresetEditor(camera: string): SlewPresetEditorApi {
     cancel,
     save,
     goto,
+    toggleEnabled,
   };
 }
