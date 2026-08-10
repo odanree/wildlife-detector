@@ -194,12 +194,17 @@ services:
       MOTION_HISTORY: "400"
       MOTION_VAR_THRESHOLD: "18"
       MOTION_MIN_AREA: "80"
-      # VLM-reject alert (from PR #87) is backyard-only ergonomic — user
-      # wants alerts on every non-insect motion there. Yard has open
-      # ground + rodent-scale detection + wind-foliage FPs, so firing
-      # on VLM rejects would flood the alert stream. 999999 effectively
-      # disables the override; only positive VLM verdicts fire alerts.
-      VLM_REJECT_ALERT_MIN_AREA_PX: "999999"
+      # VLM-reject alert: fire on every non-insect motion, regardless of
+      # VLM verdict. Per user 08/10: "classification isn't important, we
+      # just need it to fire an alert for human labeling". Old yard cam
+      # (1080p H.264) fired reliably on rats even when misclassified;
+      # Reolink 4K swap + qwen 7b size-bias regressed that. This restores
+      # the pre-Reolink alert coverage — cats + rats + anything non-insect
+      # crosses → alert fires. Insect gate + chaos-gate still filter noise.
+      #
+      # Requires PR #96's bypass_min_confidence flag or overrides get
+      # silently dropped by notifier.min_confidence.
+      VLM_REJECT_ALERT_MIN_AREA_PX: "0"
       # detectShadows=1: MOG2 marks shadows gray, motion_detector
       # thresholds them out before contour finding. Cuts single-frame
       # ghosts from shadow flicker at the source, reducing motion
