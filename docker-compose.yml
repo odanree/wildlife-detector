@@ -416,10 +416,13 @@ services:
       # ~8 px, below MOG2's discrimination floor.
       INPUT_WIDTH: "2048"
       INPUT_HEIGHT: "928"
-      # Inherits yard's side-angle motion tune. Bump MIN_MOTION_BBOX_PX
-      # or MOTION_VAR_THRESHOLD after gathering ground-truth on
-      # backyard-specific FP patterns.
-      MIN_MOTION_BBOX_PX: "22"
+      # Backyard's quarry is cats/opossums, not rats — cat-scale bbox
+      # floor. Was 22 (rodent-scale, inherited from yard). Live obs
+      # 08/10 02:59: 71x26 fence-line spot fired "mouse 85%" via qwen
+      # hallucination; that bbox is below 50x50 and never a cat. Filters
+      # this whole class of small-elongated-spot FP before it reaches
+      # the insect gate or VLM.
+      MIN_MOTION_BBOX_PX: "50"
       VLM_INTERVAL_S: "3"
       # Bumped 110 → 160 after Aug 9 21:23 fence-rat miss: the backyard
       # fence slats reflect IR strongly (bbox mean_brightness on fence
