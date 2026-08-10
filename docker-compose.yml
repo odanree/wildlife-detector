@@ -210,6 +210,12 @@ services:
       # ghosts from shadow flicker at the source, reducing motion
       # events → VLM calls → memory churn. Same knob as rooftop.
       MOTION_DETECT_SHADOWS: "1"
+      # Aggressive shadow classification (default 0.5 → 0.4). Lower Tau
+      # means MOG accepts pixels that are farther-from-background as
+      # still-shadow, marking more dark blobs → filtered by our >200
+      # post-MOG threshold. Live obs 08/10: default was leaking dark
+      # shadow blobs at night IR.
+      MOTION_SHADOW_THRESHOLD: "0.4"
       BASELINE_DIFF_THRESHOLD: "0.06"
       DAY_BASELINE_DIFF_THRESHOLD: "0.18"
       # Ollama qwen2.5vl:7b returns rodent confidence 0.4-0.7 typically;
@@ -464,6 +470,10 @@ services:
       MOTION_VAR_THRESHOLD: "18"
       MOTION_MIN_AREA: "80"
       MOTION_DETECT_SHADOWS: "1"
+      # Aggressive shadow classification — same tune as yard (see yard
+      # env for rationale). Live obs 08/10: default 0.5 was leaking
+      # dark shadow blobs into FG at night IR.
+      MOTION_SHADOW_THRESHOLD: "0.4"
       BASELINE_DIFF_THRESHOLD: "0.06"
       DAY_BASELINE_DIFF_THRESHOLD: "0.18"
       DAYTIME_RODENT_MIN_CONF: "0.55"

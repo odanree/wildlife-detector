@@ -58,6 +58,16 @@ _MIN_TRACK_AGE = int(os.getenv("MOTION_MIN_TRACK_AGE_FRAMES", "2"))
 # diff pre-filter even sees them). Set to 0 to disable. Off by default
 # for backwards compatibility with existing tuning.
 _DETECT_SHADOWS = os.getenv("MOTION_DETECT_SHADOWS", "0") == "1"
+# MOG2/KNN shadowThreshold (Tau) — controls how dark a pixel can be
+# vs background before it's NO LONGER classified as shadow (i.e.
+# promoted to foreground). OpenCV default 0.5 means "if pixel is more
+# than 2x darker than background, it's not shadow → keep as FG".
+# LOWER value = more aggressive shadow classification (more pixels
+# marked shadow → filtered by our >200 threshold post-MOG). Live obs
+# 08/10: yard + backyard still leaking dark shadow blobs into FG at
+# default 0.5. Try 0.3-0.4 per-camera to bias toward shadow. Only
+# active when MOTION_DETECT_SHADOWS=1.
+_SHADOW_THRESHOLD = float(os.getenv("MOTION_SHADOW_THRESHOLD", "0.5"))
 
 
 class MotionDetector:
@@ -89,6 +99,12 @@ class MotionDetector:
                 varThreshold=var_threshold,
                 detectShadows=_DETECT_SHADOWS,
             )
+        # setShadowThreshold applies to both MOG2 and KNN via their common
+        # base class. No-op when detectShadows=False. Bias toward MOG's
+        # shadow classifier catching more dark blobs so downstream >200
+        # threshold filters them out before contour finding.
+        if _DETECT_SHADOWS:
+            self._bg.setShadowThreshold(_SHADOW_THRESHOLD)
         self._backend = "KNN" if _use_knn else "MOG2"
         self._min_area = min_area
         self._max_area = max_area
@@ -110,7 +126,7 @@ class MotionDetector:
             self._backend, history, var_threshold, min_area, max_area, edge_margin,
             f"{_MAX_VELOCITY_PX}px/frame" if _MAX_VELOCITY_PX > 0 else "off",
             f"{_MIN_TRACK_AGE}f" if _MIN_TRACK_AGE > 1 else "off",
-            "on" if _DETECT_SHADOWS else "off",
+            f"on (tau={_SHADOW_THRESHOLD:.2f})" if _DETECT_SHADOWS else "off",
         )
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
