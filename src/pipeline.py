@@ -593,10 +593,23 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     #     loop rather than pay ~5ms/det on garbage. Complements the
     #     softer PREVIEW_ANNOTATE_MAX_DETS annotation guard: annotation
     #     suppression at 40, full processing skip at 60.
-    _SCENE_CHANGE_SKIP_FRACTION = float(os.getenv("SCENE_CHANGE_SKIP_FRACTION", "0.4"))
-    _SCENE_CHANGE_PIXEL_DELTA = int(os.getenv("SCENE_CHANGE_PIXEL_DELTA", "30"))
+    # Lower defaults after live observation 08/10 02:09: 0.4 + delta=30
+    # missed slow/blurry pans where per-pixel delta was 15-25 on most
+    # pixels. 0.2 + delta=15 catches those without triggering on
+    # rodent-scale motion (a rat is <1% of the 160x90 downsample).
+    _SCENE_CHANGE_SKIP_FRACTION = float(os.getenv("SCENE_CHANGE_SKIP_FRACTION", "0.2"))
+    _SCENE_CHANGE_PIXEL_DELTA = int(os.getenv("SCENE_CHANGE_PIXEL_DELTA", "15"))
+    # Cooldown-after-fire (hysteresis): a pan is 10-30 frames long.
+    # Single-frame gate leaks 1-3 frames through, and any single leaked
+    # frame that alerts sticks on the preview for ALERT_FLASH_FRAMES.
+    # Once scene-change OR bbox-flood fires, hold the skip for N more
+    # frames — same shape as _self_slew_in_transition() but signal-
+    # driven instead of command-driven. 20 frames ≈ 1s at 20fps,
+    # covering the typical pan duration.
+    _SCENE_CHANGE_COOLDOWN_FRAMES = int(os.getenv("SCENE_CHANGE_COOLDOWN_FRAMES", "20"))
     _MAX_DETS_PER_FRAME_SKIP = int(os.getenv("MAX_DETS_PER_FRAME_SKIP", "60"))
     _prev_scene_gray: np.ndarray | None = None
+    _chaos_cooldown_remaining = 0
     vlm_pool = ThreadPoolExecutor(max_workers=_VLM_WORKERS, thread_name_prefix="vlm")
     logger.info("VLM pool: workers=%d max_inflight=%d max_alert_age=%.1fs",
                 _VLM_WORKERS, _VLM_MAX_INFLIGHT, _VLM_MAX_ALERT_AGE_S)
@@ -685,6 +698,15 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             if _self_slew_in_transition():
                 continue
 
+            # Chaos-cooldown decay: after any chaos-gate fire (scene-
+            # change or bbox-flood), we hold the skip for N more frames
+            # to cover the tail of a pan/zoom/lighting event. Same
+            # bulkhead shape as _self_slew_in_transition() but signal-
+            # driven instead of command-driven.
+            if _chaos_cooldown_remaining > 0:
+                _chaos_cooldown_remaining -= 1
+                continue
+
             # Scene-change bulkhead — catches whole-scene shifts the
             # self-slew guard misses (manual PTZ via camera app, zoom,
             # PIR light kick, brief loss-of-sync). Downsample to 160x90,
@@ -700,9 +722,10 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     _diff = cv2.absdiff(_gray_now, _prev_scene_gray)
                     _changed_frac = float((_diff > _SCENE_CHANGE_PIXEL_DELTA).sum()) / _diff.size
                     if _changed_frac > _SCENE_CHANGE_SKIP_FRACTION:
+                        _chaos_cooldown_remaining = _SCENE_CHANGE_COOLDOWN_FRAMES
                         logger.info(
-                            "Scene-change skip: changed=%.2f > %.2f (pan/zoom/lighting)",
-                            _changed_frac, _SCENE_CHANGE_SKIP_FRACTION,
+                            "Scene-change skip: changed=%.2f > %.2f (pan/zoom/lighting) — cooldown=%d frames",
+                            _changed_frac, _SCENE_CHANGE_SKIP_FRACTION, _chaos_cooldown_remaining,
                         )
                         _prev_scene_gray = _gray_now
                         continue
@@ -767,9 +790,10 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             # guard: annotation suppression fires at 40, full processing
             # skip at 60. Set MAX_DETS_PER_FRAME_SKIP=0 to disable.
             if _MAX_DETS_PER_FRAME_SKIP > 0 and len(all_dets) > _MAX_DETS_PER_FRAME_SKIP:
+                _chaos_cooldown_remaining = _SCENE_CHANGE_COOLDOWN_FRAMES
                 logger.info(
-                    "Bbox-flood skip: %d dets > %d — skipping frame per-det loop",
-                    len(all_dets), _MAX_DETS_PER_FRAME_SKIP,
+                    "Bbox-flood skip: %d dets > %d — skipping frame per-det loop, cooldown=%d frames",
+                    len(all_dets), _MAX_DETS_PER_FRAME_SKIP, _chaos_cooldown_remaining,
                 )
                 continue
             # Surface the kinematic-gate reject counts (populated inside
