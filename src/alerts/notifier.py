@@ -52,8 +52,14 @@ class Notifier:
         if self._cfg.get("save_snapshot", True):
             snapshot_path = self._save_snapshot(event_type, frame, bbox, yolo_conf=yolo_conf, result=vlm_result)
 
+        # bypass_min_confidence: set by pipeline's VLM-reject-override path
+        # (conf=0.5 by design, "fire for human review"). Without this, the
+        # override alerts were silently suppressed by the min_conf gate and
+        # only snapshots landed. Sandbox on 2026-08-09 yard cat clip showed
+        # 24 overrides fire but 0 ALERT log lines / 0 HA webhook / 0 DB row.
+        _bypass = bool(vlm_result.get("bypass_min_confidence", False))
         min_conf = float(self._cfg.get("min_confidence", 0.70))
-        if vlm_result.get("confidence", 0.0) < min_conf:
+        if not _bypass and vlm_result.get("confidence", 0.0) < min_conf:
             logger.debug("Alert suppressed (%s) — confidence %.2f below %.2f",
                          event_type, vlm_result.get("confidence", 0.0), min_conf)
             return snapshot_path
