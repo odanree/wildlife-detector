@@ -166,6 +166,14 @@ services:
       # rooftop + backyard which are also 4K sources.
       INPUT_WIDTH: "2048"
       INPUT_HEIGHT: "928"
+      # Reolink's IR illumination at night is much brighter than the
+      # old cam — mean grayscale routinely > 100 even at 23:00 PDT
+      # with no daylight. Default DAY_NIGHT_BRIGHTNESS_THRESHOLD=100
+      # makes the baseline picker classify IR night as "day", load
+      # the stale day baseline, and apply the strict 0.18 threshold.
+      # Bumping to 150 makes the picker correctly identify IR frames
+      # as night (uses 0.06 threshold + night baseline).
+      DAY_NIGHT_BRIGHTNESS_THRESHOLD: "150"
       # Yard is optimized for rodent detection — small bbox floor.
       MIN_MOTION_BBOX_PX: "22"
       # VLM per-track throttle: 3s between VLM calls for the same
