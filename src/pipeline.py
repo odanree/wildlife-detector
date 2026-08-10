@@ -1076,6 +1076,12 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                             "species": "other",
                             "is_rodent": False,
                             "confidence": 0.5,
+                            # bypass_min_confidence: 0.5 is intentional
+                            # "fire for human review" — without this the
+                            # notifier's min_conf gate silently drops the
+                            # alert (only snapshot lands, no HA webhook,
+                            # no DB row, no ALERT log line).
+                            "bypass_min_confidence": True,
                             "description": (
                                 f"[VLM-REJECT-OVERRIDE] VLM said {_rejected_species!r} "
                                 f"(conf={result.get('confidence', 0.0):.2f}); MOG + baseline "
