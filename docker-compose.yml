@@ -146,8 +146,16 @@ services:
       # Explicit zone_key so the yaml default doesn't accidentally get shared
       # if we later rename the default.
       ZONE_KEY: yard_zone
-      # RTSP source. Override in .env if the primary camera moves.
-      RTSP_URL: rtsp://admin:123456@192.168.1.86:554/stream1
+      # RTSP source. 2026-08-09: replaced the original 1080p H.264
+      # cam at .86 with a Reolink 4K HEVC at .104 (same physical
+      # mount, same NVR channel 5). Old URL:
+      #   rtsp://admin:123456@192.168.1.86:554/stream1
+      # New URL is HEVC main-stream — ffprobe shows 3840x2160 @ 25fps.
+      # Sub-stream (h264, 896x512) would be cheaper decode but LOWER
+      # resolution than the old cam's 1080p, so we'd lose small-target
+      # detail. Keep main + bump INPUT_WIDTH if you see MOG missing
+      # rats after the swap.
+      RTSP_URL: rtsp://admin:windows98@192.168.1.104:554/h264Preview_01_main
       # Per-mode baseline files: derives baseline_day.jpg + baseline_night.jpg.
       # Keeping the legacy path so existing baselines migrate for free.
       BASELINE_PATH: data/baseline.jpg
@@ -398,7 +406,25 @@ services:
       # backyard-specific FP patterns.
       MIN_MOTION_BBOX_PX: "22"
       VLM_INTERVAL_S: "3"
-      NIGHT_INSECT_BRIGHTNESS_MIN: "110"
+      # Bumped 110 → 160 after Aug 9 21:23 fence-rat miss: the backyard
+      # fence slats reflect IR strongly (bbox mean_brightness on fence
+      # blobs runs 116-182), so the default 110 threshold classified
+      # ALL fence detections as moths and skipped VLM. Sandbox A/B on
+      # backyard_missed_2123.mp4 with new threshold caught 13 VLM
+      # positive rodent decisions vs 0 in the live gap. Some very-bright
+      # fence blobs (mean 170-182) still slip through — proper fix is
+      # zone-aware exemption (skip insect filter inside slew preset
+      # polygons); tracked as follow-up.
+      NIGHT_INSECT_BRIGHTNESS_MIN: "160"
+      # Enable temporal multi-frame VLM (validated on rooftop in PR #73).
+      # Backyard has the same evidence-starvation failure mode against
+      # its IR-lit fence backdrop — VLM confidently rejects single-frame
+      # rat crops at conf=0.10. Multi-frame gives motion signature
+      # across 4 successive frames so the VLM has real class-diagnostic
+      # information. Same overhead cost as rooftop (~2-3x per call).
+      VLM_TEMPORAL_ENABLED: "1"
+      VLM_TEMPORAL_FRAMES: "4"
+      VLM_TEMPORAL_WINDOW_S: "1.0"
       MOTION_BACKEND: mog2
       MOTION_HISTORY: "400"
       MOTION_VAR_THRESHOLD: "18"
