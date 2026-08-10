@@ -893,14 +893,23 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                                               result.get("description", ""))
                         except Exception:
                             logger.exception("Failed to save rejected crop for track=%d", tid)
-                    # Alert-on-large-VLM-reject: when VLM says "no wildlife"
-                    # but the bbox is CAT-SIZED, fire an 'other' alert
-                    # anyway so the operator sees + labels it. Silent misses
-                    # on cat-sized targets are worse than misclassifications
-                    # (human can relabel a wrong species, can't recover a
-                    # dropped alert). Only fires when NOT an insect
-                    # classification (insects are meant to be count-only).
-                    _reject_alert_min_area = int(os.getenv("VLM_REJECT_ALERT_MIN_AREA_PX", "5000"))
+                    # Alert-on-VLM-reject: when VLM says "no wildlife"
+                    # but MOG + baseline-diff already agreed something
+                    # meaningful is there, fire an 'other' alert anyway
+                    # so the operator sees + labels it. **Fires per
+                    # motion event by default (VLM_REJECT_ALERT_MIN_AREA_PX=0)**
+                    # — silent misses are worse than misclassifications
+                    # (human can relabel a wrong species, can't recover
+                    # a dropped alert). Set the env to a positive px area
+                    # to gate on bbox size if the alert volume becomes
+                    # a problem.
+                    #
+                    # Insect classification excluded (species='insect' is
+                    # count-only by design). The upstream gates
+                    # (MIN_MOTION_BBOX_PX + baseline diff threshold +
+                    # insect brightness pre-filter) still control the
+                    # firing floor.
+                    _reject_alert_min_area = int(os.getenv("VLM_REJECT_ALERT_MIN_AREA_PX", "0"))
                     _rejected_species = str(result.get("species", "")).lower()
                     _bbox_area = _bw * _bh
                     if (
@@ -908,8 +917,8 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         and _bbox_area >= _reject_alert_min_area
                     ):
                         logger.info(
-                            "VLM-reject size-gated alert: track=%d area=%d >= %d — firing 'other' for human review",
-                            tid, _bbox_area, _reject_alert_min_area,
+                            "VLM-reject override: track=%d bbox=%dx%d area=%d — firing 'other' for human review",
+                            tid, _bw, _bh, _bbox_area,
                         )
                         _override_result = {
                             "wildlife_detected": True,
@@ -917,9 +926,9 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                             "is_rodent": False,
                             "confidence": 0.5,
                             "description": (
-                                f"[SIZE-GATED] VLM rejected ({_rejected_species}, "
-                                f"conf={result.get('confidence', 0.0):.2f}), but bbox "
-                                f"{_bw}x{_bh}={_bbox_area}px exceeds cat-size threshold. "
+                                f"[VLM-REJECT-OVERRIDE] VLM said {_rejected_species!r} "
+                                f"(conf={result.get('confidence', 0.0):.2f}); MOG + baseline "
+                                f"agreed motion is here (bbox {_bw}x{_bh}={_bbox_area}px). "
                                 f"Filing as 'other' for human review. Original: "
                                 f"{result.get('description', '')[:120]}"
                             ),
