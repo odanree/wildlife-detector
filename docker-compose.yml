@@ -181,6 +181,16 @@ services:
       # baseline picker's day/night boundary). Preview still publishes
       # with a "detection paused (daytime)" banner.
       SKIP_DAYTIME_DETECTION: "1"
+      # Two-signal daytime — brightness OR local time-of-day. Reolink
+      # auto-exposure sits yard at grayscale ~108 at 3PM (shaded view),
+      # below the baseline picker's 150. Split thresholds so baseline
+      # picker stays at 150 (correct for night IR ~100) while daytime
+      # skip trigger uses 90. Time-of-day belt-and-suspenders catches
+      # overcast dawn/dusk when brightness reads night-like.
+      DAYTIME_SKIP_BRIGHTNESS_THRESHOLD: "90"
+      SKIP_DAYTIME_START_HOUR: "7"
+      SKIP_DAYTIME_END_HOUR: "19"
+      TZ: America/Los_Angeles
       # Yard is optimized for rodent detection — small bbox floor.
       MIN_MOTION_BBOX_PX: "22"
       # VLM per-track throttle: 3s between VLM calls for the same
@@ -444,6 +454,10 @@ services:
       # side-angle view). Uses default DAY_NIGHT_BRIGHTNESS_THRESHOLD=100
       # since backyard's IR night mode is dimmer than yard's Reolink.
       SKIP_DAYTIME_DETECTION: "1"
+      DAYTIME_SKIP_BRIGHTNESS_THRESHOLD: "90"
+      SKIP_DAYTIME_START_HOUR: "7"
+      SKIP_DAYTIME_END_HOUR: "19"
+      TZ: America/Los_Angeles
       # 4K source → downsample to 2048x928. Same rationale as rooftop:
       # yard's 1088x612 default would collapse a 30 px rat crop to
       # ~8 px, below MOG2's discrimination floor.
