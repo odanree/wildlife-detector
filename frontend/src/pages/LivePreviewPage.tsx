@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { CameraPane, type ViewMode } from "../components/CameraPane";
 import { GlobalHeader } from "../components/GlobalHeader";
@@ -83,6 +83,24 @@ export function LivePreviewPage() {
       localStorage.setItem("slewOverlaysVisible", next ? "1" : "0");
       return next;
     });
+  };
+
+  // Global operator pause — file-sentinel backed. Detectors check the
+  // flag file at top of main loop and skip detection when present.
+  // Polls once on mount + refresh after toggle; another operator toggling
+  // from another tab won't reflect until this component remounts.
+  const [paused, setPaused] = useState<boolean>(false);
+  useEffect(() => {
+    fetch("/api/pause")
+      .then((r) => r.json())
+      .then((d) => setPaused(!!d.paused))
+      .catch(() => {});
+  }, []);
+  const togglePause = () => {
+    fetch("/api/pause", { method: "POST" })
+      .then((r) => r.json())
+      .then((d) => setPaused(!!d.paused))
+      .catch(() => {});
   };
 
   // Editors target the primary camera. detW/detH come from primary's
@@ -210,6 +228,18 @@ export function LivePreviewPage() {
               onCancel={mask.cancel}
             />
             <span className={styles.spacer} />
+            <button
+              type="button"
+              className={paused ? styles.pauseBtnActive : styles.pauseBtn}
+              onClick={togglePause}
+              title={
+                paused
+                  ? "Detection paused globally — click to resume all cameras"
+                  : "Pause detection on all cameras (touches config/pause_all.flag)"
+              }
+            >
+              {paused ? "▶ resume" : "⏸ pause all"}
+            </button>
             {pane.secondary ? null : (
               <button
                 type="button"
