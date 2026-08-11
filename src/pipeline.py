@@ -29,6 +29,7 @@ import os
 import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
+from typing import NamedTuple
 
 import cv2
 import numpy as np
@@ -277,6 +278,38 @@ def _scale_masks(masks: list, det_w: int, det_h: int) -> list[tuple[int, int, in
         else:   # pixel
             scaled.append(tuple(int(v) for v in m))
     return scaled
+
+
+class _BboxStats(NamedTuple):
+    """Brightness/geometry signature for a bbox — the load-bearing feature
+    triplet used by (1) the insect pre-filter (gate on mean/max/AR),
+    (2) DECISION log lines (diagnostic), and (3) alert card descriptions
+    (feature labeling analysis). Previously computed inline at 3 sites in
+    pipeline.py with subtle divergence risk; centralized here."""
+    w: int
+    h: int
+    area: int
+    mean: float
+    max: float
+    aspect_ratio: float
+
+
+def _bbox_signature(frame: np.ndarray, bbox: tuple[int, int, int, int]) -> _BboxStats:
+    """Compute the brightness/geometry signature of a bbox region within a frame.
+    Safe against zero-area bboxes (returns 0.0 for mean/max)."""
+    x1, y1, x2, y2 = bbox
+    w = max(0, x2 - x1)
+    h = max(0, y2 - y1)
+    area = w * h
+    crop = frame[max(0, y1):y2, max(0, x1):x2]
+    if crop.size > 0:
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+        mean = float(gray.mean())
+        max_ = float(gray.max())
+    else:
+        mean = max_ = 0.0
+    aspect_ratio = max(w, h) / max(1, min(w, h))
+    return _BboxStats(w=w, h=h, area=area, mean=mean, max=max_, aspect_ratio=aspect_ratio)
 
 
 def _annotate(
@@ -1095,23 +1128,11 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     logger.exception("VLM job for track=%d raised", tid)
                     continue
 
-                _bw, _bh = bbox[2] - bbox[0], bbox[3] - bbox[1]
                 _queue_age = time.time() - submit_ts
                 _inflight = len(vlm_jobs)
-                # Extract brightness stats from the snap frame bbox so
-                # operators can diagnose "why did this fire" (esp. moth
-                # false positives on bright IR-lit crops). Same metrics
-                # the insect pre-filter uses, but for tracks that passed
-                # the insect gate and reached VLM.
-                _bx1, _by1, _bx2, _by2 = bbox
-                _bcrop = snap_fr[max(0, _by1):_by2, max(0, _bx1):_bx2]
-                if _bcrop.size > 0:
-                    _bgray = cv2.cvtColor(_bcrop, cv2.COLOR_BGR2GRAY) if _bcrop.ndim == 3 else _bcrop
-                    _b_mean = float(_bgray.mean())
-                    _b_max = float(_bgray.max())
-                else:
-                    _b_mean = _b_max = 0.0
-                _b_ar = max(_bw, _bh) / max(1, min(_bw, _bh))
+                _stats = _bbox_signature(snap_fr, bbox)
+                _bw, _bh = _stats.w, _stats.h
+                _b_mean, _b_max, _b_ar = _stats.mean, _stats.max, _stats.aspect_ratio
                 logger.info(
                     "DECISION track=%d species=%s rodent=%s conf=%.2f bbox=%s (%dx%d) mean=%.0f max=%.0f AR=%.2f vlm_queue_age=%.1fs inflight_after=%d",
                     tid, result.get("species"), result.get("is_rodent"),
@@ -1364,17 +1385,7 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         continue
                     # Compute brightness signature for YOLO alerts too so
                     # every alert card carries the same feature triplet.
-                    _yb1, _y1, _yb2, _y2 = det.bbox
-                    _yw = _yb2 - _yb1
-                    _yh = _y2 - _y1
-                    _ycrop = frame[max(0, _y1):_y2, max(0, _yb1):_yb2]
-                    if _ycrop.size > 0:
-                        _ygray = cv2.cvtColor(_ycrop, cv2.COLOR_BGR2GRAY) if _ycrop.ndim == 3 else _ycrop
-                        _y_mean = float(_ygray.mean())
-                        _y_max = float(_ygray.max())
-                    else:
-                        _y_mean = _y_max = 0.0
-                    _y_ar = max(_yw, _yh) / max(1, min(_yw, _yh))
+                    _ys = _bbox_signature(frame, det.bbox)
                     _yolo_result = {
                         "wildlife_detected": True,
                         "species":           det.class_name,
@@ -1382,7 +1393,7 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         "confidence":        float(det.confidence),
                         "description": (
                             f"YOLO/COCO detection: {det.class_name} conf={det.confidence:.2f} "
-                            f"[bbox {_yw}x{_yh}={_yw*_yh}px mean={_y_mean:.0f} max={_y_max:.0f} AR={_y_ar:.2f}]"
+                            f"[bbox {_ys.w}x{_ys.h}={_ys.area}px mean={_ys.mean:.0f} max={_ys.max:.0f} AR={_ys.aspect_ratio:.2f}]"
                         ),
                     }
                     logger.info("YOLO fast-path: track=%d species=%s conf=%.2f bbox=%s",
@@ -1463,28 +1474,20 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 # with pale fur or IR reflection off the ground under it,
                 # NOT a moth. Without this guard, cats/raccoons at overhead
                 # angle get silently rejected (see Aug 8 02:23 cat incident).
-                _bx1, _by1, _bx2, _by2 = det.bbox
-                _bw = max(0, _bx2 - _bx1)
-                _bh = max(0, _by2 - _by1)
-                _bbox_area = _bw * _bh
-                _bcrop = frame[max(0, _by1):_by2, max(0, _bx1):_bx2]
-                if _bcrop.size > 0 and _bbox_area < _INSECT_FILTER_MAX_AREA_PX:
-                    _gray = cv2.cvtColor(_bcrop, cv2.COLOR_BGR2GRAY) if _bcrop.ndim == 3 else _bcrop
-                    _mean_brightness = float(_gray.mean())
-                    _max_brightness = float(_gray.max())
-                    _elongation = max(_bw, _bh) / max(1, min(_bw, _bh))
-                    _mean_hit = _mean_brightness >= _NIGHT_INSECT_BRIGHTNESS_MIN
-                    _max_hit = _max_brightness >= _NIGHT_INSECT_MAX_BRIGHTNESS_MIN
+                _is = _bbox_signature(frame, det.bbox)
+                if _is.area > 0 and _is.area < _INSECT_FILTER_MAX_AREA_PX:
+                    _mean_hit = _is.mean >= _NIGHT_INSECT_BRIGHTNESS_MIN
+                    _max_hit = _is.max >= _NIGHT_INSECT_MAX_BRIGHTNESS_MIN
                     _elong_hit = (
-                        _elongation >= _NIGHT_INSECT_ELONGATION_MIN
-                        and _max_brightness >= _NIGHT_INSECT_MAX_BRIGHTNESS_MIN
+                        _is.aspect_ratio >= _NIGHT_INSECT_ELONGATION_MIN
+                        and _is.max >= _NIGHT_INSECT_MAX_BRIGHTNESS_MIN
                     )
                     if _mean_hit or _max_hit or _elong_hit:
                         _trigger = "mean" if _mean_hit else ("max" if _max_hit else "elong")
                         logger.info(
                             "Insect pre-filter: track=%d bbox=%s area=%d mean=%.0f max=%.0f AR=%.2f trigger=%s mode=%s → classify as insect, skip VLM",
-                            det.track_id, det.bbox, _bbox_area,
-                            _mean_brightness, _max_brightness, _elongation, _trigger,
+                            det.track_id, det.bbox, _is.area,
+                            _is.mean, _is.max, _is.aspect_ratio, _trigger,
                             _baseline_cache[0][1] if _baseline_np is not None else "?",
                         )
                         _preview_stats.record_vlm_insect()
