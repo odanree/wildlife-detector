@@ -610,6 +610,19 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     # sized crops. Default 2000 = 45x45 blob; anything bigger goes to
     # the VLM regardless of brightness.
     _INSECT_FILTER_MAX_AREA_PX = int(os.getenv("INSECT_FILTER_MAX_AREA_PX", "2000"))
+    # Uncap the size restriction on the mean-brightness gate specifically.
+    # When set, bboxes of ANY size will be classified as insect if their
+    # mean brightness >= NIGHT_INSECT_BRIGHTNESS_MIN. Max-brightness and
+    # elongation gates remain size-capped (rodents with bright eyeshine
+    # legitimately hit max=255 at any size, so those gates need protection).
+    # Data-driven decision from labeled dataset 08/11 (n=71 rodents,
+    # n=539 FPs):
+    #   - Yard rodent max mean = 88, backyard = 93
+    #   - Backyard FP median mean = 113 (dominant class: warm IR-lit
+    #     surfaces / wall reflections that escape the 2000 px size cap)
+    # Threshold=100 with size cap lifted catches ~53% of large-bbox FPs
+    # while preserving all labeled rodents.
+    _INSECT_MEAN_UNCAP_SIZE = os.getenv("INSECT_MEAN_UNCAP_SIZE", "0") == "1"
     # Daytime detection skip — hard-off during daylight hours when shadow
     # FPs dominate signal on some cameras. Uses same brightness threshold
     # as the baseline picker (DAY_NIGHT_BRIGHTNESS_THRESHOLD). When the
@@ -1475,10 +1488,19 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 # NOT a moth. Without this guard, cats/raccoons at overhead
                 # angle get silently rejected (see Aug 8 02:23 cat incident).
                 _is = _bbox_signature(frame, det.bbox)
-                if _is.area > 0 and _is.area < _INSECT_FILTER_MAX_AREA_PX:
-                    _mean_hit = _is.mean >= _NIGHT_INSECT_BRIGHTNESS_MIN
-                    _max_hit = _is.max >= _NIGHT_INSECT_MAX_BRIGHTNESS_MIN
-                    _elong_hit = (
+                if _is.area > 0:
+                    # Size-gated: max + elongation gates only fire on small
+                    # bboxes (rodents with bright eyeshine can hit max=255
+                    # legitimately at any size — protecting them).
+                    _size_gated = _is.area < _INSECT_FILTER_MAX_AREA_PX
+                    # Mean gate: uncap size when INSECT_MEAN_UNCAP_SIZE=1
+                    # (data-driven filter for large-bbox bright FPs like
+                    # wall reflections, IR-lit foliage). Otherwise falls
+                    # back to size-gated original behavior.
+                    _mean_size_ok = _size_gated or _INSECT_MEAN_UNCAP_SIZE
+                    _mean_hit = _mean_size_ok and _is.mean >= _NIGHT_INSECT_BRIGHTNESS_MIN
+                    _max_hit = _size_gated and _is.max >= _NIGHT_INSECT_MAX_BRIGHTNESS_MIN
+                    _elong_hit = _size_gated and (
                         _is.aspect_ratio >= _NIGHT_INSECT_ELONGATION_MIN
                         and _is.max >= _NIGHT_INSECT_MAX_BRIGHTNESS_MIN
                     )

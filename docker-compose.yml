@@ -206,6 +206,14 @@ services:
       # at mean 130+ now render at 70-100 and were slipping past 110.
       # 100 preserves 12-point buffer above max labeled rodent mean (88).
       NIGHT_INSECT_BRIGHTNESS_MIN: "100"
+      # Uncap the size restriction on the mean-brightness gate. Data
+      # analysis 08/11 (n=71 rodents, n=539 FPs): backyard FPs cluster at
+      # mean 100-190 with many bboxes > 2000 px (wall reflections, IR-lit
+      # foliage) that were escaping the size-capped insect filter. Rodent
+      # ceiling (mean=88 on yard, 93 on backyard) is well below threshold=
+      # 100. Max + elongation gates STAY size-capped (rodents with
+      # eyeshine hit max=255 legitimately at any size).
+      INSECT_MEAN_UNCAP_SIZE: "1"
       # Yard's side-angle view has stable non-foliage background — MOG2
       # defaults (variance-based) work well; conservative threshold keeps
       # shadow-jitter FPs down.
@@ -493,6 +501,12 @@ services:
       # buffer while catching most moth-like FPs (median FP mean=118)
       # at the insect stage instead of at VLM/override.
       NIGHT_INSECT_BRIGHTNESS_MIN: "100"
+      # Uncap size on mean-brightness gate — see yard for full rationale.
+      # Backyard's dominant FP class is wall reflections + IR-lit foliage
+      # at bboxes 45-100+ px wide (well above the 2000 px size cap).
+      # Data-driven: threshold=100 preserves 7-point buffer above max
+      # backyard rodent mean (93).
+      INSECT_MEAN_UNCAP_SIZE: "1"
       # Enable temporal multi-frame VLM (validated on rooftop in PR #73).
       # Backyard has the same evidence-starvation failure mode against
       # its IR-lit fence backdrop — VLM confidently rejects single-frame
