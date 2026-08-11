@@ -467,13 +467,16 @@ services:
       # ~8 px, below MOG2's discrimination floor.
       INPUT_WIDTH: "2048"
       INPUT_HEIGHT: "928"
-      # Backyard's quarry is cats/opossums, not rats — cat-scale bbox
-      # floor. Was 22 (rodent-scale, inherited from yard). Live obs
-      # 08/10 02:59: 71x26 fence-line spot fired "mouse 85%" via qwen
-      # hallucination; that bbox is below 50x50 and never a cat. Filters
-      # this whole class of small-elongated-spot FP before it reaches
-      # the insect gate or VLM.
-      MIN_MOTION_BBOX_PX: "50"
+      # Compromise floor between mouse detection and fence-spot FPs.
+      # History: 22 (rodent-scale, inherited from yard) → 50 (PR #93,
+      # after 71x26 fence spot fired "mouse 85%") → 30 (08/11, after
+      # real live mice at 15-25 px were being filtered before VLM).
+      # Camera ISP tuning solved most of the underlying eyeshine-signal
+      # problem, so the small-bbox FPs are much less noisy now than
+      # when PR #93 shipped. 30 keeps small mice through the filter
+      # while still rejecting the tiniest noise blobs (< 30 side-length
+      # = ~900 px² = usually not-a-real-target).
+      MIN_MOTION_BBOX_PX: "30"
       VLM_INTERVAL_S: "3"
       # Bumped 110 → 160 after Aug 9 21:23 fence-rat miss: the backyard
       # fence slats reflect IR strongly (bbox mean_brightness on fence
