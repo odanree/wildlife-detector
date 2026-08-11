@@ -357,6 +357,33 @@ def _baseline_paths(camera_id: str) -> tuple[Path, Path]:
     )
 
 
+# mtime-keyed cache for detection.yaml — same file re-parsed at multiple
+# endpoints (zone, masks, slew presets) on every HTTP GET. React overlays
+# poll these on a short cadence so the raw parse cost stacks up. Cache
+# invalidates on file mtime bump (same signal the pipeline uses for its
+# in-process hot-reload).
+_YAML_CACHE: dict[str, object] = {"mtime": 0.0, "cfg": {}}
+_YAML_CACHE_LOCK = threading.Lock()
+
+
+def _load_detection_cfg() -> tuple[dict, int]:
+    """Return (parsed yaml dict, mtime int). Cached — re-parses only when
+    the file's mtime has changed. Returns ({}, 0) if the file doesn't
+    exist (idle-startup / pre-first-write state)."""
+    if not _DETECTION_CFG.exists():
+        return {}, 0
+    try:
+        current_mtime = _DETECTION_CFG.stat().st_mtime
+        with _YAML_CACHE_LOCK:
+            if current_mtime != _YAML_CACHE["mtime"]:
+                _YAML_CACHE["cfg"] = yaml.safe_load(_DETECTION_CFG.read_text(encoding="utf-8")) or {}
+                _YAML_CACHE["mtime"] = current_mtime
+            return _YAML_CACHE["cfg"], int(current_mtime)  # type: ignore[return-value]
+    except Exception:
+        logger.exception("load_detection_cfg failed")
+        return {}, 0
+
+
 def _read_zone_polygon(zone_key: str | None = None) -> tuple[list, int]:
     """Read polygon coords from YAML directly. Returns (polygon, mtime_version).
 
@@ -364,37 +391,27 @@ def _read_zone_polygon(zone_key: str | None = None) -> tuple[list, int]:
     changed, redraw' without a full pubsub. Coords are returned in pixel
     space at the detector's current detection resolution (fetched via
     detector's /status)."""
-    if not _DETECTION_CFG.exists():
-        return [], 0
-    try:
-        cfg = yaml.safe_load(_DETECTION_CFG.read_text(encoding="utf-8")) or {}
-        # Priority: explicit zone_key arg > yaml top-level default.
-        key = zone_key or cfg.get("zone_key", "yard_zone")
-        raw = cfg.get("zones", {}).get(key, {}).get("polygon", [])
-        version = int(_DETECTION_CFG.stat().st_mtime)
-        return raw, version
-    except Exception:
-        logger.exception("read_zone_polygon failed")
-        return [], 0
+    cfg, version = _load_detection_cfg()
+    if not cfg:
+        return [], version
+    # Priority: explicit zone_key arg > yaml top-level default.
+    key = zone_key or cfg.get("zone_key", "yard_zone")
+    raw = cfg.get("zones", {}).get(key, {}).get("polygon", [])
+    return raw, version
 
 
 def _read_osd_masks(camera_id: str = "yard") -> tuple[list, int]:
     """Read the mask list for one camera. Handles both legacy flat-list form
     (all masks belonged to yard) and per-camera dict form."""
-    if not _DETECTION_CFG.exists():
-        return [], 0
-    try:
-        cfg = yaml.safe_load(_DETECTION_CFG.read_text(encoding="utf-8")) or {}
-        osd = cfg.get("osd_masks", []) or []
-        if isinstance(osd, dict):
-            raw = osd.get(camera_id, []) or []
-        else:
-            raw = osd if camera_id == "yard" else []
-        version = int(_DETECTION_CFG.stat().st_mtime)
-        return raw, version
-    except Exception:
-        logger.exception("read_osd_masks failed")
-        return [], 0
+    cfg, version = _load_detection_cfg()
+    if not cfg:
+        return [], version
+    osd = cfg.get("osd_masks", []) or []
+    if isinstance(osd, dict):
+        raw = osd.get(camera_id, []) or []
+    else:
+        raw = osd if camera_id == "yard" else []
+    return raw, version
 
 
 def _scale_normalized_polygon(raw: list, det_w: int, det_h: int) -> list:
@@ -1111,11 +1128,8 @@ def create_app(registry: DetectorRegistry) -> Flask:
             det_w, det_h = st.get("detection_size", [1280, 720])
         except Exception:
             det_w, det_h = 1280, 720
-        import yaml as _yaml
-        try:
-            with open(_DETECTION_CFG, encoding="utf-8") as fh:
-                cfg = _yaml.safe_load(fh) or {}
-        except FileNotFoundError:
+        cfg, _ = _load_detection_cfg()
+        if not cfg and not _DETECTION_CFG.exists():
             return jsonify({"error": "detection.yaml not found"}), 404
         block = (cfg.get("slew") or {}).get(cam_id) or {}
         presets = []
