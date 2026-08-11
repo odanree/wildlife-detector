@@ -1098,9 +1098,26 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 _bw, _bh = bbox[2] - bbox[0], bbox[3] - bbox[1]
                 _queue_age = time.time() - submit_ts
                 _inflight = len(vlm_jobs)
-                logger.info("DECISION track=%d species=%s rodent=%s conf=%.2f bbox=%s (%dx%d) vlm_queue_age=%.1fs inflight_after=%d",
-                            tid, result.get("species"), result.get("is_rodent"),
-                            result.get("confidence", 0.0), bbox, _bw, _bh, _queue_age, _inflight)
+                # Extract brightness stats from the snap frame bbox so
+                # operators can diagnose "why did this fire" (esp. moth
+                # false positives on bright IR-lit crops). Same metrics
+                # the insect pre-filter uses, but for tracks that passed
+                # the insect gate and reached VLM.
+                _bx1, _by1, _bx2, _by2 = bbox
+                _bcrop = snap_fr[max(0, _by1):_by2, max(0, _bx1):_bx2]
+                if _bcrop.size > 0:
+                    _bgray = cv2.cvtColor(_bcrop, cv2.COLOR_BGR2GRAY) if _bcrop.ndim == 3 else _bcrop
+                    _b_mean = float(_bgray.mean())
+                    _b_max = float(_bgray.max())
+                else:
+                    _b_mean = _b_max = 0.0
+                _b_ar = max(_bw, _bh) / max(1, min(_bw, _bh))
+                logger.info(
+                    "DECISION track=%d species=%s rodent=%s conf=%.2f bbox=%s (%dx%d) mean=%.0f max=%.0f AR=%.2f vlm_queue_age=%.1fs inflight_after=%d",
+                    tid, result.get("species"), result.get("is_rodent"),
+                    result.get("confidence", 0.0), bbox, _bw, _bh,
+                    _b_mean, _b_max, _b_ar, _queue_age, _inflight,
+                )
 
                 # Freshness deadline: discard alerts whose snapshot is too old
                 # to be actionable. Belt-and-suspenders with the ingress cap —
@@ -1197,7 +1214,8 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                             "description": (
                                 f"[VLM-REJECT-OVERRIDE] VLM said {_rejected_species!r} "
                                 f"(conf={result.get('confidence', 0.0):.2f}); MOG + baseline "
-                                f"agreed motion is here (bbox {_bw}x{_bh}={_bbox_area}px). "
+                                f"agreed motion is here (bbox {_bw}x{_bh}={_bbox_area}px "
+                                f"mean={_b_mean:.0f} max={_b_max:.0f} AR={_b_ar:.2f}). "
                                 f"Filing as 'other' for human review. Original: "
                                 f"{result.get('description', '')[:120]}"
                             ),
