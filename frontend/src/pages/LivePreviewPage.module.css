@@ -58,6 +58,35 @@
   cursor: default;
 }
 
+/* Global operator pause button. .pauseBtn (default) and .pauseBtnActive
+   (paused state) share layout with linkBtn but use warning colors when
+   active so the paused state is unmissable in the toolbar. */
+.pauseBtn,
+.pauseBtnActive {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 4px 10px;
+  border-radius: var(--r-md);
+  font-size: 12px;
+  cursor: pointer;
+  font-family: var(--font-mono, monospace);
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+.pauseBtn:hover {
+  border-color: var(--accent-blue);
+}
+.pauseBtnActive {
+  background: rgba(230, 130, 130, 0.15);
+  color: rgb(255, 160, 160);
+  border-color: rgb(190, 80, 80);
+  font-weight: 700;
+}
+.pauseBtnActive:hover {
+  background: rgba(230, 130, 130, 0.28);
+  color: rgb(255, 200, 200);
+}
+
 /* Editor toolbar sits between header and panes. Only zone + mask
    editors live here — everything per-camera (status, baseline, view,
    zoom) moved into <CameraPane>. */

@@ -542,6 +542,27 @@ def create_app(registry: DetectorRegistry) -> Flask:
             "default": registry.default,
         })
 
+    # ── Global operator pause (file-sentinel) ─────────────────────────
+    # Detectors check config/pause_all.flag at top of main loop and skip
+    # detection when present. All three detectors bind-mount ./config so
+    # a single file toggle reaches every camera.
+    _pause_flag = Path("config/pause_all.flag")
+
+    @app.get("/api/pause")
+    def api_pause_get():
+        return jsonify({"paused": _pause_flag.exists()})
+
+    @app.post("/api/pause")
+    def api_pause_toggle():
+        if _pause_flag.exists():
+            _pause_flag.unlink()
+            paused = False
+        else:
+            _pause_flag.parent.mkdir(parents=True, exist_ok=True)
+            _pause_flag.touch()
+            paused = True
+        return jsonify({"paused": paused})
+
     # ── Frames / stream (proxy to detector) ────────────────────────────────
 
     @app.get("/snapshot")

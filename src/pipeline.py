@@ -588,18 +588,17 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     # Rationale: brightness alone is fragile (Reolink auto-exposure sits
     # yard at grayscale 108 at 3PM despite being clearly daylight); time-
     # of-day alone doesn't adapt to overcast dawn/dusk edges.
-    #
-    # (a) Brightness signal — separate knob from DAY_NIGHT_BRIGHTNESS_
-    #     THRESHOLD (which drives baseline picker). Baseline needs HIGH
-    #     threshold (150) so Reolink IR night correctly classifies as
-    #     night. Skip needs LOW threshold (90) to fire on shaded daytime.
-    # (b) Time signal — local hour in [SKIP_DAYTIME_START_HOUR,
-    #     SKIP_DAYTIME_END_HOUR). Wraps around midnight if end<start.
-    #     Deterministic, no camera-exposure dependency.
     _DAYTIME_SKIP_BRIGHTNESS_THRESHOLD = int(os.getenv("DAYTIME_SKIP_BRIGHTNESS_THRESHOLD",
                                                         os.getenv("DAY_NIGHT_BRIGHTNESS_THRESHOLD", "100")))
     _DAYTIME_SKIP_START_HOUR = int(os.getenv("SKIP_DAYTIME_START_HOUR", "7"))
     _DAYTIME_SKIP_END_HOUR = int(os.getenv("SKIP_DAYTIME_END_HOUR", "19"))
+    # Operator pause flag — file-sentinel at /app/config/pause_all.flag.
+    # When present, all detectors skip the entire detection path with an
+    # "operator paused" banner. Toggled via web UI (POST /api/pause).
+    # File-based instead of env so it's runtime-toggleable without a
+    # restart; each detector's config/ is bind-mounted from the same host
+    # dir so a single touch/rm reaches all three.
+    _PAUSE_FLAG_PATH = os.getenv("OPERATOR_PAUSE_FLAG_PATH", "/app/config/pause_all.flag")
     # Scene-chaos bulkhead — two orthogonal signals that gate the per-det
     # inner loop when the frame isn't worth processing. Isolates chaotic
     # frames from the stable detection path so one bad frame doesn't drag
@@ -737,6 +736,28 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             # calls, no baseline update. Camera settles within
             # transition_pause_s (default 2 s, ~40 frames at 20 fps).
             if _self_slew_in_transition():
+                continue
+
+            # Operator pause (global) — file-sentinel toggled from web UI.
+            # Wins over daytime skip below because it's an explicit
+            # operator choice, not a heuristic. Preview still publishes
+            # so the banner is visible.
+            if os.path.exists(_PAUSE_FLAG_PATH):
+                _frame_count += 1
+                if _frame_count % PREVIEW_EVERY_N == 0:
+                    ok_raw, buf_raw = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    if ok_raw:
+                        _publish_raw_frame(buf_raw.tobytes())
+                    _paused_annotated = frame.copy()
+                    cv2.putText(
+                        _paused_annotated,
+                        "detection paused (operator)",
+                        (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                        (0, 165, 255), 2, cv2.LINE_AA,
+                    )
+                    ok, buf = cv2.imencode(".jpg", _paused_annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                    if ok:
+                        _publish_preview_frame(buf.tobytes())
                 continue
 
             # Daytime detection skip — some cameras (yard, backyard) have
