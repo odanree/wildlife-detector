@@ -1237,7 +1237,17 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         )
                     continue
 
-                # Positive rodent — fire alert + slew secondary camera
+                # Positive rodent — fire alert + slew secondary camera.
+                # Append brightness signature so the alert card in the UI
+                # shows the same features we log in DECISION lines. Enables
+                # visual-feature labeling analysis across all alerts (not
+                # just overrides).
+                _orig_desc = result.get("description", "") or ""
+                result = dict(result)  # avoid mutating the VLM's cached dict
+                result["description"] = (
+                    f"{_orig_desc} [bbox {_bw}x{_bh}={_bw*_bh}px "
+                    f"mean={_b_mean:.0f} max={_b_max:.0f} AR={_b_ar:.2f}]"
+                )
                 snap_path = notifier.send("rodent", result, snap_fr, bbox, yolo_conf=yolo_conf)
                 sh, sw = snap_fr.shape[:2]
                 maybe_slew(bbox=bbox, event_key=("rodent", tid),
@@ -1352,12 +1362,28 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         # by returning early from the branch. Easiest: just
                         # skip the alert-fire + slew for this loop iter.
                         continue
+                    # Compute brightness signature for YOLO alerts too so
+                    # every alert card carries the same feature triplet.
+                    _yb1, _y1, _yb2, _y2 = det.bbox
+                    _yw = _yb2 - _yb1
+                    _yh = _y2 - _y1
+                    _ycrop = frame[max(0, _y1):_y2, max(0, _yb1):_yb2]
+                    if _ycrop.size > 0:
+                        _ygray = cv2.cvtColor(_ycrop, cv2.COLOR_BGR2GRAY) if _ycrop.ndim == 3 else _ycrop
+                        _y_mean = float(_ygray.mean())
+                        _y_max = float(_ygray.max())
+                    else:
+                        _y_mean = _y_max = 0.0
+                    _y_ar = max(_yw, _yh) / max(1, min(_yw, _yh))
                     _yolo_result = {
                         "wildlife_detected": True,
                         "species":           det.class_name,
                         "is_rodent":         False,
                         "confidence":        float(det.confidence),
-                        "description":       f"YOLO/COCO detection: {det.class_name} conf={det.confidence:.2f}",
+                        "description": (
+                            f"YOLO/COCO detection: {det.class_name} conf={det.confidence:.2f} "
+                            f"[bbox {_yw}x{_yh}={_yw*_yh}px mean={_y_mean:.0f} max={_y_max:.0f} AR={_y_ar:.2f}]"
+                        ),
                     }
                     logger.info("YOLO fast-path: track=%d species=%s conf=%.2f bbox=%s",
                                 det.track_id, det.class_name, det.confidence, det.bbox)
