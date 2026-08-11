@@ -592,6 +592,17 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                                                         os.getenv("DAY_NIGHT_BRIGHTNESS_THRESHOLD", "100")))
     _DAYTIME_SKIP_START_HOUR = int(os.getenv("SKIP_DAYTIME_START_HOUR", "7"))
     _DAYTIME_SKIP_END_HOUR = int(os.getenv("SKIP_DAYTIME_END_HOUR", "19"))
+    # DAYTIME_SKIP_TRIGGER_MODE controls how the two signals combine:
+    #   "or"  (default): skip fires if EITHER brightness OR time hit.
+    #                    Original behavior — dusk brightness can extend
+    #                    skip past end_hour.
+    #   "and":           both must fire. Predictable resume at end_hour
+    #                    sharp but daytime storms with dipped brightness
+    #                    won't skip.
+    #   "time_only":     ignore brightness signal, use time only.
+    #                    Backyard uses this (user wants exact 7 PM start).
+    #   "brightness_only": ignore time signal, use brightness only.
+    _DAYTIME_SKIP_TRIGGER_MODE = os.getenv("DAYTIME_SKIP_TRIGGER_MODE", "or").lower()
     # Operator pause flag — file-sentinel at /app/config/pause_all.flag.
     # When present, all detectors skip the entire detection path with an
     # "operator paused" banner. Toggled via web UI (POST /api/pause).
@@ -780,7 +791,17 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     _time_hit = _DAYTIME_SKIP_START_HOUR <= _hour < _DAYTIME_SKIP_END_HOUR
                 else:  # wraps midnight
                     _time_hit = _hour >= _DAYTIME_SKIP_START_HOUR or _hour < _DAYTIME_SKIP_END_HOUR
-                if _bright_hit or _time_hit:
+                # Combine per DAYTIME_SKIP_TRIGGER_MODE. Unknown modes
+                # fall back to "or" (original behavior).
+                if _DAYTIME_SKIP_TRIGGER_MODE == "and":
+                    _fire = _bright_hit and _time_hit
+                elif _DAYTIME_SKIP_TRIGGER_MODE == "time_only":
+                    _fire = _time_hit
+                elif _DAYTIME_SKIP_TRIGGER_MODE == "brightness_only":
+                    _fire = _bright_hit
+                else:  # "or" or unknown
+                    _fire = _bright_hit or _time_hit
+                if _fire:
                     _trigger = "bright" if _bright_hit and not _time_hit else (
                         "time" if _time_hit and not _bright_hit else "both"
                     )

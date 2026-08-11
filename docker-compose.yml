@@ -457,6 +457,10 @@ services:
       DAYTIME_SKIP_BRIGHTNESS_THRESHOLD: "90"
       SKIP_DAYTIME_START_HOUR: "7"
       SKIP_DAYTIME_END_HOUR: "19"
+      # time_only: brightness signal ignored so backyard resumes detection
+      # at exactly 7 PM local, not extended by lingering dusk brightness.
+      # User asked for hard 7 PM start.
+      DAYTIME_SKIP_TRIGGER_MODE: time_only
       TZ: America/Los_Angeles
       # 4K source → downsample to 2048x928. Same rationale as rooftop:
       # yard's 1088x612 default would collapse a 30 px rat crop to
