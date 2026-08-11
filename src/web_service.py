@@ -33,6 +33,7 @@ import signal
 import time
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -153,9 +154,25 @@ class DetectorRegistry:
         self._clients: dict[str, DetectorClient] = {}
         self._url_by_id: dict[str, str] = {}
         self._default_id: str | None = None
-        for idx, url in enumerate(urls):
-            client = DetectorClient(url.strip(), token)
-            camera_id = self._probe_camera_id(client)
+
+        # Probe all detectors IN PARALLEL — was serialized before, so 3
+        # slow-starting detectors could serialize 3x31s = 93s of startup
+        # wait, tripping the compose healthcheck. ThreadPoolExecutor with
+        # one thread per detector: worst case = 31s regardless of count.
+        clients = [(idx, url.strip(), DetectorClient(url.strip(), token))
+                   for idx, url in enumerate(urls)]
+        with ThreadPoolExecutor(
+            max_workers=max(1, len(clients)),
+            thread_name_prefix="registry-probe",
+        ) as pool:
+            probe_results = list(pool.map(
+                lambda c: (c[0], c[1], c[2], self._probe_camera_id(c[2])),
+                clients,
+            ))
+
+        # Register in original URL order so default_id is deterministic
+        # (first-in-DETECTOR_URLS becomes the default camera).
+        for idx, url, client, camera_id in probe_results:
             if camera_id is None:
                 camera_id = f"cam{idx}"
                 # Surface the silent-fallback loudly — this is the failure
@@ -168,7 +185,7 @@ class DetectorRegistry:
                     url, camera_id,
                 )
             self._clients[camera_id] = client
-            self._url_by_id[camera_id] = url.strip()
+            self._url_by_id[camera_id] = url
             if self._default_id is None:
                 self._default_id = camera_id
             logger.info("DetectorRegistry: registered '%s' → %s", camera_id, url)
