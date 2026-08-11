@@ -222,17 +222,17 @@ services:
       # Requires PR #96's bypass_min_confidence flag or overrides get
       # silently dropped by notifier.min_confidence.
       VLM_REJECT_ALERT_MIN_AREA_PX: "0"
-      # detectShadows=1: MOG2 marks shadows gray, motion_detector
-      # thresholds them out before contour finding. Cuts single-frame
-      # ghosts from shadow flicker at the source, reducing motion
-      # events → VLM calls → memory churn. Same knob as rooftop.
-      MOTION_DETECT_SHADOWS: "1"
-      # Aggressive shadow classification (default 0.5 → 0.4). Lower Tau
-      # means MOG accepts pixels that are farther-from-background as
-      # still-shadow, marking more dark blobs → filtered by our >200
-      # post-MOG threshold. Live obs 08/10: default was leaking dark
-      # shadow blobs at night IR.
-      MOTION_SHADOW_THRESHOLD: "0.4"
+      # detectShadows=0: MOG shadow classification is OFF.
+      # Rationale (08/10): PR #99 introduced aggressive shadow filter
+      # (tau=0.4) to kill daytime shadow FPs. PR #100/#101 then added
+      # full daytime detection skip (7-19 local), which handles the
+      # daytime FP window at the pipeline layer. The shadow filter is
+      # now redundant during day AND risks classifying dark rodent
+      # bodies at night as shadows (rat/mouse fur reads at 40-60% of
+      # IR-lit background → hits shadow classifier → filtered → miss).
+      # Nighttime is the only detection window we care about here, so
+      # OFF is the safest default.
+      MOTION_DETECT_SHADOWS: "0"
       BASELINE_DIFF_THRESHOLD: "0.06"
       DAY_BASELINE_DIFF_THRESHOLD: "0.18"
       # Ollama qwen2.5vl:7b returns rodent confidence 0.4-0.7 typically;
@@ -498,11 +498,10 @@ services:
       MOTION_HISTORY: "400"
       MOTION_VAR_THRESHOLD: "18"
       MOTION_MIN_AREA: "80"
-      MOTION_DETECT_SHADOWS: "1"
-      # Aggressive shadow classification — same tune as yard (see yard
-      # env for rationale). Live obs 08/10: default 0.5 was leaking
-      # dark shadow blobs into FG at night IR.
-      MOTION_SHADOW_THRESHOLD: "0.4"
+      # detectShadows=0: same rationale as yard — daytime skip handles
+      # the FP window this was filtering, and shadow classifier risks
+      # rejecting dark rodents at night. See yard's env for full context.
+      MOTION_DETECT_SHADOWS: "0"
       BASELINE_DIFF_THRESHOLD: "0.06"
       DAY_BASELINE_DIFF_THRESHOLD: "0.18"
       DAYTIME_RODENT_MIN_CONF: "0.55"
