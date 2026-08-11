@@ -200,10 +200,12 @@ services:
       VLM_INTERVAL_S: "3"
       # Insect brightness pre-filter — bbox mean grayscale above this
       # threshold classified as insect (moth wings reflect IR/light),
-      # skip VLM entirely. 110 catches moths on darker backgrounds where
-      # 130 (code default) let them through. Bump higher if legit
-      # bright-lit rodents get flagged.
-      NIGHT_INSECT_BRIGHTNESS_MIN: "110"
+      # skip VLM entirely. Was 110 pre-tuning; lowered to 100 08/11 after
+      # Reolink ISP tuning (Brightness 128→90, contrast up, NR down)
+      # dropped the overall scene brightness — moths that used to render
+      # at mean 130+ now render at 70-100 and were slipping past 110.
+      # 100 preserves 12-point buffer above max labeled rodent mean (88).
+      NIGHT_INSECT_BRIGHTNESS_MIN: "100"
       # Yard's side-angle view has stable non-foliage background — MOG2
       # defaults (variance-based) work well; conservative threshold keeps
       # shadow-jitter FPs down.
@@ -483,11 +485,14 @@ services:
       # blobs runs 116-182), so the default 110 threshold classified
       # ALL fence detections as moths and skipped VLM. Sandbox A/B on
       # backyard_missed_2123.mp4 with new threshold caught 13 VLM
-      # positive rodent decisions vs 0 in the live gap. Some very-bright
-      # fence blobs (mean 170-182) still slip through — proper fix is
-      # zone-aware exemption (skip insect filter inside slew preset
-      # polygons); tracked as follow-up.
-      NIGHT_INSECT_BRIGHTNESS_MIN: "160"
+      # positive rodent decisions vs 0 in the live gap.
+      # Lowered 160 → 100 on 08/11 after Jennov ISP tuning (Brightness
+      # 128→110, 3D-NR 128→40, Manual shutter) shifted scene brightness
+      # down. Labeled dataset analysis (n=17 rodents, n=70 backyard FPs)
+      # shows max rodent mean=88, so 100 preserves a 12-point safety
+      # buffer while catching most moth-like FPs (median FP mean=118)
+      # at the insect stage instead of at VLM/override.
+      NIGHT_INSECT_BRIGHTNESS_MIN: "100"
       # Enable temporal multi-frame VLM (validated on rooftop in PR #73).
       # Backyard has the same evidence-starvation failure mode against
       # its IR-lit fence backdrop — VLM confidently rejects single-frame
