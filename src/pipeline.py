@@ -284,14 +284,44 @@ class _BboxStats(NamedTuple):
     """Brightness/geometry signature for a bbox — the load-bearing feature
     triplet used by (1) the insect pre-filter (gate on mean/max/AR),
     (2) DECISION log lines (diagnostic), and (3) alert card descriptions
-    (feature labeling analysis). Previously computed inline at 3 sites in
-    pipeline.py with subtle divergence risk; centralized here."""
+    (feature labeling analysis).
+
+    Includes TIGHT (raw MOG bbox) + WIDE (matches _crop_wide_bytes VLM
+    input) brightness readings. Tight drives the filter — it's the
+    signal MOG actually detected. Wide reflects what the VLM + operator
+    see on the alert card. On large animals where MOG only captures a
+    highlight (white paw on brown bricks), the two differ dramatically:
+    tight=99, wide=50 — same alert, two views."""
     w: int
     h: int
     area: int
     mean: float
     max: float
     aspect_ratio: float
+    wide_mean: float
+    wide_max: float
+
+
+def _wide_bbox_coords(
+    frame_shape: tuple[int, int],
+    bbox: tuple[int, int, int, int],
+) -> tuple[int, int, int, int]:
+    """Same padding math as _crop_wide_bytes so the filter measurement
+    and the VLM input crop the same region. Env-shared:
+    VLM_CROP_PAD_MULT + VLM_CROP_MIN_PAD."""
+    h, w = frame_shape[:2]
+    x1, y1, x2, y2 = bbox
+    bw, bh = max(1, x2 - x1), max(1, y2 - y1)
+    pad_mult = float(os.getenv("VLM_CROP_PAD_MULT", "3"))
+    pad_min = int(os.getenv("VLM_CROP_MIN_PAD", "160"))
+    pad_x = max(int(bw * pad_mult), pad_min)
+    pad_y = max(int(bh * pad_mult), pad_min)
+    return (
+        max(0, x1 - pad_x),
+        max(0, y1 - pad_y),
+        min(w, x2 + pad_x),
+        min(h, y2 + pad_y),
+    )
 
 
 def _bbox_signature(frame: np.ndarray, bbox: tuple[int, int, int, int]) -> _BboxStats:
@@ -309,7 +339,22 @@ def _bbox_signature(frame: np.ndarray, bbox: tuple[int, int, int, int]) -> _Bbox
     else:
         mean = max_ = 0.0
     aspect_ratio = max(w, h) / max(1, min(w, h))
-    return _BboxStats(w=w, h=h, area=area, mean=mean, max=max_, aspect_ratio=aspect_ratio)
+    # Wide crop — matches the region VLM + alert-card renderer see.
+    # Diagnostic-only in this PR (filter still uses tight mean); enables
+    # data-driven decision on switching filter to wide-crop later.
+    wx1, wy1, wx2, wy2 = _wide_bbox_coords(frame.shape, bbox)
+    wide_crop = frame[wy1:wy2, wx1:wx2]
+    if wide_crop.size > 0:
+        wide_gray = cv2.cvtColor(wide_crop, cv2.COLOR_BGR2GRAY) if wide_crop.ndim == 3 else wide_crop
+        wide_mean = float(wide_gray.mean())
+        wide_max = float(wide_gray.max())
+    else:
+        wide_mean = wide_max = 0.0
+    return _BboxStats(
+        w=w, h=h, area=area,
+        mean=mean, max=max_, aspect_ratio=aspect_ratio,
+        wide_mean=wide_mean, wide_max=wide_max,
+    )
 
 
 def _annotate(
@@ -1146,11 +1191,13 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 _stats = _bbox_signature(snap_fr, bbox)
                 _bw, _bh = _stats.w, _stats.h
                 _b_mean, _b_max, _b_ar = _stats.mean, _stats.max, _stats.aspect_ratio
+                _b_wmean, _b_wmax = _stats.wide_mean, _stats.wide_max
                 logger.info(
-                    "DECISION track=%d species=%s rodent=%s conf=%.2f bbox=%s (%dx%d) mean=%.0f max=%.0f AR=%.2f vlm_queue_age=%.1fs inflight_after=%d",
+                    "DECISION track=%d species=%s rodent=%s conf=%.2f bbox=%s (%dx%d) mean=%.0f max=%.0f AR=%.2f wide_mean=%.0f wide_max=%.0f vlm_queue_age=%.1fs inflight_after=%d",
                     tid, result.get("species"), result.get("is_rodent"),
                     result.get("confidence", 0.0), bbox, _bw, _bh,
-                    _b_mean, _b_max, _b_ar, _queue_age, _inflight,
+                    _b_mean, _b_max, _b_ar, _b_wmean, _b_wmax,
+                    _queue_age, _inflight,
                 )
 
                 # Freshness deadline: discard alerts whose snapshot is too old
@@ -1249,7 +1296,8 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                                 f"[VLM-REJECT-OVERRIDE] VLM said {_rejected_species!r} "
                                 f"(conf={result.get('confidence', 0.0):.2f}); MOG + baseline "
                                 f"agreed motion is here (bbox {_bw}x{_bh}={_bbox_area}px "
-                                f"mean={_b_mean:.0f} max={_b_max:.0f} AR={_b_ar:.2f}). "
+                                f"mean={_b_mean:.0f} max={_b_max:.0f} AR={_b_ar:.2f} "
+                                f"wide_mean={_b_wmean:.0f} wide_max={_b_wmax:.0f}). "
                                 f"Filing as 'other' for human review. Original: "
                                 f"{result.get('description', '')[:120]}"
                             ),
@@ -1280,7 +1328,8 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 result = dict(result)  # avoid mutating the VLM's cached dict
                 result["description"] = (
                     f"{_orig_desc} [bbox {_bw}x{_bh}={_bw*_bh}px "
-                    f"mean={_b_mean:.0f} max={_b_max:.0f} AR={_b_ar:.2f}]"
+                    f"mean={_b_mean:.0f} max={_b_max:.0f} AR={_b_ar:.2f} "
+                    f"wide_mean={_b_wmean:.0f} wide_max={_b_wmax:.0f}]"
                 )
                 snap_path = notifier.send("rodent", result, snap_fr, bbox, yolo_conf=yolo_conf)
                 sh, sw = snap_fr.shape[:2]
@@ -1406,7 +1455,7 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         "confidence":        float(det.confidence),
                         "description": (
                             f"YOLO/COCO detection: {det.class_name} conf={det.confidence:.2f} "
-                            f"[bbox {_ys.w}x{_ys.h}={_ys.area}px mean={_ys.mean:.0f} max={_ys.max:.0f} AR={_ys.aspect_ratio:.2f}]"
+                            f"[bbox {_ys.w}x{_ys.h}={_ys.area}px mean={_ys.mean:.0f} max={_ys.max:.0f} AR={_ys.aspect_ratio:.2f} wide_mean={_ys.wide_mean:.0f} wide_max={_ys.wide_max:.0f}]"
                         ),
                     }
                     logger.info("YOLO fast-path: track=%d species=%s conf=%.2f bbox=%s",
