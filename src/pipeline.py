@@ -390,6 +390,16 @@ def _annotate(
                     (0, 200, 255), 2, cv2.LINE_AA)
         return out
 
+    # ALERT_ANNOTATE_WIDE_CROP=1 (default on): red alert overlays are
+    # drawn on the VLM's wide-crop rectangle instead of the raw MOG bbox.
+    # Fixes the failure mode where MOG captures only a fragment of a
+    # large animal (raccoon paw, rat's neighboring leaf) — the red box
+    # matches what VLM actually looked at. Non-alerted boxes (yellow
+    # motion, green YOLO) still use their raw bbox so operators can see
+    # detection precision. Env-gated in case wide overlays feel too
+    # loud in practice.
+    _alert_wide = os.getenv("ALERT_ANNOTATE_WIDE_CROP", "1") == "1"
+
     for det in all_dets:
         x1, y1, x2, y2 = det.bbox
         in_zone = det.track_id in zone_ids
@@ -408,11 +418,23 @@ def _annotate(
         else:
             color, thickness = (60, 60, 60), 1          # grey — YOLO outside zone
 
-        cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness)
+        if alerted and _alert_wide:
+            # Draw the wide-crop rectangle (what VLM looked at) instead
+            # of the raw MOG bbox. Use same padding math as _crop_wide_bytes.
+            wx1, wy1, wx2, wy2 = _wide_bbox_coords(out.shape, det.bbox)
+            cv2.rectangle(out, (wx1, wy1), (wx2, wy2), color, thickness)
+            # Show the raw bbox as a thin inner outline so operators can
+            # still see the MOG-detected region within the VLM view.
+            cv2.rectangle(out, (x1, y1), (x2, y2), color, 1)
+            label_y = wy1
+        else:
+            cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness)
+            label_y = y1
+
         if in_zone or alerted:
             source = "MOG2" if is_motion else "YOLO"
             label = f"[{source}] {det.class_name} #{det.track_id} {det.confidence:.0%}"
-            cv2.putText(out, label, (x1, max(y1 - 6, 14)),
+            cv2.putText(out, label, (x1, max(label_y - 6, 14)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
     return out
 
