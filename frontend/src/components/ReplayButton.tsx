@@ -21,9 +21,17 @@ interface ReplayButtonProps {
  */
 export function ReplayButton({ alertId, size = "sm" }: ReplayButtonProps) {
   const onClick = async () => {
+    // Open a new tab SYNCHRONOUSLY so popup blockers count this as a
+    // user gesture. Fetch + navigation happen in the new tab; the
+    // labeling page stays put. Prior implementation used
+    // window.location.href which navigated the current page — for local
+    // mp4 clips, the browser opened them in a bare viewer with no back
+    // button, forcing operators to browser-back to return to labeling.
+    const newTab = window.open("about:blank", "_blank");
     try {
       const r = await fetch(`/api/alerts/${alertId}/playback-url`);
       if (!r.ok) {
+        newTab?.close();
         alert(`Playback URL fetch failed: HTTP ${r.status}`);
         return;
       }
@@ -37,12 +45,18 @@ export function ReplayButton({ alertId, size = "sm" }: ReplayButtonProps) {
       } catch {
         /* clipboard blocked in insecure context — non-fatal */
       }
-      window.location.href = j.url;
+      if (newTab) {
+        newTab.location.href = j.url;
+      } else {
+        // Popup blocked → fall back to same-tab navigation (old behavior).
+        window.location.href = j.url;
+      }
       if (j.note) {
-        // Slight delay so the rtsp:// navigation is already dispatched.
+        // Slight delay so the navigation is already dispatched.
         setTimeout(() => alert(`Playback URL copied to clipboard.\n${j.note}`), 200);
       }
     } catch (e) {
+      newTab?.close();
       alert(`Playback URL error: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
