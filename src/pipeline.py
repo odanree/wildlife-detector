@@ -337,6 +337,14 @@ def _annot_bbox_coords(
     annotation is 400x400 (2x). For a small 40x40 bbox, annotation is
     120x120 (3x). Balance between showing context vs pinpointing target.
     Env-tunable via ALERT_ANNOTATE_PAD_MULT + ALERT_ANNOTATE_PAD_MIN.
+
+    Absolute cap: even after padding, the final rectangle is centered on
+    the raw bbox center and clipped so neither dimension exceeds
+    ALERT_ANNOTATE_MAX_FRAC of the frame (default 0.40 = 40%). This
+    protects against cases where the RAW bbox itself is huge (e.g. an
+    over-eager MOG merge chained many FPs into one 1747x856 super-bbox
+    covering 82% of the frame — live obs 08/12). The cap ensures the
+    annotation never turns into "here's the whole scene".
     """
     h, w = frame_shape[:2]
     x1, y1, x2, y2 = bbox
@@ -345,12 +353,27 @@ def _annot_bbox_coords(
     pad_min = int(os.getenv("ALERT_ANNOTATE_PAD_MIN", "40"))
     pad_x = max(int(bw * pad_mult), pad_min)
     pad_y = max(int(bh * pad_mult), pad_min)
-    return (
-        max(0, x1 - pad_x),
-        max(0, y1 - pad_y),
-        min(w, x2 + pad_x),
-        min(h, y2 + pad_y),
-    )
+    # Padded rectangle
+    px1 = max(0, x1 - pad_x)
+    py1 = max(0, y1 - pad_y)
+    px2 = min(w, x2 + pad_x)
+    py2 = min(h, y2 + pad_y)
+    # Absolute size cap — clip to max fraction of frame per axis.
+    max_frac = float(os.getenv("ALERT_ANNOTATE_MAX_FRAC", "0.40"))
+    max_bw = int(w * max_frac)
+    max_bh = int(h * max_frac)
+    ann_bw = px2 - px1
+    ann_bh = py2 - py1
+    if ann_bw > max_bw or ann_bh > max_bh:
+        # Center the capped rectangle on the raw bbox's center so the
+        # annotation still points at the detected region.
+        cx = (x1 + x2) // 2
+        cy = (y1 + y2) // 2
+        px1 = max(0, cx - max_bw // 2)
+        py1 = max(0, cy - max_bh // 2)
+        px2 = min(w, px1 + max_bw)
+        py2 = min(h, py1 + max_bh)
+    return (px1, py1, px2, py2)
 
 
 def _bbox_signature(frame: np.ndarray, bbox: tuple[int, int, int, int]) -> _BboxStats:

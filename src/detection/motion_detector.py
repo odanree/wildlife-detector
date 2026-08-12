@@ -59,6 +59,14 @@ _MIN_TRACK_AGE = int(os.getenv("MOTION_MIN_TRACK_AGE_FRAMES", "2"))
 # one bbox per animal → one VLM call, correct brightness signature.
 # Set to 0 to disable (preserves prior behavior).
 _MERGE_DIST_PX = int(os.getenv("MOTION_MERGE_DIST_PX", "0"))
+# Cap on merged-union area as a fraction of frame. Single-linkage
+# clustering pathology: if 30 unrelated FP bboxes each fall within
+# MERGE_DIST_PX of the next, they chain into ONE giant union covering
+# most of the frame. Live obs 08/12: merged bbox 1747x856 = 82% of a
+# 2048x928 frame — clearly not one animal. If union > this fraction,
+# skip the merge and keep members separate. 0.30 = 30% of frame area,
+# generous for a single animal but tight enough to reject chained FPs.
+_MERGE_MAX_AREA_FRAC = float(os.getenv("MOTION_MERGE_MAX_AREA_FRAC", "0.30"))
 
 # MOG2/KNN shadow detection: when enabled, the FG mask marks shadow
 # pixels as gray (128) instead of foreground (255). We threshold to
@@ -301,6 +309,18 @@ class MotionDetector:
             ys2 = [dets[i].bbox[3] for i in members]
             union_bbox = (min(xs1), min(ys1), max(xs2), max(ys2))
             union_area = (union_bbox[2] - union_bbox[0]) * (union_bbox[3] - union_bbox[1])
+            # Reject over-broad unions (single-linkage chained FPs).
+            # Keep members as separate detections rather than one giant blob.
+            if union_area > _MERGE_MAX_AREA_FRAC * frame_area:
+                logger.info(
+                    "MOG merge REJECTED (too broad): %d bboxes union=%d px (%.0f%% of frame > %.0f%% cap) — keeping separate",
+                    len(members), union_area,
+                    100.0 * union_area / max(1, frame_area),
+                    100.0 * _MERGE_MAX_AREA_FRAC,
+                )
+                for i in members:
+                    merged.append(dets[i])
+                continue
             keep_id = min(dets[i].track_id for i in members)
             logger.info(
                 "MOG merge: %d bboxes → 1 (track_ids=%s → keep=%d, union_bbox=%s)",
