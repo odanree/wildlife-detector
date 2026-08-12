@@ -1375,7 +1375,11 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 _preview_stats.record_alert(
                     species=str(result.get("species", "unknown")),
                     confidence=float(result.get("confidence", 0.0)),
-                    description=str(result.get("description", ""))[:200],
+                    # 2000 char cap (was 200) — 200 clipped the brightness
+                    # suffix added by PR #107/#120. Real descriptions are
+                    # ~100-500 chars (VLM text + [bbox ... wide_mean=...]);
+                    # 2000 is defensive upper bound against runaway prompts.
+                    description=str(result.get("description", ""))[:2000],
                     snapshot=_snap_ref,
                     track_id=int(tid),
                     yolo_conf=float(yolo_conf) if yolo_conf is not None else None,
