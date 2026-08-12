@@ -409,6 +409,31 @@ def _bbox_signature(frame: np.ndarray, bbox: tuple[int, int, int, int]) -> _Bbox
     )
 
 
+# Per-track history of recent bboxes — used by the temporal-union
+# annotation to expand a single-frame MOG bbox to the swept path over
+# recent frames. Walking cat case: MOG's adaptive background absorbs
+# the trailing body so only the leading edge stays as foreground each
+# frame, producing a small bbox on the front of the animal per frame.
+# Union of last N frames' bboxes for the same track_id covers the
+# full body path. Purely visual — doesn't affect detection or VLM.
+_TRACK_BBOX_HISTORY: dict[int, deque] = {}
+
+
+def _push_track_history(track_id: int, bbox: tuple[int, int, int, int],
+                        maxlen: int) -> tuple[tuple[int, int, int, int], int]:
+    """Append bbox to track's history; return (union_bbox, n_frames)."""
+    hist = _TRACK_BBOX_HISTORY.get(track_id)
+    if hist is None or hist.maxlen != maxlen:
+        hist = deque(maxlen=maxlen)
+        _TRACK_BBOX_HISTORY[track_id] = hist
+    hist.append(bbox)
+    xs1 = [b[0] for b in hist]
+    ys1 = [b[1] for b in hist]
+    xs2 = [b[2] for b in hist]
+    ys2 = [b[3] for b in hist]
+    return (min(xs1), min(ys1), max(xs2), max(ys2)), len(hist)
+
+
 def _annotate(
     frame: np.ndarray,
     all_dets: list[Detection],
@@ -451,6 +476,18 @@ def _annotate(
     # detection precision. Env-gated in case wide overlays feel too
     # loud in practice.
     _alert_wide = os.getenv("ALERT_ANNOTATE_WIDE_CROP", "1") == "1"
+    # Temporal union: expand annotation to cover the union of this track's
+    # last N frames' bboxes. Fixes the walking-cat case where MOG's
+    # adaptive background eats the trailing body, leaving only a small
+    # leading-edge bbox per frame — union sweeps the annotation across
+    # the full body path over N frames. 0 = disable (raw bbox behavior).
+    _hist_frames = int(os.getenv("ALERT_ANNOTATE_HISTORY_FRAMES", "0"))
+
+    # Evict stale tracks (not seen this frame) to bound memory.
+    _current_ids = {d.track_id for d in all_dets}
+    for _stale_id in list(_TRACK_BBOX_HISTORY):
+        if _stale_id not in _current_ids:
+            del _TRACK_BBOX_HISTORY[_stale_id]
 
     for det in all_dets:
         x1, y1, x2, y2 = det.bbox
@@ -470,15 +507,32 @@ def _annotate(
         else:
             color, thickness = (60, 60, 60), 1          # grey — YOLO outside zone
 
+        # Base bbox for annotation — union of recent frames when temporal
+        # history is enabled and this track has been alerted.
+        annot_source_bbox = det.bbox
+        if alerted and _hist_frames > 0:
+            union_bbox, n_hist = _push_track_history(det.track_id, det.bbox, _hist_frames)
+            annot_source_bbox = union_bbox
+            _uw = union_bbox[2] - union_bbox[0]
+            _uh = union_bbox[3] - union_bbox[1]
+            _tw = x2 - x1
+            _th = y2 - y1
+            if n_hist > 1 and (_uw != _tw or _uh != _th):
+                logger.info(
+                    "Track expansion: track=%d tight=%dx%d union=%dx%d N_frames=%d",
+                    det.track_id, _tw, _th, _uw, _uh, n_hist,
+                )
+
         if alerted and _alert_wide:
-            # Draw a moderately-padded rectangle around the raw MOG bbox.
-            # Uses _annot_bbox_coords (pad_mult=1, pad_min=40) — smaller
-            # than the VLM wide crop (pad_mult=3, pad_min=160 covers ~2/3
-            # of frame for medium bboxes and reads as noise).
-            wx1, wy1, wx2, wy2 = _annot_bbox_coords(out.shape, det.bbox)
+            # Draw a moderately-padded rectangle around the annotation
+            # source (raw MOG bbox or temporal union). Uses
+            # _annot_bbox_coords (pad_mult=1, pad_min=40) — smaller than
+            # the VLM wide crop.
+            wx1, wy1, wx2, wy2 = _annot_bbox_coords(out.shape, annot_source_bbox)
             cv2.rectangle(out, (wx1, wy1), (wx2, wy2), color, thickness)
-            # Show the raw bbox as a thin inner outline so operators can
-            # still see the MOG-detected region within the annotation.
+            # Show the raw current-frame bbox as a thin inner outline so
+            # operators can still see the MOG-detected region within the
+            # annotation.
             cv2.rectangle(out, (x1, y1), (x2, y2), color, 1)
             label_y = wy1
         else:

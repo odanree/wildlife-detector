@@ -225,6 +225,12 @@ services:
       # white paw only). 40 px ≈ rodent-body-length — tight enough not
       # to merge unrelated FPs. See PR #122.
       MOTION_MERGE_DIST_PX: "40"
+      # Temporal union: expand alert annotation to cover union of last N
+      # frames' bboxes for the same track. Fixes the walking-cat case
+      # where MOG's adaptive background eats trailing body, leaving only
+      # a small leading-edge bbox per frame — union sweeps annotation
+      # across the full body path over N frames. Purely visual.
+      ALERT_ANNOTATE_HISTORY_FRAMES: "15"
       # Yard's side-angle view has stable non-foliage background — MOG2
       # defaults (variance-based) work well; conservative threshold keeps
       # shadow-jitter FPs down.
@@ -526,6 +532,8 @@ services:
       # rationale. Especially relevant here since backyard sees more
       # large-animal traffic (cats, raccoons) than yard.
       MOTION_MERGE_DIST_PX: "40"
+      # Temporal union annotation — see yard for rationale.
+      ALERT_ANNOTATE_HISTORY_FRAMES: "15"
       # Enable temporal multi-frame VLM (validated on rooftop in PR #73).
       # Backyard has the same evidence-starvation failure mode against
       # its IR-lit fence backdrop — VLM confidently rejects single-frame
