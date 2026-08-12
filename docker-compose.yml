@@ -219,6 +219,12 @@ services:
       # 100. Max + elongation gates STAY size-capped (rodents with
       # eyeshine hit max=255 legitimately at any size).
       INSECT_MEAN_UNCAP_SIZE: "1"
+      # Merge MOG bboxes whose edges are within 40 px of each other into
+      # a single detection. Fixes fragmentation on large animals
+      # (raccoon → 3-4 disconnected bboxes on bright body parts, cat's
+      # white paw only). 40 px ≈ rodent-body-length — tight enough not
+      # to merge unrelated FPs. See PR #122.
+      MOTION_MERGE_DIST_PX: "40"
       # Yard's side-angle view has stable non-foliage background — MOG2
       # defaults (variance-based) work well; conservative threshold keeps
       # shadow-jitter FPs down.
@@ -516,6 +522,10 @@ services:
       # Data-driven: threshold=100 preserves 7-point buffer above max
       # backyard rodent mean (93).
       INSECT_MEAN_UNCAP_SIZE: "1"
+      # Merge MOG bboxes within 40 px edge-to-edge — see yard for
+      # rationale. Especially relevant here since backyard sees more
+      # large-animal traffic (cats, raccoons) than yard.
+      MOTION_MERGE_DIST_PX: "40"
       # Enable temporal multi-frame VLM (validated on rooftop in PR #73).
       # Backyard has the same evidence-starvation failure mode against
       # its IR-lit fence backdrop — VLM confidently rejects single-frame

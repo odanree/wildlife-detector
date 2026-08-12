@@ -51,6 +51,15 @@ _MAX_VELOCITY_PX = int(os.getenv("MOTION_MAX_VELOCITY_PX_PER_FRAME", "40"))
 # (~66ms at 15fps). Set to 1 to disable, default 2.
 _MIN_TRACK_AGE = int(os.getenv("MOTION_MIN_TRACK_AGE_FRAMES", "2"))
 
+# Spatial merge: after per-blob filtering, union bboxes whose edges are
+# within MOTION_MERGE_DIST_PX of each other. Fixes MOG bbox
+# fragmentation on large animals — a raccoon can generate 3-4 separate
+# bboxes (paw, ear, tail) because dark fur regions blend with the
+# background and only high-contrast body parts register. Merging gives
+# one bbox per animal → one VLM call, correct brightness signature.
+# Set to 0 to disable (preserves prior behavior).
+_MERGE_DIST_PX = int(os.getenv("MOTION_MERGE_DIST_PX", "0"))
+
 # MOG2/KNN shadow detection: when enabled, the FG mask marks shadow
 # pixels as gray (128) instead of foreground (255). We threshold to
 # keep only strong-FG (>200), dropping shadows before contour finding.
@@ -235,7 +244,77 @@ class MotionDetector:
             del self._tracks[tid]
             self._track_age.pop(tid, None)
 
+        # Spatial merge — union nearby bboxes into single detection per
+        # cluster. Single-linkage clustering with edge-to-edge distance.
+        # Runs after track association so merged bbox inherits the id of
+        # the lowest-track_id cluster member (deterministic).
+        if _MERGE_DIST_PX > 0 and len(detections) > 1:
+            detections = self._merge_adjacent(detections, _MERGE_DIST_PX, frame_area)
+
         return detections
+
+    @staticmethod
+    def _merge_adjacent(dets: list[Detection], dist_px: int, frame_area: int) -> list[Detection]:
+        """Single-linkage spatial clustering: union any bboxes whose edges
+        are within dist_px of each other. Each cluster becomes one Detection
+        (unioned bbox, lowest track_id, sum of areas)."""
+        n = len(dets)
+        parent = list(range(n))
+
+        def find(a: int) -> int:
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+
+        def union(a: int, b: int) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        def close(b1: tuple, b2: tuple) -> bool:
+            """Edge-to-edge distance ≤ dist_px in both axes (rectangles
+            overlap OR are within dist_px on both x and y)."""
+            ax1, ay1, ax2, ay2 = b1
+            bx1, by1, bx2, by2 = b2
+            gap_x = max(0, max(bx1 - ax2, ax1 - bx2))
+            gap_y = max(0, max(by1 - ay2, ay1 - by2))
+            return gap_x <= dist_px and gap_y <= dist_px
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                if close(dets[i].bbox, dets[j].bbox):
+                    union(i, j)
+
+        clusters: dict[int, list[int]] = {}
+        for i in range(n):
+            clusters.setdefault(find(i), []).append(i)
+
+        merged: list[Detection] = []
+        for members in clusters.values():
+            if len(members) == 1:
+                merged.append(dets[members[0]])
+                continue
+            xs1 = [dets[i].bbox[0] for i in members]
+            ys1 = [dets[i].bbox[1] for i in members]
+            xs2 = [dets[i].bbox[2] for i in members]
+            ys2 = [dets[i].bbox[3] for i in members]
+            union_bbox = (min(xs1), min(ys1), max(xs2), max(ys2))
+            union_area = (union_bbox[2] - union_bbox[0]) * (union_bbox[3] - union_bbox[1])
+            keep_id = min(dets[i].track_id for i in members)
+            logger.info(
+                "MOG merge: %d bboxes → 1 (track_ids=%s → keep=%d, union_bbox=%s)",
+                len(members), [dets[i].track_id for i in members], keep_id, union_bbox,
+            )
+            merged.append(Detection(
+                track_id=keep_id,
+                class_name="person",
+                confidence=_SYNTHETIC_CONF,
+                bbox=union_bbox,
+                area_fraction=union_area / max(1, frame_area),
+                contour=None,
+            ))
+        return merged
 
     def pop_reject_counts(self) -> tuple[int, int]:
         """Return (velocity_rejects, persistence_rejects) since the last
