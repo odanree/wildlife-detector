@@ -204,8 +204,13 @@ services:
       # Reolink ISP tuning (Brightness 128→90, contrast up, NR down)
       # dropped the overall scene brightness — moths that used to render
       # at mean 130+ now render at 70-100 and were slipping past 110.
-      # 100 preserves 12-point buffer above max labeled rodent mean (88).
-      NIGHT_INSECT_BRIGHTNESS_MIN: "100"
+      # Raised 100 → 110 08/12 after cat labels came in. Real cats can
+      # generate small partial-body-crop bboxes (only a paw/tail/patch
+      # of fur visible after MOG); those partial crops happen to hit
+      # mean=98 when the cat is next to IR-lit surface. Threshold=100
+      # had a 1-point buffer above that ceiling — too tight. 110 gives
+      # 11pt buffer above real cat max, 22pt above rodent max (88).
+      NIGHT_INSECT_BRIGHTNESS_MIN: "110"
       # Uncap the size restriction on the mean-brightness gate. Data
       # analysis 08/11 (n=71 rodents, n=539 FPs): backyard FPs cluster at
       # mean 100-190 with many bboxes > 2000 px (wall reflections, IR-lit
@@ -500,7 +505,11 @@ services:
       # shows max rodent mean=88, so 100 preserves a 12-point safety
       # buffer while catching most moth-like FPs (median FP mean=118)
       # at the insect stage instead of at VLM/override.
-      NIGHT_INSECT_BRIGHTNESS_MIN: "100"
+      # Raised 100 → 110 08/12: real cat labels showed max=99 on partial-
+      # body-crop bboxes. Threshold=100 had a 1-point buffer above that
+      # ceiling. 110 preserves 11pt buffer above cat max, 15pt above
+      # backyard rodent max (95).
+      NIGHT_INSECT_BRIGHTNESS_MIN: "110"
       # Uncap size on mean-brightness gate — see yard for full rationale.
       # Backyard's dominant FP class is wall reflections + IR-lit foliage
       # at bboxes 45-100+ px wide (well above the 2000 px size cap).
