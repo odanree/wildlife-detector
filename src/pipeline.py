@@ -324,6 +324,35 @@ def _wide_bbox_coords(
     )
 
 
+def _annot_bbox_coords(
+    frame_shape: tuple[int, int],
+    bbox: tuple[int, int, int, int],
+) -> tuple[int, int, int, int]:
+    """Padded coords for ALERT overlays — smaller than _wide_bbox_coords
+    (which is tuned for VLM context width). VLM's pad_mult=3+pad_min=160
+    covers ~2/3 of the whole frame for medium bboxes; useless as a visual
+    annotation ("here's the animal" turns into "here's most of the scene").
+
+    Annotation defaults: pad_mult=1, pad_min=40. For a 200x200 raw bbox,
+    annotation is 400x400 (2x). For a small 40x40 bbox, annotation is
+    120x120 (3x). Balance between showing context vs pinpointing target.
+    Env-tunable via ALERT_ANNOTATE_PAD_MULT + ALERT_ANNOTATE_PAD_MIN.
+    """
+    h, w = frame_shape[:2]
+    x1, y1, x2, y2 = bbox
+    bw, bh = max(1, x2 - x1), max(1, y2 - y1)
+    pad_mult = float(os.getenv("ALERT_ANNOTATE_PAD_MULT", "1.0"))
+    pad_min = int(os.getenv("ALERT_ANNOTATE_PAD_MIN", "40"))
+    pad_x = max(int(bw * pad_mult), pad_min)
+    pad_y = max(int(bh * pad_mult), pad_min)
+    return (
+        max(0, x1 - pad_x),
+        max(0, y1 - pad_y),
+        min(w, x2 + pad_x),
+        min(h, y2 + pad_y),
+    )
+
+
 def _bbox_signature(frame: np.ndarray, bbox: tuple[int, int, int, int]) -> _BboxStats:
     """Compute the brightness/geometry signature of a bbox region within a frame.
     Safe against zero-area bboxes (returns 0.0 for mean/max)."""
@@ -419,12 +448,14 @@ def _annotate(
             color, thickness = (60, 60, 60), 1          # grey — YOLO outside zone
 
         if alerted and _alert_wide:
-            # Draw the wide-crop rectangle (what VLM looked at) instead
-            # of the raw MOG bbox. Use same padding math as _crop_wide_bytes.
-            wx1, wy1, wx2, wy2 = _wide_bbox_coords(out.shape, det.bbox)
+            # Draw a moderately-padded rectangle around the raw MOG bbox.
+            # Uses _annot_bbox_coords (pad_mult=1, pad_min=40) — smaller
+            # than the VLM wide crop (pad_mult=3, pad_min=160 covers ~2/3
+            # of frame for medium bboxes and reads as noise).
+            wx1, wy1, wx2, wy2 = _annot_bbox_coords(out.shape, det.bbox)
             cv2.rectangle(out, (wx1, wy1), (wx2, wy2), color, thickness)
             # Show the raw bbox as a thin inner outline so operators can
-            # still see the MOG-detected region within the VLM view.
+            # still see the MOG-detected region within the annotation.
             cv2.rectangle(out, (x1, y1), (x2, y2), color, 1)
             label_y = wy1
         else:
