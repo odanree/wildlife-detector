@@ -227,6 +227,62 @@ def ptz_preset(camera_id: int, preset: int = 1) -> bool:
     return _ptz_preset_dahua(camera_id, preset)
 
 
+def ptz_status_onvif(camera_id: int) -> dict | None:
+    """Fetch current PTZ position + move state via ONVIF GetStatus SOAP.
+
+    Returns dict {pan: float, tilt: float, zoom: float, moving: bool}
+    or None if the camera doesn't support GetStatus / auth fails / net
+    error. Normalized to ONVIF's -1.0 .. 1.0 range for pan/tilt and
+    0.0 .. 1.0 for zoom (per ONVIF spec).
+
+    Used by PtzMonitor to detect off-home-preset positions caused by
+    camera-side AI auto-tracking (bypasses our pipeline's knowledge).
+    """
+    host = _host(camera_id)
+    if not host:
+        return None
+    user, pwd = _creds(camera_id)
+    path = os.getenv(f"PTZ_ONVIF_PATH_{camera_id}", "/onvif/ptz")
+    profile = os.getenv(f"PTZ_ONVIF_PROFILE_{camera_id}", "MainStream")
+    security = _ws_security_header(user, pwd)
+    body = (
+        '<?xml version="1.0"?>'
+        '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">'
+        f"<s:Header>{security}</s:Header>"
+        "<s:Body>"
+        '<GetStatus xmlns="http://www.onvif.org/ver20/ptz/wsdl">'
+        f"<ProfileToken>{profile}</ProfileToken>"
+        "</GetStatus>"
+        "</s:Body></s:Envelope>"
+    )
+    url = f"http://{host}:{_PTZ_PORT}{path}"
+    try:
+        r = httpx.post(url, content=body, timeout=3.0, headers={
+            "Content-Type": "application/soap+xml; charset=utf-8",
+        })
+        r.raise_for_status()
+        if "Fault" in r.text:
+            return None
+        # Parse: <tt:Position> <tt:PanTilt x="..." y="..."/>
+        #                     <tt:Zoom x="..."/> </tt:Position>
+        #        <tt:MoveStatus> <tt:PanTilt>IDLE|MOVING</...>
+        import re
+        pan_match = re.search(r'PanTilt[^/]*x="([^"]+)"[^/]*y="([^"]+)"', r.text)
+        zoom_match = re.search(r'Zoom[^/]*x="([^"]+)"', r.text)
+        move_match = re.search(r"MoveStatus.*?PanTilt[^>]*>([^<]+)", r.text, re.S)
+        if not pan_match:
+            return None
+        return {
+            "pan": float(pan_match.group(1)),
+            "tilt": float(pan_match.group(2)),
+            "zoom": float(zoom_match.group(1)) if zoom_match else 0.0,
+            "moving": bool(move_match and "MOVING" in move_match.group(1)),
+        }
+    except Exception:
+        logger.exception("PTZ GetStatus (onvif) failed cam=%d", camera_id)
+        return None
+
+
 def ptz_stop(camera_id: int, direction: str | None = None) -> bool:
     """Stop camera movement. direction is used to send the matching stop code."""
     code = DIRECTIONS.get(direction or "", "Up")

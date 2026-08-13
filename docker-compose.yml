@@ -595,6 +595,14 @@ services:
       # ONVIF media ProfileToken. Discover via GetProfiles if this
       # camera model differs; MainStream is the Jennov default.
       PTZ_ONVIF_PROFILE_2: "MainStream"
+      # ONVIF PTZ position monitor — detects camera-side auto-pans
+      # (Jennov's on-cam AI can auto-track and physically move the
+      # camera off home preset). When off-home, pipeline pauses
+      # detection with a banner. Learns home position at startup.
+      PTZ_MONITOR_CAMERA_ID_NUM: "2"
+      PTZ_MONITOR_ENABLED_2: "1"
+      PTZ_MONITOR_INTERVAL_S: "5.0"
+      PTZ_HOME_TOLERANCE: "0.05"
     expose:
       - "8103"
     healthcheck:
