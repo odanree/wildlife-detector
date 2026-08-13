@@ -142,6 +142,13 @@ class SelfSlewController:
         skip MOG updates during this window."""
         return time.monotonic() < self._transition_until
 
+    def is_at_home_preset(self) -> bool:
+        """True when the camera is (nominally) parked at the home preset.
+        Used by the pipeline to decide whether to bypass the zone filter
+        — while at a non-home preset, the home-anchored zone polygon is
+        stale and would drop the target the camera panned toward."""
+        return self._current_preset == self.cfg.home_preset
+
     def on_positive(
         self,
         bbox: tuple[int, int, int, int],
@@ -356,3 +363,16 @@ def is_in_transition() -> bool:
         return get_controller().is_in_transition()
     except Exception:
         return False
+
+
+def is_at_home_preset() -> bool:
+    """Query for the pipeline main loop — True when the self-slew
+    camera is parked at its configured home preset. Fail-open: returns
+    True when self-slew is disabled OR the controller can't be loaded
+    (so the pipeline doesn't bypass zone filter unnecessarily)."""
+    if os.getenv("SELF_SLEW_ENABLED", "false").lower() != "true":
+        return True
+    try:
+        return get_controller().is_at_home_preset()
+    except Exception:
+        return True

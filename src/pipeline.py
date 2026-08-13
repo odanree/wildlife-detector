@@ -56,6 +56,7 @@ from src.stream.ptz_monitor import (
     is_camera_at_home as _camera_at_home,
 )
 from src.stream.self_slew import (
+    is_at_home_preset as _self_slew_at_home,
     is_in_transition as _self_slew_in_transition,
     maybe_self_slew,
 )
@@ -971,15 +972,16 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             if (fw, fh) != (det_w, det_h):
                 frame = cv2.resize(frame, (det_w, det_h))
 
-            # Camera off-home flag: on-camera AI (Reolink Smart Track,
-            # Jennov AI) can auto-pan the physical camera to follow an
-            # animal. When it does, the animal is BY DEFINITION in the
-            # tracked view, but our zone polygon is anchored to the home
-            # view — so a strict zone filter would drop the animal.
-            # Bypass the zone filter (accept detections from ANYWHERE
-            # in the frame) while off-home. Detection runs normally
-            # otherwise. No-op if PtzMonitor isn't configured.
-            _zone_bypass = not _camera_at_home()
+            # Camera off-home flag: either the on-cam AI (Reolink Smart
+            # Track, Jennov AI) auto-panned physically, OR our own self-
+            # slew moved the camera to a non-home preset. In either
+            # case the zone polygon is anchored to the home view and
+            # would drop the target the camera panned toward. Bypass
+            # the zone filter (accept detections from ANYWHERE in the
+            # frame). Detection runs normally otherwise.
+            # Both checks fail-open (return True/at_home) when the
+            # relevant subsystem isn't configured.
+            _zone_bypass = not _camera_at_home() or not _self_slew_at_home()
 
             # Self-slew transition guard: while the PTZ is physically
             # panning, MOG would see the whole frame as motion. Skip
