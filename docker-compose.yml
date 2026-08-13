@@ -236,27 +236,28 @@ services:
       # a small leading-edge bbox per frame — union sweeps annotation
       # across the full body path over N frames. Purely visual.
       ALERT_ANNOTATE_HISTORY_FRAMES: "15"
-      # ONVIF PTZ config for the Reolink (yard). Used only by the
-      # position monitor — Reolink's on-cam AI can auto-pan to track
-      # a target. When it does, the zone polygon (anchored to home
-      # view) points at the wrong region → real animals fall out of
-      # zone → alerts drop. Monitor pauses detection until camera
-      # returns to home preset.
+      # PTZ config for the Reolink TrackMix (yard). Used by the position
+      # monitor — TrackMix's Smart Track (bSmartTrack=1) physically pans
+      # the camera to follow detected targets. When it does, the zone
+      # polygon (anchored to home view) points at the wrong region →
+      # real animals fall out of zone → alerts drop. Monitor pauses
+      # detection until camera returns to home preset.
       PTZ_HOST_1: "192.168.1.104"
       PTZ_USER_1: "admin"
       PTZ_PASS_1: "windows98"
+      # ONVIF backend for OUR slew commands (unused on yard for now).
       PTZ_BACKEND_1: "onvif"
-      # Reolink ONVIF path is /onvif/PTZ (capital) on most models.
-      # Override PTZ_ONVIF_PATH_1 if this specific model differs.
-      PTZ_ONVIF_PATH_1: "/onvif/PTZ"
-      # Profile token varies by Reolink model — commonly "Profile_1000"
-      # (main stream) or "MainStream". Override PTZ_ONVIF_PROFILE_1 if
-      # the initial monitor probe fails with SOAP Fault.
-      PTZ_ONVIF_PROFILE_1: "Profile_1000"
+      # Reolink proprietary backend for the POSITION MONITOR — ONVIF's
+      # GetStatus doesn't return Position on Reolink firmware (verified
+      # 08/13). Reolink's /cgi-bin/api.cgi GetPtzCurPos does. Uses
+      # native units (pan 0-3600, tilt 0-900).
+      PTZ_MONITOR_BACKEND_1: "reolink"
       PTZ_MONITOR_CAMERA_ID_NUM: "1"
       PTZ_MONITOR_ENABLED_1: "1"
       PTZ_MONITOR_INTERVAL_S: "5.0"
-      PTZ_HOME_TOLERANCE: "0.05"
+      # Reolink-native units tolerance: 30 ≈ 0.8% of pan range (0-3600).
+      # If the camera drifts by less than 30 units it counts as home.
+      PTZ_HOME_TOLERANCE: "30"
       # Yard's side-angle view has stable non-foliage background — MOG2
       # defaults (variance-based) work well; conservative threshold keeps
       # shadow-jitter FPs down.
