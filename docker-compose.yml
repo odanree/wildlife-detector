@@ -236,6 +236,27 @@ services:
       # a small leading-edge bbox per frame — union sweeps annotation
       # across the full body path over N frames. Purely visual.
       ALERT_ANNOTATE_HISTORY_FRAMES: "15"
+      # ONVIF PTZ config for the Reolink (yard). Used only by the
+      # position monitor — Reolink's on-cam AI can auto-pan to track
+      # a target. When it does, the zone polygon (anchored to home
+      # view) points at the wrong region → real animals fall out of
+      # zone → alerts drop. Monitor pauses detection until camera
+      # returns to home preset.
+      PTZ_HOST_1: "192.168.1.104"
+      PTZ_USER_1: "admin"
+      PTZ_PASS_1: "windows98"
+      PTZ_BACKEND_1: "onvif"
+      # Reolink ONVIF path is /onvif/PTZ (capital) on most models.
+      # Override PTZ_ONVIF_PATH_1 if this specific model differs.
+      PTZ_ONVIF_PATH_1: "/onvif/PTZ"
+      # Profile token varies by Reolink model — commonly "Profile_1000"
+      # (main stream) or "MainStream". Override PTZ_ONVIF_PROFILE_1 if
+      # the initial monitor probe fails with SOAP Fault.
+      PTZ_ONVIF_PROFILE_1: "Profile_1000"
+      PTZ_MONITOR_CAMERA_ID_NUM: "1"
+      PTZ_MONITOR_ENABLED_1: "1"
+      PTZ_MONITOR_INTERVAL_S: "5.0"
+      PTZ_HOME_TOLERANCE: "0.05"
       # Yard's side-angle view has stable non-foliage background — MOG2
       # defaults (variance-based) work well; conservative threshold keeps
       # shadow-jitter FPs down.
@@ -595,14 +616,6 @@ services:
       # ONVIF media ProfileToken. Discover via GetProfiles if this
       # camera model differs; MainStream is the Jennov default.
       PTZ_ONVIF_PROFILE_2: "MainStream"
-      # ONVIF PTZ position monitor — detects camera-side auto-pans
-      # (Jennov's on-cam AI can auto-track and physically move the
-      # camera off home preset). When off-home, pipeline pauses
-      # detection with a banner. Learns home position at startup.
-      PTZ_MONITOR_CAMERA_ID_NUM: "2"
-      PTZ_MONITOR_ENABLED_2: "1"
-      PTZ_MONITOR_INTERVAL_S: "5.0"
-      PTZ_HOME_TOLERANCE: "0.05"
     expose:
       - "8103"
     healthcheck:
