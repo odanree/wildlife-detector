@@ -27,7 +27,7 @@ import os
 import threading
 import time
 
-from src.stream.ptz import ptz_status_onvif
+from src.stream.ptz import ptz_status
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,12 @@ class PtzMonitor:
 
     def __init__(self, camera_id: int, poll_interval_s: float = 5.0,
                  tolerance: float = 0.05) -> None:
+        """Tolerance is backend-relative:
+          - ONVIF: 0.05 = 5% of the -1..1 range (~0.1 total width)
+          - Reolink: value is native units; sensible default ~30 for
+            pan range 0-3600 (~0.8% of range). Callers should set
+            PTZ_HOME_TOLERANCE=30 when using Reolink backend.
+        """
         self._camera_id = camera_id
         self._poll_interval = poll_interval_s
         self._tolerance = tolerance
@@ -53,7 +59,7 @@ class PtzMonitor:
 
     def start(self) -> None:
         """Learn home position + start polling thread."""
-        status = ptz_status_onvif(self._camera_id)
+        status = ptz_status(self._camera_id)
         if status is None:
             logger.warning(
                 "PtzMonitor cam=%d: initial probe failed (no ONVIF or auth) — disabling monitor",
@@ -81,7 +87,7 @@ class PtzMonitor:
 
     def _loop(self) -> None:
         while not self._stop.wait(self._poll_interval):
-            status = ptz_status_onvif(self._camera_id)
+            status = ptz_status(self._camera_id)
             if status is None:
                 # Transient failure — retain last-known state, retry next tick.
                 self._last_probe_ok = False
