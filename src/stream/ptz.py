@@ -33,6 +33,7 @@ import hashlib
 import logging
 import os
 import secrets
+import time
 from datetime import datetime, timezone
 
 import httpx
@@ -225,6 +226,105 @@ def ptz_preset(camera_id: int, preset: int = 1) -> bool:
     if backend == "onvif":
         return _ptz_preset_onvif(camera_id, preset)
     return _ptz_preset_dahua(camera_id, preset)
+
+
+_REOLINK_TOKEN_CACHE: dict[int, tuple[str, float]] = {}  # cam_id → (token, expires_epoch)
+
+
+def _reolink_login(camera_id: int) -> str | None:
+    """Log in to Reolink /cgi-bin/api.cgi and cache token (~1hr lease).
+    Returns token or None on failure."""
+    host = _host(camera_id)
+    user, pwd = _creds(camera_id)
+    if not host:
+        return None
+    now = time.time()
+    cached = _REOLINK_TOKEN_CACHE.get(camera_id)
+    if cached and cached[1] > now + 30:  # 30s safety margin before expiry
+        return cached[0]
+    try:
+        r = httpx.post(
+            f"http://{host}:{_PTZ_PORT}/cgi-bin/api.cgi?cmd=Login",
+            json=[{"cmd": "Login", "param": {"User": {
+                "Version": "0", "userName": user, "password": pwd,
+            }}}],
+            timeout=5.0,
+        )
+        r.raise_for_status()
+        j = r.json()
+        if not j or j[0].get("code") != 0:
+            logger.warning("Reolink login failed cam=%d: %s", camera_id, j[0] if j else "empty")
+            return None
+        tok = j[0]["value"]["Token"]["name"]
+        lease = int(j[0]["value"]["Token"].get("leaseTime", 3600))
+        _REOLINK_TOKEN_CACHE[camera_id] = (tok, now + lease)
+        return tok
+    except Exception:
+        logger.exception("Reolink login exception cam=%d", camera_id)
+        return None
+
+
+def ptz_status_reolink(camera_id: int) -> dict | None:
+    """Fetch PTZ position via Reolink proprietary /cgi-bin/api.cgi.
+    Returns dict {pan: int, tilt: int, zoom: int, moving: bool} in
+    Reolink-native units (pan typ. 0-3600, tilt typ. 0-900). Zoom/focus
+    return -1 on non-zoom models (E1, TrackMix fixed-zoom).
+
+    Discovered format via probe 08/13 on TrackMix (RLC-823A):
+      POST /cgi-bin/api.cgi?cmd=GetPtzCurPos&token=...
+      [{"cmd":"GetPtzCurPos","param":{"PtzCurPos":{"channel":0}}}]
+
+    "moving" isn't returned by GetPtzCurPos — this backend returns
+    moving=False and lets PtzMonitor detect motion via position change.
+    """
+    host = _host(camera_id)
+    if not host:
+        return None
+    tok = _reolink_login(camera_id)
+    if not tok:
+        return None
+    try:
+        r = httpx.post(
+            f"http://{host}:{_PTZ_PORT}/cgi-bin/api.cgi?cmd=GetPtzCurPos&token={tok}",
+            json=[{"cmd": "GetPtzCurPos", "param": {
+                "PtzCurPos": {"channel": 0},
+            }}],
+            timeout=5.0,
+        )
+        r.raise_for_status()
+        j = r.json()
+        if not j or j[0].get("code") != 0:
+            # Token might have expired mid-session; drop cache to force re-login next call.
+            _REOLINK_TOKEN_CACHE.pop(camera_id, None)
+            return None
+        pos = j[0]["value"]["PtzCurPos"]
+        return {
+            "pan": int(pos.get("Ppos", 0)),
+            "tilt": int(pos.get("Tpos", 0)),
+            "zoom": int(pos.get("Zpos", -1)),
+            "moving": False,  # Reolink doesn't expose real-time move state via this cmd
+        }
+    except Exception:
+        logger.exception("Reolink GetPtzCurPos exception cam=%d", camera_id)
+        _REOLINK_TOKEN_CACHE.pop(camera_id, None)
+        return None
+
+
+def ptz_status(camera_id: int) -> dict | None:
+    """Dispatch to Reolink vs ONVIF backend based on
+    PTZ_MONITOR_BACKEND_{n} env (defaults to same value as PTZ_BACKEND_{n},
+    then to 'onvif' if unset).
+
+    Reolink backend returns position in native units (0-3600 pan);
+    ONVIF backend returns normalized floats (-1..1). Callers should
+    tolerance-check consistent with the backend they configured."""
+    backend = os.getenv(
+        f"PTZ_MONITOR_BACKEND_{camera_id}",
+        os.getenv(f"PTZ_BACKEND_{camera_id}", "onvif"),
+    ).lower()
+    if backend == "reolink":
+        return ptz_status_reolink(camera_id)
+    return ptz_status_onvif(camera_id)
 
 
 def ptz_status_onvif(camera_id: int) -> dict | None:
