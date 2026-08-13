@@ -971,29 +971,15 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             if (fw, fh) != (det_w, det_h):
                 frame = cv2.resize(frame, (det_w, det_h))
 
-            # Camera off-home guard: on-camera AI (Reolink AI, Jennov AI)
-            # can auto-pan the physical camera to track a target. Our
-            # zone polygon is anchored to the home view — anything the
-            # camera pans to is outside the zone → detections drop.
-            # Skip detection until camera returns to home preset.
-            # No-op if PtzMonitor isn't configured for this camera.
-            if not _camera_at_home():
-                _frame_count += 1
-                if _frame_count % PREVIEW_EVERY_N == 0:
-                    ok_raw, buf_raw = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    if ok_raw:
-                        _publish_raw_frame(buf_raw.tobytes())
-                    _off_home_ann = frame.copy()
-                    cv2.putText(
-                        _off_home_ann,
-                        "detection paused (camera off home preset)",
-                        (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                        (0, 200, 255), 2, cv2.LINE_AA,
-                    )
-                    ok, buf = cv2.imencode(".jpg", _off_home_ann, [cv2.IMWRITE_JPEG_QUALITY, 75])
-                    if ok:
-                        _publish_preview_frame(buf.tobytes())
-                continue
+            # Camera off-home flag: on-camera AI (Reolink Smart Track,
+            # Jennov AI) can auto-pan the physical camera to follow an
+            # animal. When it does, the animal is BY DEFINITION in the
+            # tracked view, but our zone polygon is anchored to the home
+            # view — so a strict zone filter would drop the animal.
+            # Bypass the zone filter (accept detections from ANYWHERE
+            # in the frame) while off-home. Detection runs normally
+            # otherwise. No-op if PtzMonitor isn't configured.
+            _zone_bypass = not _camera_at_home()
 
             # Self-slew transition guard: while the PTZ is physically
             # panning, MOG would see the whole frame as motion. Skip
@@ -1219,7 +1205,14 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             if _p_rej:
                 _preview_stats.record_motion_kinematic_rejected("persistence", _p_rej)
 
-            zone_dets = zone_filter.filter(all_dets, zone_key)
+            if _zone_bypass:
+                # Camera off-home (Smart Track following an animal outside
+                # the home-anchored zone) — accept every detection so the
+                # tracked animal can reach VLM. Log once per pan event
+                # (state transition already logged in ptz_monitor).
+                zone_dets = list(all_dets)
+            else:
+                zone_dets = zone_filter.filter(all_dets, zone_key)
             # Reject any bbox whose center falls inside an OSD mask — the
             # timestamp/watermark region is never wildlife.
             if osd_masks:
