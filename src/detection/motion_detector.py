@@ -67,6 +67,16 @@ _MERGE_DIST_PX = int(os.getenv("MOTION_MERGE_DIST_PX", "0"))
 # skip the merge and keep members separate. 0.30 = 30% of frame area,
 # generous for a single animal but tight enough to reject chained FPs.
 _MERGE_MAX_AREA_FRAC = float(os.getenv("MOTION_MERGE_MAX_AREA_FRAC", "0.30"))
+# Cap the number of raw bboxes that can be unioned into one cluster.
+# Single-linkage clustering can chain many small blobs into one giant
+# cluster even when total area is under the area-fraction cap. Live obs
+# 08/12: rat crawling on IR-lit bricks generated 30+ bright brick-
+# reflection bboxes clustering with 5-10 rat-body bboxes; merged into
+# one 224x275 union whose mean brightness was dominated by bricks →
+# classified as insect → rat missed. Capping at K=5 lets the rat's
+# own bboxes cluster while keeping surrounding brick reflections
+# separate. Set to 0 to disable the cluster cap.
+_MERGE_MAX_CLUSTER = int(os.getenv("MOTION_MERGE_MAX_CLUSTER", "0"))
 
 # MOG2/KNN shadow detection: when enabled, the FG mask marks shadow
 # pixels as gray (128) instead of foreground (255). We threshold to
@@ -302,6 +312,18 @@ class MotionDetector:
         for members in clusters.values():
             if len(members) == 1:
                 merged.append(dets[members[0]])
+                continue
+            # Cluster-size cap: reject if too many bboxes chained together.
+            # Prevents single-linkage runaway (rat on bright bricks case:
+            # 30 bright brick reflections + 5 rat bboxes chained → union
+            # dominated by bricks → mean bright → classified as insect).
+            if _MERGE_MAX_CLUSTER > 0 and len(members) > _MERGE_MAX_CLUSTER:
+                logger.info(
+                    "MOG merge REJECTED (cluster too large): %d bboxes > %d cap — keeping separate",
+                    len(members), _MERGE_MAX_CLUSTER,
+                )
+                for i in members:
+                    merged.append(dets[i])
                 continue
             xs1 = [dets[i].bbox[0] for i in members]
             ys1 = [dets[i].bbox[1] for i in members]

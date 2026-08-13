@@ -224,6 +224,12 @@ services:
       # white paw only). 40 px ≈ rodent-body-length — tight enough not
       # to merge unrelated FPs. See PR #122.
       MOTION_MERGE_DIST_PX: "40"
+      # Cap merge cluster size to prevent single-linkage runaway that
+      # chains rat body + surrounding IR-lit brick reflections into
+      # one bright super-bbox. Sandbox 08/12: 30-way clusters dropped
+      # to 0; alerts on backyard cat clip doubled (33→67) because
+      # rat-body bboxes stay separate from bright brick reflections.
+      MOTION_MERGE_MAX_CLUSTER: "5"
       # Temporal union: expand alert annotation to cover union of last N
       # frames' bboxes for the same track. Fixes the walking-cat case
       # where MOG's adaptive background eats trailing body, leaving only
@@ -531,6 +537,12 @@ services:
       # rationale. Especially relevant here since backyard sees more
       # large-animal traffic (cats, raccoons) than yard.
       MOTION_MERGE_DIST_PX: "40"
+      # Cap merge cluster size to prevent single-linkage runaway that
+      # chains rat body + surrounding IR-lit brick reflections into
+      # one bright super-bbox. Sandbox 08/12: 30-way clusters dropped
+      # to 0; alerts on backyard cat clip doubled (33→67) because
+      # rat-body bboxes stay separate from bright brick reflections.
+      MOTION_MERGE_MAX_CLUSTER: "5"
       # Temporal union annotation — see yard for rationale.
       ALERT_ANNOTATE_HISTORY_FRAMES: "15"
       # Enable temporal multi-frame VLM (validated on rooftop in PR #73).
