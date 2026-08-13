@@ -51,6 +51,10 @@ from src.detection.object_detector import Detection, ObjectDetector
 from src.detection.zone_filter import ZoneFilter
 from src.stream.rtsp_handler import RTSPHandler
 from src.stream.slew import maybe_slew
+from src.stream.ptz_monitor import (
+    init_monitor_for_current_camera as _init_ptz_monitor,
+    is_camera_at_home as _camera_at_home,
+)
 from src.stream.self_slew import (
     is_in_transition as _self_slew_in_transition,
     maybe_self_slew,
@@ -943,6 +947,11 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     _frame_count = 0
 
     stream.start()
+    # Start ONVIF PTZ position monitor (no-op if not configured for this
+    # camera). Detects camera-side auto-tracking pans that would move
+    # the physical camera off its home preset — pipeline gates detection
+    # while off-home.
+    _init_ptz_monitor()
     logger.info("Pipeline running — press Ctrl-C to stop")
 
     try:
@@ -961,6 +970,30 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             fh, fw = frame.shape[:2]
             if (fw, fh) != (det_w, det_h):
                 frame = cv2.resize(frame, (det_w, det_h))
+
+            # Camera off-home guard: on-camera AI (Reolink AI, Jennov AI)
+            # can auto-pan the physical camera to track a target. Our
+            # zone polygon is anchored to the home view — anything the
+            # camera pans to is outside the zone → detections drop.
+            # Skip detection until camera returns to home preset.
+            # No-op if PtzMonitor isn't configured for this camera.
+            if not _camera_at_home():
+                _frame_count += 1
+                if _frame_count % PREVIEW_EVERY_N == 0:
+                    ok_raw, buf_raw = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    if ok_raw:
+                        _publish_raw_frame(buf_raw.tobytes())
+                    _off_home_ann = frame.copy()
+                    cv2.putText(
+                        _off_home_ann,
+                        "detection paused (camera off home preset)",
+                        (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                        (0, 200, 255), 2, cv2.LINE_AA,
+                    )
+                    ok, buf = cv2.imencode(".jpg", _off_home_ann, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                    if ok:
+                        _publish_preview_frame(buf.tobytes())
+                continue
 
             # Self-slew transition guard: while the PTZ is physically
             # panning, MOG would see the whole frame as motion. Skip
