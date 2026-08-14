@@ -206,10 +206,14 @@ services:
       # at mean 130+ now render at 70-100 and were slipping past 110.
       # Raised 100 → 110 → 115 as more cat labels came in.
       # 08/12 later: yard cat max mean = 98 (n=5), rodent max = 88
-      # (n=140). 115 gives 17pt buffer above cat, 27pt above rodent.
-      # Yard rooftop-adjacent squirrels/cats mean 165+ still clipped
-      # regardless, but yard doesn't see those animals.
-      NIGHT_INSECT_BRIGHTNESS_MIN: "115"
+      # 100 → 110 → 115 → 130 as dataset grew and true rodent ceiling
+      # climbed. 08/14 n=289 yard rodents, max mean = 108. Root cause of
+      # rising ceiling: MOG bbox naturally includes surrounding IR-lit
+      # pixels beyond the rat body, pulling bbox-mean up regardless of
+      # rat-only brightness. 130 gives 22pt buffer above current max.
+      # Follow-up: switch to baseline-diff-based feature to remove the
+      # scene-brightness confound (tracked separately).
+      NIGHT_INSECT_BRIGHTNESS_MIN: "130"
       # Uncap the size restriction on the mean-brightness gate. Data
       # analysis 08/11 (n=71 rodents, n=539 FPs): backyard FPs cluster at
       # mean 100-190 with many bboxes > 2000 px (wall reflections, IR-lit
@@ -544,11 +548,12 @@ services:
       # shows max rodent mean=88, so 100 preserves a 12-point safety
       # buffer while catching most moth-like FPs (median FP mean=118)
       # at the insect stage instead of at VLM/override.
-      # 100 → 110 → 115 as more cat labels came in.
-      # 08/12 later: backyard cat max mean climbed 99 → 106 (n=32),
-      # rodent max = 95 (n=51). Threshold=110 had a 4pt buffer above
-      # cat — too tight. 115 gives 9pt above cat, 20pt above rodent.
-      NIGHT_INSECT_BRIGHTNESS_MIN: "115"
+      # 100 → 110 → 115 → 130 as dataset grew. 08/14 n=92 backyard
+      # rodents, max mean = 114 (bbox includes IR-lit brick pixels
+      # around the rat body, pulling reading up beyond rat itself).
+      # 130 gives 16pt buffer. Follow-up: baseline-diff feature to
+      # remove the scene-brightness confound (tracked separately).
+      NIGHT_INSECT_BRIGHTNESS_MIN: "130"
       # Uncap size on mean-brightness gate — see yard for full rationale.
       # Backyard's dominant FP class is wall reflections + IR-lit foliage
       # at bboxes 45-100+ px wide (well above the 2000 px size cap).
