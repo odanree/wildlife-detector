@@ -591,7 +591,12 @@ services:
       VLM_TEMPORAL_WINDOW_S: "1.0"
       MOTION_BACKEND: mog2
       MOTION_HISTORY: "400"
-      MOTION_VAR_THRESHOLD: "18"
+      # Lowered 18 → 15 08/14 after 23:11:14 large-rat frame where MOG
+      # only caught the front-paw region while the rat body (dark on
+      # dark bricks) had insufficient variance to fire. 5s earlier at
+      # 23:11:09 the same rat's bbox was full-body. 15 = ~15% more raw
+      # MOG events but tighter than 12 to limit FP growth. Modest step.
+      MOTION_VAR_THRESHOLD: "15"
       MOTION_MIN_AREA: "80"
       # detectShadows=0: same rationale as yard — daytime skip handles
       # the FP window this was filtering, and shadow classifier risks
