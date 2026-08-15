@@ -188,14 +188,12 @@ services:
       # skip trigger uses 90. Time-of-day belt-and-suspenders catches
       # overcast dawn/dusk when brightness reads night-like.
       DAYTIME_SKIP_BRIGHTNESS_THRESHOLD: "90"
-      # Widened 7-19 → 6-20 08/14: Reolink switches between IR and
-      # color mode based on its own ambient sensor, which doesn't align
-      # with clock time. At 6:45 AM (before 7 AM cutoff) camera may
-      # already be in color mode → detection runs on bright twilight
-      # scene → filter designed for IR night mode mis-clips rodents.
-      # 6 AM/8 PM buffer covers the dawn/dusk color-mode window.
-      SKIP_DAYTIME_START_HOUR: "6"
-      SKIP_DAYTIME_END_HOUR: "20"
+      # PR #134 widened 7-19 → 6-20; reverted 08/14 (backyard rodents
+      # active at 7:30 PM proved widening was killing legit detection).
+      # Yard uses OR mode so the brightness signal handles twilight
+      # color-mode automatically without a widened window.
+      SKIP_DAYTIME_START_HOUR: "7"
+      SKIP_DAYTIME_END_HOUR: "19"
       TZ: America/Los_Angeles
       # Yard is optimized for rodent detection — small bbox floor.
       MIN_MOTION_BBOX_PX: "22"
@@ -519,14 +517,13 @@ services:
       # since backyard's IR night mode is dimmer than yard's Reolink.
       SKIP_DAYTIME_DETECTION: "1"
       DAYTIME_SKIP_BRIGHTNESS_THRESHOLD: "90"
-      # Widened 7-19 → 6-20 08/14: Jennov camera IR/color switch
-      # doesn't align with clock cutoff. Twilight color mode (~6-7 AM
-      # and 7-8 PM) makes scene brighter than the IR-mode-tuned filter
-      # expects → rodent detections can hit mean 120+ and be clipped
-      # by threshold=130. Widen skip to cover the twilight color-mode
-      # window.
-      SKIP_DAYTIME_START_HOUR: "6"
-      SKIP_DAYTIME_END_HOUR: "20"
+      # PR #134 widened to 6-20 for twilight color-mode; reverted 08/14
+      # because live obs: rodents active at 7:30 PM on backyard. End=20
+      # was killing that detection window. Back to 7-19. Filter at
+      # threshold=130 has enough headroom to handle twilight brightness
+      # without misclipping (labeled rodent max mean = 114 << 130).
+      SKIP_DAYTIME_START_HOUR: "7"
+      SKIP_DAYTIME_END_HOUR: "19"
       # time_only: brightness signal ignored so backyard resumes detection
       # at exactly the end hour, not extended by lingering dusk brightness.
       DAYTIME_SKIP_TRIGGER_MODE: time_only
