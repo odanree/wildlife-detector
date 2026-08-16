@@ -62,6 +62,7 @@ from src.stream.self_slew import (
 )
 from src.stream.video_file_handler import VideoFileHandler
 from src.vlm.analyzer import VLMAnalyzer
+from src.classifier import get_classifier, get_pre_vlm_drop_sink
 
 # Preview server hooks — no-ops when preview isn't started (Flask missing).
 try:
@@ -803,6 +804,33 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     # Threshold=100 with size cap lifted catches ~53% of large-bbox FPs
     # while preserving all labeled rodents.
     _INSECT_MEAN_UNCAP_SIZE = os.getenv("INSECT_MEAN_UNCAP_SIZE", "0") == "1"
+    # ── Post-VLM animal-vs-FP classifier (project #137) ──────────────
+    # Learned re-scorer that fires AFTER the VLM decides "wildlife
+    # detected" but BEFORE the alert leaves the pipeline. Trained on
+    # labeled alert rows (bbox brightness + VLM species/conf features)
+    # to predict P(real_animal). Suppresses low-prob alerts to cut FP
+    # volume while keeping the current pre-VLM insect filter in place.
+    #
+    # Rollout is per-camera and staged:
+    #   CLASSIFIER_MODE=off        (default) — no-op, no prediction
+    #   CLASSIFIER_MODE=shadow     — predict + log, ALL alerts still fire
+    #   CLASSIFIER_MODE=active     — predict + suppress below threshold
+    # CLASSIFIER_ACTIVE_CAMERAS gates the active mode to a comma-
+    # separated allowlist (e.g. "yard" — start with the highest-recall
+    # camera and expand once shadow-mode agreement is measured).
+    _CLASSIFIER_MODE = os.getenv("CLASSIFIER_MODE", "off").strip().lower()
+    _CLASSIFIER_THRESHOLD = float(os.getenv("CLASSIFIER_THRESHOLD", "0.2"))
+    _CLASSIFIER_ACTIVE_CAMERAS = {
+        c.strip() for c in os.getenv("CLASSIFIER_ACTIVE_CAMERAS", "").split(",") if c.strip()
+    }
+    _classifier = get_classifier() if _CLASSIFIER_MODE != "off" else None
+    _pre_vlm_drop_sink = get_pre_vlm_drop_sink()
+    if _classifier is not None and _classifier.enabled():
+        logger.info(
+            "Classifier mode=%s threshold=%.2f active_cameras=%s",
+            _CLASSIFIER_MODE, _CLASSIFIER_THRESHOLD,
+            sorted(_CLASSIFIER_ACTIVE_CAMERAS) or "(none — shadow-only for all cameras)",
+        )
     # Daytime detection skip — hard-off during daylight hours when shadow
     # FPs dominate signal on some cameras. Uses same brightness threshold
     # as the baseline picker (DAY_NIGHT_BRIGHTNESS_THRESHOLD). When the
@@ -1489,6 +1517,43 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     f"mean={_b_mean:.0f} max={_b_max:.0f} AR={_b_ar:.2f} "
                     f"wide_mean={_b_wmean:.0f} wide_max={_b_wmax:.0f}]"
                 )
+                # ── Post-VLM classifier gate (project #137) ─────────────
+                # Trained animal-vs-FP re-scorer. In shadow mode we log
+                # what the classifier would do but never suppress. In
+                # active mode we suppress alerts below the threshold on
+                # the camera allowlist. All-camera log-only fallback so
+                # even off-list cameras contribute shadow observations.
+                if _classifier is not None and _classifier.enabled():
+                    _clf_features = {
+                        "mean": _b_mean,
+                        "max": _b_max,
+                        "ar": _b_ar,
+                        "bbox_w": _bw,
+                        "bbox_h": _bh,
+                        "wide_mean": _b_wmean,
+                        "wide_max": _b_wmax,
+                        "conf": float(result.get("confidence", 0.0)),
+                        "camera_id": _camera_id_env,
+                        "vlm_species": str(result.get("species", "unknown")),
+                    }
+                    _clf_prob = _classifier.predict(_clf_features)
+                    if _clf_prob is not None:
+                        _clf_would_suppress = _clf_prob < _CLASSIFIER_THRESHOLD
+                        _clf_active = (
+                            _CLASSIFIER_MODE == "active"
+                            and _camera_id_env in _CLASSIFIER_ACTIVE_CAMERAS
+                        )
+                        _clf_action = "suppress" if (_clf_active and _clf_would_suppress) else "alert"
+                        logger.info(
+                            "Classifier: track=%d camera=%s species=%s conf=%.2f prob=%.3f "
+                            "threshold=%.2f mode=%s active=%s action=%s",
+                            tid, _camera_id_env, _clf_features["vlm_species"],
+                            _clf_features["conf"], _clf_prob, _CLASSIFIER_THRESHOLD,
+                            _CLASSIFIER_MODE, _clf_active, _clf_action,
+                        )
+                        if _clf_action == "suppress":
+                            _preview_stats.record_vlm_rejected()
+                            continue
                 snap_path = notifier.send("rodent", result, snap_fr, bbox, yolo_conf=yolo_conf)
                 sh, sw = snap_fr.shape[:2]
                 maybe_slew(bbox=bbox, event_key=("rodent", tid),
@@ -1719,6 +1784,28 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                             _is.mean, _is.max, _is.aspect_ratio, _trigger,
                             _baseline_cache[0][1] if _baseline_np is not None else "?",
                         )
+                        # Shadow-log a sample of dropped detections so we
+                        # can build an unbiased pre-VLM training set later.
+                        # These rows never reach the labeling UI otherwise
+                        # (no alerts row is written for pre-VLM drops), so
+                        # the current classifier has zero coverage of what
+                        # the filter is dropping — this closes that gap.
+                        if _pre_vlm_drop_sink.enabled():
+                            _pre_vlm_drop_sink.record(
+                                camera_id=_camera_id_env,
+                                track_id=det.track_id,
+                                bbox=list(det.bbox),
+                                bbox_w=_is.w,
+                                bbox_h=_is.h,
+                                area=_is.area,
+                                mean=_is.mean,
+                                max=_is.max,
+                                ar=_is.aspect_ratio,
+                                wide_mean=_is.wide_mean,
+                                wide_max=_is.wide_max,
+                                trigger=_trigger,
+                                baseline_mode=_baseline_cache[0][1] if _baseline_np is not None else None,
+                            )
                         _preview_stats.record_vlm_insect()
                         last_vlm_ts[det.track_id] = now
                         continue

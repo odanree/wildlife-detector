@@ -53,6 +53,13 @@ x-detector-common: &detector-common
     - ./logs:/app/logs
     - ./clips:/app/clips
     - models:/app/models
+    # Read-only bind mount for the animal-vs-FP classifier model file
+    # (project #137). Named volume above is reserved for YOLO's auto-
+    # downloaded weights — bind-mounting host ./models would clobber
+    # them. This separate mount lets `scripts/train_animal_vs_fp.py`
+    # write to host ./models and the detectors read the same file
+    # without a copy step.
+    - ./models:/app/models-host:ro
     - ./config:/app/config
 
 services:
