@@ -1,0 +1,11 @@
+# Training-only dependencies for scripts/train_animal_vs_fp.py.
+# NOT installed in the detector Docker image — install locally when
+# retraining the animal-vs-FP classifier. See project issue #137.
+#
+# Install with:
+#   pip install -r requirements-train.txt
+#
+# Combined size: ~150MB. Kept out of detector image which stays lean.
+lightgbm>=4.3.0
+scikit-learn>=1.4.0
+pandas>=2.2.0
