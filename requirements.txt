@@ -16,3 +16,13 @@ psutil>=5.9
 # `[pool]` adds psycopg_pool for the connection pool StateDB uses
 # instead of a single shared sqlite3 connection.
 psycopg[binary,pool]>=3.2
+# Post-VLM animal-vs-FP classifier (project #137). Runtime dep for the
+# detector process — src.classifier lazily loads a LightGBM model and
+# fails open when either the library or model file is missing. Pandas
+# is needed because we train with pandas categoricals (native LightGBM
+# support), so predict-time inputs must round-trip through a DataFrame
+# for the categorical dtype to survive. Skipping pandas at predict
+# time would need integer-encoded categoricals — bigger contract
+# surface than a ~50MB image cost is worth.
+lightgbm>=4.3.0
+pandas>=2.2.0
