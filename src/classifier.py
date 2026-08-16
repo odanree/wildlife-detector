@@ -139,33 +139,121 @@ def get_classifier() -> AnimalClassifier:
 
 
 class PreVlmDropSink:
-    """Sampled JSONL sink for pre-VLM drops. Fail-open on write errors."""
+    """Sampled JSONL sink for pre-VLM drops. Fail-open on write errors.
 
-    def __init__(self, path: str, sample_rate: float):
+    Sampling strategy is two-tier:
+      1. Uniform sample at `sample_rate` for typical drops.
+      2. Boundary override: rows whose `mean` brightness falls in the
+         [boundary_min, boundary_max] band are ALWAYS saved regardless
+         of sample rate. This is the "positive-hunt" band — drops near
+         the NIGHT_INSECT_BRIGHTNESS_MIN filter threshold are the ones
+         most likely to be legit animals mis-flagged as insects, so
+         they're the highest-value data for a future pre-VLM classifier.
+
+    Optional crop dump: when `crop_dir` is set AND record() is called
+    with a `crop_jpeg` bytes payload, the JPEG is written to disk under
+    <crop_dir>/<camera_id>/<YYYY-MM-DD>/<ts>_track<track_id>.jpg and
+    the JSONL row gets a `snapshot` field with the relative path. This
+    is what makes hand-labeling possible: numbers alone (mean/max/AR)
+    can't tell a moth from a rat.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        sample_rate: float,
+        boundary_min: float | None = None,
+        boundary_max: float | None = None,
+        crop_dir: str | None = None,
+    ):
         self._path = Path(path) if path else None
         self._sample = max(0.0, min(1.0, sample_rate))
+        self._boundary_min = boundary_min
+        self._boundary_max = boundary_max
+        self._crop_dir = Path(crop_dir) if crop_dir else None
         self._fh = None
         self._warned = False
-        if self._path and self._sample > 0:
+        self._crop_warned = False
+        if self._path and (self._sample > 0 or self._in_boundary_mode()):
             try:
                 self._path.parent.mkdir(parents=True, exist_ok=True)
                 self._fh = self._path.open("a", buffering=1, encoding="utf-8")
+                boundary_desc = (
+                    f"boundary=[{self._boundary_min:.0f},{self._boundary_max:.0f}]"
+                    if self._in_boundary_mode() else "boundary=off"
+                )
+                crop_desc = f"crops={self._crop_dir}" if self._crop_dir else "crops=off"
                 logger.info(
-                    "Pre-VLM drop shadow log open at %s (sample=%.2f)",
-                    self._path, self._sample,
+                    "Pre-VLM drop shadow log open at %s (sample=%.2f %s %s)",
+                    self._path, self._sample, boundary_desc, crop_desc,
                 )
             except Exception:
                 logger.exception("Failed to open pre-VLM drop shadow log %s", self._path)
+        if self._crop_dir:
+            try:
+                self._crop_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                logger.exception("Failed to create pre-VLM drop crop dir %s", self._crop_dir)
+                self._crop_dir = None
+
+    def _in_boundary_mode(self) -> bool:
+        return (
+            self._boundary_min is not None
+            and self._boundary_max is not None
+            and self._boundary_min < self._boundary_max
+        )
 
     def enabled(self) -> bool:
         return self._fh is not None
 
-    def record(self, **fields: Any) -> None:
+    def _should_save(self, mean: float | None) -> bool:
+        # Boundary override: near-threshold rows always saved
+        if self._in_boundary_mode() and mean is not None:
+            if self._boundary_min <= mean <= self._boundary_max:
+                return True
+        if self._sample <= 0.0:
+            return False
+        if self._sample >= 1.0:
+            return True
+        return random.random() < self._sample
+
+    def _save_crop(self, crop_jpeg: bytes, camera_id: str, ts: float,
+                   track_id: Any) -> str | None:
+        if self._crop_dir is None or not crop_jpeg:
+            return None
+        try:
+            day = time.strftime("%Y-%m-%d", time.localtime(ts))
+            cam_dir = self._crop_dir / str(camera_id) / day
+            cam_dir.mkdir(parents=True, exist_ok=True)
+            fname = f"{int(ts)}_track{track_id}.jpg"
+            fpath = cam_dir / fname
+            fpath.write_bytes(crop_jpeg)
+            # Relative path from the crop root — matches how the alerts
+            # UI stores its `snapshot` field.
+            return str(fpath.relative_to(self._crop_dir)).replace("\\", "/")
+        except Exception:
+            if not self._crop_warned:
+                logger.exception("Pre-VLM drop crop save failed (further errors suppressed)")
+                self._crop_warned = True
+            return None
+
+    def record(self, crop_jpeg: bytes | None = None, **fields: Any) -> None:
         if self._fh is None:
             return
-        if self._sample < 1.0 and random.random() >= self._sample:
+        mean = fields.get("mean")
+        if not self._should_save(mean if isinstance(mean, (int, float)) else None):
             return
-        row = {"ts": time.time(), **fields}
+        ts = time.time()
+        row: dict[str, Any] = {"ts": ts, **fields}
+        if crop_jpeg is not None:
+            snap = self._save_crop(
+                crop_jpeg,
+                camera_id=str(fields.get("camera_id", "unknown")),
+                ts=ts,
+                track_id=fields.get("track_id", "unknown"),
+            )
+            if snap:
+                row["snapshot"] = snap
         try:
             self._fh.write(json.dumps(row, default=str) + "\n")
         except Exception:
@@ -182,5 +270,15 @@ def get_pre_vlm_drop_sink() -> PreVlmDropSink:
     if _drop_sink is None:
         path = os.getenv("PRE_VLM_DROP_LOG_PATH", "")
         sample = float(os.getenv("PRE_VLM_DROP_LOG_SAMPLE", "0.05"))
-        _drop_sink = PreVlmDropSink(path, sample)
+        # Empty string = boundary sampling off; parse only when both set.
+        b_min_raw = os.getenv("PRE_VLM_DROP_BOUNDARY_MIN", "")
+        b_max_raw = os.getenv("PRE_VLM_DROP_BOUNDARY_MAX", "")
+        b_min = float(b_min_raw) if b_min_raw else None
+        b_max = float(b_max_raw) if b_max_raw else None
+        crop_dir = os.getenv("PRE_VLM_DROP_CROP_DIR", "") or None
+        _drop_sink = PreVlmDropSink(
+            path, sample,
+            boundary_min=b_min, boundary_max=b_max,
+            crop_dir=crop_dir,
+        )
     return _drop_sink

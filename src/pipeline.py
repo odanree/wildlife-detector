@@ -1790,8 +1790,25 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         # (no alerts row is written for pre-VLM drops), so
                         # the current classifier has zero coverage of what
                         # the filter is dropping — this closes that gap.
+                        # Encode the tight crop (matches _bbox_signature's
+                        # region) so hand-labeling later is possible; sink
+                        # decides whether to actually persist it based on
+                        # the crop dir + sample gate.
                         if _pre_vlm_drop_sink.enabled():
+                            _drop_crop_jpeg: bytes | None = None
+                            _dx1, _dy1, _dx2, _dy2 = det.bbox
+                            _drop_crop = frame[
+                                max(0, _dy1):_dy2, max(0, _dx1):_dx2
+                            ]
+                            if _drop_crop.size > 0:
+                                _ok_crop, _crop_buf = cv2.imencode(
+                                    ".jpg", _drop_crop,
+                                    [cv2.IMWRITE_JPEG_QUALITY, 80],
+                                )
+                                if _ok_crop:
+                                    _drop_crop_jpeg = _crop_buf.tobytes()
                             _pre_vlm_drop_sink.record(
+                                crop_jpeg=_drop_crop_jpeg,
                                 camera_id=_camera_id_env,
                                 track_id=det.track_id,
                                 bbox=list(det.bbox),
