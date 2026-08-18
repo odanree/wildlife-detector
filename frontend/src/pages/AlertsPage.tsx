@@ -292,7 +292,7 @@ export function AlertsPage() {
               </tr>
             </thead>
             <tbody>
-              {groups.flatMap((g) =>
+              {groups.flatMap((g, i) =>
                 renderGroup(
                   g,
                   filters.camera === "",
@@ -303,6 +303,17 @@ export function AlertsPage() {
                   overlay.labelOverlay,
                   overlay.writeLabel,
                   overlay.busyIds,
+                  // Above-the-fold rows load eagerly; the rest stay lazy.
+                  // Native loading="lazy" combined with SPA route
+                  // transitions has an IntersectionObserver race — first-
+                  // mount visibility check can miss on route swap, leaving
+                  // thumbs blank until the user scrolls or renavigates
+                  // (reported user symptom: "thumbnails don't show up on
+                  // first click of Alerts, appear after nav-back-forward").
+                  // Eager-loading the top of the table sidesteps the race
+                  // for the rows the operator actually looks at first;
+                  // deeper rows keep lazy loading to bound bandwidth.
+                  i < EAGER_THUMB_ROWS,
                 ),
               )}
             </tbody>
@@ -326,6 +337,12 @@ export function AlertsPage() {
   );
 }
 
+// Number of top-of-table rows whose thumbnails load eagerly rather than
+// via native loading="lazy". Below this, the browser's IntersectionObserver
+// handles lazy-load correctly because the row is genuinely off-screen at
+// mount time; above it, eager loading sidesteps the first-mount race.
+const EAGER_THUMB_ROWS = 20;
+
 function renderGroup(
   g: GroupedAlerts,
   showCameraBadge: boolean,
@@ -336,6 +353,7 @@ function renderGroup(
   labelOverlay: Map<number, { verdict: LabelVerdict; species: string | null }>,
   writeLabel: (id: number, verdict: LabelVerdict, species: string | null) => Promise<void>,
   busyIds: Set<number>,
+  eagerThumb: boolean,
 ): JSX.Element[] {
   // Pure per-message unread — the row is unread iff the operator
   // hasn't explicitly opened it. Visiting the page does NOT mark
@@ -357,6 +375,7 @@ function renderGroup(
       labelOverride={labelOverlay.get(g.head.id)}
       writeLabel={writeLabel}
       busy={busyIds.has(g.head.id)}
+      eagerThumb={eagerThumb}
     />,
   ];
 }
@@ -372,6 +391,7 @@ function Row({
   labelOverride,
   writeLabel,
   busy,
+  eagerThumb,
 }: {
   alert: AlertRow;
   showCameraBadge: boolean;
@@ -383,6 +403,7 @@ function Row({
   labelOverride?: { verdict: LabelVerdict; species: string | null };
   writeLabel: (id: number, verdict: LabelVerdict, species: string | null) => Promise<void>;
   busy: boolean;
+  eagerThumb: boolean;
 }): JSX.Element {
   const isRodent = RODENT_SPECIES.has(alert.species);
   const isHist = alert.historical;
@@ -422,7 +443,7 @@ function Row({
               className={styles.thumb}
               src={`/snapshots/${encodeURIComponent(alert.snapshot)}`}
               alt="snapshot"
-              loading="lazy"
+              loading={eagerThumb ? "eager" : "lazy"}
             />
           </button>
         ) : (
