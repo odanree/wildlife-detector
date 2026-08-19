@@ -21,7 +21,33 @@ def reset_singletons(monkeypatch):
     shouldn't bleed into the next through the module-level cache."""
     monkeypatch.setattr(clf_mod, "_singleton", None)
     monkeypatch.setattr(clf_mod, "_drop_sink", None)
+    monkeypatch.setattr(clf_mod, "_shadow_log", None)
     yield
+
+
+def test_classifier_shadow_log_disabled_when_no_path(monkeypatch):
+    monkeypatch.setenv("CLASSIFIER_SHADOW_LOG_PATH", "")
+    s = clf_mod.get_classifier_shadow_log()
+    assert not s.enabled()
+    s.record(track_id=1, prob=0.4)  # no-op, no crash
+
+
+def test_classifier_shadow_log_writes_jsonl(monkeypatch, tmp_path):
+    out = tmp_path / "shadow.jsonl"
+    monkeypatch.setenv("CLASSIFIER_SHADOW_LOG_PATH", str(out))
+    s = clf_mod.get_classifier_shadow_log()
+    assert s.enabled()
+    s.record(track_id=1, camera_id="yard", vlm_species="rat",
+             prob=0.87, threshold=0.2, mode="shadow", action="alert")
+    s.record(track_id=2, camera_id="yard", vlm_species="rat",
+             prob=0.12, threshold=0.2, mode="shadow", action="alert")
+    lines = out.read_text().strip().splitlines()
+    assert len(lines) == 2
+    row0 = json.loads(lines[0])
+    assert row0["track_id"] == 1
+    assert row0["prob"] == 0.87
+    assert row0["action"] == "alert"
+    assert "ts" in row0
 
 
 def test_missing_model_file_is_no_op(monkeypatch, tmp_path):
