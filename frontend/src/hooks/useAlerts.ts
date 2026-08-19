@@ -41,24 +41,35 @@ export function useAlerts(query: AlertsQuery = {}, intervalMs = 5000): UseAlerts
 
   useEffect(() => {
     let cancelled = false;
-    const controller = new AbortController();
     const parsed = JSON.parse(key) as AlertsQuery;
+    // Per-refetch AbortController — new refetch cancels the in-flight
+    // one so we never have more than 1 /api/alerts request outstanding.
+    // Without this, bursts of SSE `counts` events + the 5s auto-poll
+    // pile up concurrent requests that eat the browser's ~6-per-host
+    // HTTP/1.1 connection limit, starving snapshot img fetches (the
+    // "fresh rows have blank thumbnails" symptom). Latest-request-wins
+    // is safe: only the newest response would win the setData race
+    // anyway; earlier ones are strictly wasted work.
+    let inflight: AbortController | null = null;
 
-    // Shared fetch — used by initial mount, SSE refresh trigger, and
-    // fallback polling. Reuses one AbortController so a component
-    // unmount cancels whichever fetch is in flight.
     async function refetch(): Promise<void> {
+      inflight?.abort();
+      const ctrl = new AbortController();
+      inflight = ctrl;
       try {
-        const resp = await fetchAlerts(parsed, controller.signal);
-        if (cancelled) return;
+        const resp = await fetchAlerts(parsed, ctrl.signal);
+        if (cancelled || ctrl.signal.aborted) return;
         setData(resp);
         setError(null);
       } catch (e) {
-        if (cancelled) return;
+        if (cancelled || ctrl.signal.aborted) return;
         if (e instanceof DOMException && e.name === "AbortError") return;
         setError(e instanceof Error ? e : new Error(String(e)));
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && inflight === ctrl) {
+          setLoading(false);
+          inflight = null;
+        }
       }
     }
 
@@ -105,7 +116,7 @@ export function useAlerts(query: AlertsQuery = {}, intervalMs = 5000): UseAlerts
 
     return () => {
       cancelled = true;
-      controller.abort();
+      inflight?.abort();
       es?.close();
       if (fallbackHandle != null) window.clearInterval(fallbackHandle);
     };
