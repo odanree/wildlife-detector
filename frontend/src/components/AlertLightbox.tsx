@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { AlertRow, LabelVerdict } from "../api/alerts";
+import { type AlertRow, type LabelVerdict, snapshotUrl } from "../api/alerts";
 import { fmtTs } from "../util/time";
 import styles from "./AlertLightbox.module.css";
 import { LabelPicker } from "./LabelPicker";
@@ -328,7 +328,7 @@ export function AlertLightbox({
           <img
             ref={imgRef}
             className={styles.img}
-            src={`/snapshots/${encodeURIComponent(current.snapshot)}`}
+            src={snapshotUrl(current.snapshot)}
             alt="alert snapshot"
             onWheel={onWheel}
             onMouseDown={onImgMouseDown}
@@ -503,7 +503,7 @@ function PreviewThumb({
       </div>
       <img
         className={styles.previewThumb}
-        src={`/snapshots/${encodeURIComponent(alert.snapshot)}`}
+        src={snapshotUrl(alert.snapshot)}
         alt={`${label} snapshot`}
         loading="lazy"
       />
