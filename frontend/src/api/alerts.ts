@@ -6,6 +6,19 @@
  * schema v1.
  */
 
+/**
+ * Build a `/snapshots/<relpath>` URL that survives paths with directory
+ * separators. `encodeURIComponent(x)` turns `/` into `%2F`, which curl
+ * treats as equivalent to a literal `/` but browsers do NOT — Chromium's
+ * <img> fetches with encoded slashes are inconsistent across versions
+ * and contexts (sometimes served, sometimes silently blank). Encoding
+ * each segment individually preserves the real `/` separators while
+ * still escaping any special chars inside a filename or date component.
+ */
+export function snapshotUrl(relpath: string): string {
+  return `/snapshots/${relpath.split("/").map(encodeURIComponent).join("/")}`;
+}
+
 export type LabelVerdict = "correct" | "incorrect" | "unclear" | null;
 
 export interface AlertRow {

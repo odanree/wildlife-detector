@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { AlertRow, LabelVerdict } from "../api/alerts";
+import { type AlertRow, type LabelVerdict, snapshotUrl } from "../api/alerts";
 import { AlertLightbox } from "../components/AlertLightbox";
 import { BulkLabelBar } from "../components/BulkLabelBar";
 import { GlobalHeader } from "../components/GlobalHeader";
@@ -441,7 +441,7 @@ function Row({
           >
             <img
               className={styles.thumb}
-              src={`/snapshots/${encodeURIComponent(alert.snapshot)}`}
+              src={snapshotUrl(alert.snapshot)}
               alt="snapshot"
               loading={eagerThumb ? "eager" : "lazy"}
             />
