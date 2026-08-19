@@ -12,6 +12,7 @@ import { fmtTs } from "../util/time";
 import styles from "./AlertLightbox.module.css";
 import { LabelPicker } from "./LabelPicker";
 import { ReplayButton } from "./ReplayButton";
+import { SnapshotImg } from "./SnapshotImg";
 
 const RODENT_SPECIES = new Set(["rat", "mouse"]);
 const ZOOM_MIN = 1;
@@ -501,9 +502,9 @@ function PreviewThumb({
           </span>
         )}
       </div>
-      <img
+      <SnapshotImg
         className={styles.previewThumb}
-        src={snapshotUrl(alert.snapshot)}
+        snapshot={alert.snapshot}
         alt={`${label} snapshot`}
         loading="lazy"
       />
