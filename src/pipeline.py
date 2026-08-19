@@ -62,7 +62,11 @@ from src.stream.self_slew import (
 )
 from src.stream.video_file_handler import VideoFileHandler
 from src.vlm.analyzer import VLMAnalyzer
-from src.classifier import get_classifier, get_pre_vlm_drop_sink
+from src.classifier import (
+    get_classifier,
+    get_classifier_shadow_log,
+    get_pre_vlm_drop_sink,
+)
 
 # Preview server hooks — no-ops when preview isn't started (Flask missing).
 try:
@@ -825,6 +829,7 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     }
     _classifier = get_classifier() if _CLASSIFIER_MODE != "off" else None
     _pre_vlm_drop_sink = get_pre_vlm_drop_sink()
+    _classifier_shadow_log = get_classifier_shadow_log()
     if _classifier is not None and _classifier.enabled():
         logger.info(
             "Classifier mode=%s threshold=%.2f active_cameras=%s",
@@ -1551,6 +1556,33 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                             _clf_features["conf"], _clf_prob, _CLASSIFIER_THRESHOLD,
                             _CLASSIFIER_MODE, _clf_active, _clf_action,
                         )
+                        # Persistent shadow log — same prediction, but to a
+                        # bind-mounted JSONL that survives container restarts.
+                        # Container stdout logs get wiped by every `docker
+                        # compose restart`, so the ephemeral logger.info
+                        # above can't be used for cross-day agreement-rate
+                        # measurement. Post-hoc analysis joins this file to
+                        # the `alerts` table by (camera_id, track_id, ts).
+                        if _classifier_shadow_log.enabled():
+                            _classifier_shadow_log.record(
+                                track_id=tid,
+                                camera_id=_camera_id_env,
+                                vlm_species=_clf_features["vlm_species"],
+                                vlm_conf=_clf_features["conf"],
+                                prob=_clf_prob,
+                                threshold=_CLASSIFIER_THRESHOLD,
+                                mode=_CLASSIFIER_MODE,
+                                active=_clf_active,
+                                action=_clf_action,
+                                would_suppress=_clf_would_suppress,
+                                bbox_w=_bw,
+                                bbox_h=_bh,
+                                mean=_b_mean,
+                                max=_b_max,
+                                ar=_b_ar,
+                                wide_mean=_b_wmean,
+                                wide_max=_b_wmax,
+                            )
                         if _clf_action == "suppress":
                             _preview_stats.record_vlm_rejected()
                             continue

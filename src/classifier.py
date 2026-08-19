@@ -282,3 +282,58 @@ def get_pre_vlm_drop_sink() -> PreVlmDropSink:
             crop_dir=crop_dir,
         )
     return _drop_sink
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Classifier shadow log — persistent JSONL of every post-VLM classifier
+# prediction. Purpose: measure agreement-rate against user-labeled
+# alerts weeks after the fact, without depending on ephemeral container
+# stdout/stderr (which every `docker compose restart` wipes).
+#
+# Same restart-safe pattern as PreVlmDropSink — bind-mounted file, one
+# row per prediction, fail-open on write errors. Not sampled — the goal
+# is a complete audit trail, and prediction volume tracks alert volume
+# (bounded, not motion-detection-bounded).
+# ─────────────────────────────────────────────────────────────────────
+
+
+class ClassifierShadowLog:
+    """Persistent JSONL sink for every post-VLM classifier prediction.
+    Fail-open on write errors."""
+
+    def __init__(self, path: str):
+        self._path = Path(path) if path else None
+        self._fh = None
+        self._warned = False
+        if self._path:
+            try:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                self._fh = self._path.open("a", buffering=1, encoding="utf-8")
+                logger.info("Classifier shadow log open at %s", self._path)
+            except Exception:
+                logger.exception("Failed to open classifier shadow log %s", self._path)
+
+    def enabled(self) -> bool:
+        return self._fh is not None
+
+    def record(self, **fields: Any) -> None:
+        if self._fh is None:
+            return
+        row = {"ts": time.time(), **fields}
+        try:
+            self._fh.write(json.dumps(row, default=str) + "\n")
+        except Exception:
+            if not self._warned:
+                logger.exception("Classifier shadow log write failed (further errors suppressed)")
+                self._warned = True
+
+
+_shadow_log: ClassifierShadowLog | None = None
+
+
+def get_classifier_shadow_log() -> ClassifierShadowLog:
+    global _shadow_log
+    if _shadow_log is None:
+        path = os.getenv("CLASSIFIER_SHADOW_LOG_PATH", "")
+        _shadow_log = ClassifierShadowLog(path)
+    return _shadow_log
