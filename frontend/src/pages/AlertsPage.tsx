@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { type AlertRow, type LabelVerdict, snapshotUrl } from "../api/alerts";
+import type { AlertRow, LabelVerdict } from "../api/alerts";
 import { AlertLightbox } from "../components/AlertLightbox";
 import { BulkLabelBar } from "../components/BulkLabelBar";
 import { GlobalHeader } from "../components/GlobalHeader";
 import { LabelPicker } from "../components/LabelPicker";
 import { ReplayButton } from "../components/ReplayButton";
+import { SnapshotImg } from "../components/SnapshotImg";
 import {
   markAlertRead,
   markAllAlertsRead,
@@ -439,9 +440,9 @@ function Row({
             className={styles.thumbBtn}
             aria-label={`Open ${alert.species} snapshot from ${alert.camera_id}`}
           >
-            <img
+            <SnapshotImg
               className={styles.thumb}
-              src={snapshotUrl(alert.snapshot)}
+              snapshot={alert.snapshot}
               alt="snapshot"
               loading={eagerThumb ? "eager" : "lazy"}
             />
