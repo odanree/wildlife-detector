@@ -1,0 +1,84 @@
+# Backend CI gate — runs on any PR/push touching Python source, tests,
+# requirements, or the detector Dockerfile. Fills the gap where classifier
+# / pipeline / training PRs (#138, #139, #140, #143) shipped with zero CI
+# because the frontend workflow's path filter excluded them.
+#
+# Pattern: fail-fast at the CI trust boundary, mirroring the frontend
+# workflow shape. Independent jobs so a lint failure doesn't hide a test
+# failure — reviewer sees the full contract-violation surface in one run.
+#
+# Not in scope for this iteration:
+#   - Postgres service container for tests/unit/test_state_db.py (that
+#     file is pre-existing migration debt from the SQLite→Postgres cutover
+#     and needs to be rewritten to take a DSN, not a path). See the
+#     --ignore flag in the test step.
+#   - Docker image build parity check for detector/Dockerfile — GHA
+#     runners lack the disk/bandwidth budget for the ~2GB detector image
+#     (torch + ultralytics). Add later if we see "works locally, breaks
+#     on rebuild" drift.
+
+name: backend
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "scripts/**"
+      - "requirements*.txt"
+      - "pytest.ini"
+      - "docker/detector/Dockerfile"
+      - ".github/workflows/backend.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "scripts/**"
+      - "requirements*.txt"
+      - "pytest.ini"
+      - "docker/detector/Dockerfile"
+      - ".github/workflows/backend.yml"
+
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest (unit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-train.txt
+      - name: Install system libs (opencv, ffmpeg)
+        # Mirror the detector Dockerfile's apt install so cv2 imports work
+        # under headless CI. libgl1 + libglib2 are the load-bearing shared
+        # objects; ffmpeg is only needed if a test hits the video-file
+        # replay path (none currently do, but installing is cheap).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libglib2.0-0 libgl1 libgomp1 ffmpeg
+      - name: Install Python deps
+        # Base + training deps. Training deps (lightgbm/sklearn/pandas) are
+        # needed for tests/unit/test_classifier.py's optional lightgbm
+        # exercise path (test_missing_meta_disables_even_if_model_loads).
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-train.txt
+          pip install pytest pytest-asyncio
+      - name: Run unit tests
+        # Skip test_state_db.py — pre-existing migration debt from SQLite
+        # → Postgres cutover. It still calls StateDB(path) but StateDB now
+        # takes a DSN. Rewriting it + wiring a postgres service container
+        # is a separate PR. All other unit tests run cleanly on a bare
+        # runner.
+        run: pytest tests/unit --ignore=tests/unit/test_state_db.py -v
