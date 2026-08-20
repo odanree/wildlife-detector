@@ -1586,6 +1586,16 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         if _clf_action == "suppress":
                             _preview_stats.record_vlm_rejected()
                             continue
+                        # Surface classifier decision on the alert card so
+                        # operator labeling doubles as an inline agreement
+                        # check — no need to post-hoc join the JSONL to
+                        # eyeball model behavior. Only fires when we're
+                        # about to alert (suppress path continues above).
+                        _clf_verdict = "suppress" if _clf_would_suppress else "alert"
+                        result["description"] = (
+                            f"{result['description']} "
+                            f"[clf prob={_clf_prob:.2f} → {_clf_verdict}]"
+                        )
                 snap_path = notifier.send("rodent", result, snap_fr, bbox, yolo_conf=yolo_conf)
                 sh, sw = snap_fr.shape[:2]
                 maybe_slew(bbox=bbox, event_key=("rodent", tid),
