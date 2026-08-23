@@ -58,7 +58,42 @@ export function LivePreviewPage() {
     (typeof window !== "undefined" ? localStorage.getItem("previewPrimaryCam") : null) ??
     defaultCam;
 
-  const pane = useSecondaryPane(cameras, primary);
+  // Single writer for primary camera: any code path that changes it
+  // (select onChange, promote-swap in useSecondaryPane, deep-link
+  // opener) goes through here. localStorage.setItem lives inline in
+  // the mutation, not in a subscribing effect — matches the anti-
+  // pattern rule the audit flagged. Wraps both mechanisms so the
+  // "swap panes then nav-back-to-preview reverts to old primary" bug
+  // stays fixed.
+  const setPrimary = (cam: string) => {
+    try {
+      localStorage.setItem("previewPrimaryCam", cam);
+    } catch {
+      /* quota / privacy mode — URL update below still works */
+    }
+    setSearchParams({ camera: cam });
+  };
+
+  const pane = useSecondaryPane(cameras, primary, setPrimary);
+
+  // Deep-link seed: if the tab opens via `/preview?camera=rooftop`
+  // with an empty localStorage, primary comes from the URL but
+  // nothing writes it back. Nav-back-to-preview then reverts to
+  // defaultCam. One-shot mount seed writes the URL-resolved value
+  // so subsequent navs restore it. NOT the sync-via-effect anti-
+  // pattern — mount-only + idempotent, not subscribing to a prop
+  // for state coherence.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional mount-only seed
+  useEffect(() => {
+    if (!primary) return;
+    try {
+      if (!localStorage.getItem("previewPrimaryCam")) {
+        localStorage.setItem("previewPrimaryCam", primary);
+      }
+    } catch {
+      /* quota / privacy mode — fine */
+    }
+  }, []);
   const zone = useZoneEditor(primary);
   const mask = useMaskEditor(primary);
   const slew = useSlewPresetEditor(primary);
@@ -172,13 +207,7 @@ export function LivePreviewPage() {
             <select
               className={styles.select}
               value={primary}
-              onChange={(e) => {
-                const cam = e.target.value;
-                // Persist inline so cross-nav (Alerts → Preview) restores
-                // this choice even though the URL param is lost.
-                localStorage.setItem("previewPrimaryCam", cam);
-                setSearchParams({ camera: cam });
-              }}
+              onChange={(e) => setPrimary(e.target.value)}
               aria-label="Primary camera"
             >
               {cameras.length === 0 && <option value="">(loading)</option>}

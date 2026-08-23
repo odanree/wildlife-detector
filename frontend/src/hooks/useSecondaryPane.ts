@@ -47,7 +47,11 @@ export interface SecondaryPaneApi {
   promote: () => void;
 }
 
-export function useSecondaryPane(cameras: readonly string[], primary: string): SecondaryPaneApi {
+export function useSecondaryPane(
+  cameras: readonly string[],
+  primary: string,
+  setPrimary?: (cam: string) => void,
+): SecondaryPaneApi {
   const [, setSearchParams] = useSearchParams();
   const [secondary, setSecondaryState] = useState<string | null>(() => {
     try {
@@ -99,9 +103,16 @@ export function useSecondaryPane(cameras: readonly string[], primary: string): S
   const promote = useCallback(() => {
     if (!secondary) return;
     const oldPrimary = primary;
-    setSearchParams({ camera: secondary });
+    // Prefer the injected setter so localStorage stays in sync with
+    // the URL update — without it, nav-back to /preview restores the
+    // old primary from localStorage instead of the promoted camera.
+    if (setPrimary) {
+      setPrimary(secondary);
+    } else {
+      setSearchParams({ camera: secondary });
+    }
     setSecondary(oldPrimary);
-  }, [primary, secondary, setSearchParams, setSecondary]);
+  }, [primary, secondary, setPrimary, setSearchParams, setSecondary]);
 
   return { secondary, canAdd, add, remove, select, promote };
 }
