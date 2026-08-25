@@ -677,6 +677,60 @@ _snapshot_dir: Path | None = None
 _state_db: "StateDB | None" = None
 
 
+# ── Manual-detection cross-thread queue ─────────────────────────────────────
+# Operator draws a bbox on the live-preview UI when they see a stationary
+# rat that MOG's differential detector under-boxes (only capturing subtle
+# twitches instead of the whole body). The bbox posts to the detector's
+# internal HTTP surface, which enqueues it here. The pipeline loop drains
+# this queue at the top of each iteration and injects synthetic Detection
+# objects with reserved track_ids (>= MANUAL_TRACK_ID_BASE) that skip the
+# insect pre-filter and the classifier gate (operator eyeballed it — the
+# gates would just re-litigate what the human already decided). VLM still
+# runs for species classification.
+#
+# Bounded queue so a runaway UI can't OOM the detector; drop-and-warn on
+# overflow (should never happen — operator clicks are rare).
+import queue as _queue
+
+MANUAL_TRACK_ID_BASE = 900_000
+_manual_detection_queue: "_queue.Queue[dict]" = _queue.Queue(maxsize=64)
+_manual_track_counter = 0
+_manual_counter_lock = threading.Lock()
+
+
+def submit_manual_detection(bbox: tuple[int, int, int, int]) -> int | None:
+    """Enqueue a manual bbox for the next pipeline iteration. Returns the
+    reserved track_id, or None if the queue is full (dropped). Bbox is in
+    detection-frame pixel coords, same coord space MOG detections use."""
+    global _manual_track_counter
+    with _manual_counter_lock:
+        _manual_track_counter += 1
+        tid = MANUAL_TRACK_ID_BASE + _manual_track_counter
+    try:
+        _manual_detection_queue.put_nowait({
+            "track_id": tid,
+            "bbox": tuple(int(v) for v in bbox),
+            "ts": time.time(),
+        })
+    except _queue.Full:
+        logger.warning("Manual-detection queue full — dropping bbox=%s", bbox)
+        return None
+    logger.info("Manual-detection enqueued: track_id=%d bbox=%s", tid, bbox)
+    return tid
+
+
+def drain_manual_detections() -> list[dict]:
+    """Pop all queued manual-detection requests. Called by the pipeline
+    loop each iteration. Returns [] if none pending."""
+    out: list[dict] = []
+    while True:
+        try:
+            out.append(_manual_detection_queue.get_nowait())
+        except _queue.Empty:
+            break
+    return out
+
+
 def get_state_db() -> "StateDB | None":
     return _state_db
 
