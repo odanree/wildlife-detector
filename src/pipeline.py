@@ -1401,10 +1401,20 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 # rather drop it than fire a minutes-old alert with a stale
                 # snapshot. Load-bearing signal is silent success; log the
                 # drop so we know when we're falling behind.
-                if _queue_age > _VLM_MAX_ALERT_AGE_S:
+                if _queue_age > _VLM_MAX_ALERT_AGE_S and tid < MANUAL_TRACK_ID_BASE:
                     logger.warning("VLM stale-drop: track=%d queue_age=%.1fs > %.1fs (workers/inflight too small for load) — discarding alert",
                                    tid, _queue_age, _VLM_MAX_ALERT_AGE_S)
                     continue
+                if _queue_age > _VLM_MAX_ALERT_AGE_S and tid >= MANUAL_TRACK_ID_BASE:
+                    # Manual detection bypasses the stale-drop deadline.
+                    # Operator explicitly asked for this classification;
+                    # silently discarding it (as we do for auto-alerts to
+                    # protect against back-pressure on the VLM) would be
+                    # a UX betrayal — user clicked, expects a result.
+                    logger.info(
+                        "Manual-detection: track=%d queue_age=%.1fs — bypassing stale-drop",
+                        tid, _queue_age,
+                    )
 
                 if not result.get("wildlife_detected", False):
                     _preview_stats.record_vlm_rejected()
@@ -1488,6 +1498,11 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                             # in sandbox on the 2341 cat clip.
                             "bypass_cooldown": True,
                             "description": (
+                                # [MANUAL] prefix wins over [VLM-REJECT-OVERRIDE]
+                                # when the operator initiated the detection —
+                                # labeling flow needs to see manual-origin
+                                # regardless of which override path fires.
+                                f"{'[MANUAL] ' if tid >= MANUAL_TRACK_ID_BASE else ''}"
                                 f"[VLM-REJECT-OVERRIDE] VLM said {_rejected_species!r} "
                                 f"(conf={result.get('confidence', 0.0):.2f}); MOG + baseline "
                                 f"agreed motion is here (bbox {_bw}x{_bh}={_bbox_area}px "
