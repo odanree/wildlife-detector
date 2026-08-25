@@ -131,6 +131,39 @@ def create_app() -> Flask:
         _, ver = z.snapshot()
         return jsonify({"ok": True, "version": ver})
 
+    @app.post("/internal/manual-detect")
+    def post_manual_detect():
+        """Operator-drawn bbox for manual detection. Bypasses MOG's
+        differential detector (which under-boxes stationary rats to
+        just the twitching pixels) by injecting a synthetic Detection
+        with the operator's full-body bbox at the top of the next
+        pipeline iteration. Skips insect pre-filter + classifier gate;
+        still runs VLM for species classification.
+
+        Body: {"bbox": [x1, y1, x2, y2]}  — detection-frame coords
+        (same coord space as the zone editor polygons; the frontend
+        publishes it after normalizing to the detection-frame size).
+        """
+        auth_err = _require_auth()
+        if auth_err:
+            return auth_err
+        body = request.get_json(silent=True) or {}
+        raw = body.get("bbox")
+        if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+            return jsonify({"error": "bbox required as [x1, y1, x2, y2]"}), 400
+        try:
+            x1, y1, x2, y2 = (int(v) for v in raw)
+        except (TypeError, ValueError):
+            return jsonify({"error": "bbox coords must be integers"}), 400
+        if x2 <= x1 or y2 <= y1:
+            return jsonify({"error": "bbox must have positive width and height"}), 400
+        if (x2 - x1) < 8 or (y2 - y1) < 8:
+            return jsonify({"error": "bbox too small (< 8px per axis)"}), 400
+        tid = preview.submit_manual_detection((x1, y1, x2, y2))
+        if tid is None:
+            return jsonify({"error": "manual-detection queue full — retry"}), 503
+        return jsonify({"ok": True, "track_id": tid})
+
     @app.post("/internal/masks")
     def post_masks():
         auth_err = _require_auth()
