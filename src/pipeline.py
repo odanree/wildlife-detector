@@ -80,6 +80,8 @@ try:
         init_baseline as _preview_init_baseline,
         get_baseline as _preview_get_baseline,
         init_masks as _preview_init_masks,
+        drain_manual_detections as _drain_manual_detections,
+        MANUAL_TRACK_ID_BASE,
     )
 except ImportError:
     def _publish_preview_frame(_jpeg: bytes) -> None:
@@ -99,6 +101,8 @@ except ImportError:
     def _preview_init_baseline(_p): return None
     def _preview_get_baseline(): return None
     def _preview_init_masks(_p, det_w=None, det_h=None): return None
+    def _drain_manual_detections(): return []
+    MANUAL_TRACK_ID_BASE = 900_000
 
 logger = logging.getLogger(__name__)
 
@@ -1517,18 +1521,31 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 # just overrides).
                 _orig_desc = result.get("description", "") or ""
                 result = dict(result)  # avoid mutating the VLM's cached dict
+                _manual_prefix = "[MANUAL] " if tid >= MANUAL_TRACK_ID_BASE else ""
                 result["description"] = (
-                    f"{_orig_desc} [bbox {_bw}x{_bh}={_bw*_bh}px "
+                    f"{_manual_prefix}{_orig_desc} [bbox {_bw}x{_bh}={_bw*_bh}px "
                     f"mean={_b_mean:.0f} max={_b_max:.0f} AR={_b_ar:.2f} "
                     f"wide_mean={_b_wmean:.0f} wide_max={_b_wmax:.0f}]"
                 )
+                # Manual detections bypass the notifier's cooldown/min-conf
+                # gates for the same reason as VLM-REJECT-OVERRIDE: an
+                # operator-initiated event is per-click, not throttled by
+                # the automatic-alert cooldown.
+                if tid >= MANUAL_TRACK_ID_BASE:
+                    result["bypass_cooldown"] = True
+                    result["bypass_min_confidence"] = True
                 # ── Post-VLM classifier gate (project #137) ─────────────
                 # Trained animal-vs-FP re-scorer. In shadow mode we log
                 # what the classifier would do but never suppress. In
                 # active mode we suppress alerts below the threshold on
                 # the camera allowlist. All-camera log-only fallback so
                 # even off-list cameras contribute shadow observations.
-                if _classifier is not None and _classifier.enabled():
+                # Manual-detection track_ids skip this gate — human
+                # eyeballed the target, gate would just re-litigate the
+                # exact case (subtle-movement rat) the manual path
+                # exists to rescue.
+                _is_manual = tid >= MANUAL_TRACK_ID_BASE
+                if _classifier is not None and _classifier.enabled() and not _is_manual:
                     _clf_features = {
                         "mean": _b_mean,
                         "max": _b_max,
@@ -1656,6 +1673,29 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             # `not None` truthiness check downstream treats None as
             # falsy, which matches the pre-fix "night" default.
             _is_daytime = _baseline_cache[0][1] == "day" if _baseline_cache[1] is not None else None
+
+            # ── Drain manual-detection queue and append synthetic
+            # Detections with reserved track_ids (>= MANUAL_TRACK_ID_BASE).
+            # Injected AFTER zone/mask/exclusion filters so operator's
+            # manual box always reaches VLM regardless of zone geometry —
+            # human intent overrides all pre-VLM filters. Insect pre-
+            # filter and classifier gate also skip these track_ids
+            # downstream. Description gets a [MANUAL] tag so the alert
+            # card + labeling UI distinguishes operator-initiated events
+            # from automatic ones.
+            _manual_dets = _drain_manual_detections()
+            for _m in _manual_dets:
+                zone_dets.append(Detection(
+                    track_id=_m["track_id"],
+                    class_name="manual",
+                    confidence=1.0,
+                    bbox=_m["bbox"],
+                    contour=None,
+                ))
+                logger.info(
+                    "Manual-detection injected: track=%d bbox=%s",
+                    _m["track_id"], _m["bbox"],
+                )
 
             # ── Submit new VLM jobs for zone detections ─────────────────────
             for det in zone_dets:
@@ -1802,7 +1842,17 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 # NOT a moth. Without this guard, cats/raccoons at overhead
                 # angle get silently rejected (see Aug 8 02:23 cat incident).
                 _is = _bbox_signature(frame, det.bbox)
-                if _is.area > 0:
+                # Skip insect pre-filter for operator-drawn manual bboxes.
+                # Human eyeballed the target already; re-litigating with
+                # mean/max/AR gates would just reject the exact case
+                # (stationary rat that MOG under-boxed) the manual path
+                # exists to rescue.
+                if det.track_id >= MANUAL_TRACK_ID_BASE:
+                    logger.info(
+                        "Manual-detection: track=%d bbox=%s — skipping insect pre-filter",
+                        det.track_id, det.bbox,
+                    )
+                elif _is.area > 0:
                     # Size-gated: max + elongation gates only fire on small
                     # bboxes (rodents with bright eyeshine can hit max=255
                     # legitimately at any size — protecting them).
