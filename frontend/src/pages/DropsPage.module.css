@@ -1,0 +1,226 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg-1);
+  color: var(--text-hi);
+}
+
+.stat {
+  color: var(--text-mid);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  margin: 0 var(--sp-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.b {
+  color: var(--text-hi);
+}
+.label {
+  color: var(--text-mid);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  margin: 0 var(--sp-2);
+}
+.select {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-md);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.numInput {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 2px 4px;
+  border-radius: var(--r-md);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  width: 44px;
+  margin: 0 2px;
+}
+.pageBtn {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 4px var(--sp-3);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  margin-left: var(--sp-1);
+}
+.pageBtn:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+}
+.pageBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.help {
+  padding: var(--sp-1) var(--sp-3);
+  color: var(--text-mid);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  border-bottom: 1px solid var(--border-2);
+  background: var(--bg-1);
+}
+
+.empty,
+.err {
+  padding: var(--sp-6);
+  color: var(--text-mid);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  text-align: center;
+}
+.err {
+  color: var(--accent-err);
+}
+
+/* Grid of crops — auto-fills based on viewport width. Card min-width
+   tuned to fit ~3 columns on a phone (portrait), ~6 on desktop. */
+.grid {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--sp-3);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: var(--sp-3);
+  align-content: start;
+}
+
+.card {
+  background: var(--bg-2);
+  border: 2px solid var(--border-2);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  cursor: pointer;
+  transition: border-color 100ms ease;
+}
+.card:hover {
+  border-color: var(--border-3);
+}
+.cardSelected {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 1px var(--accent-blue);
+}
+/* Label-driven card border tint so the operator sees the label state
+   from across the grid, not just on the button row. */
+.labelMoth {
+  border-color: var(--accent-camera, #f5a623);
+}
+.labelAnimal {
+  border-color: var(--accent-green);
+}
+.labelUnclear {
+  border-color: var(--text-mid);
+}
+
+.crop {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: contain;
+  background: #000;
+  display: block;
+}
+
+.meta {
+  padding: var(--sp-1) var(--sp-2);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--bg-2);
+}
+.metaRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex-wrap: wrap;
+}
+.badgeCam {
+  background: var(--bg-1);
+  color: var(--text-hi);
+  padding: 1px 6px;
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  border: 1px solid var(--border-2);
+}
+
+.btn,
+.btnMothActive,
+.btnAnimalActive,
+.btnUnclearActive,
+.btnClear {
+  background: var(--bg-1);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 3px var(--sp-2);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  flex: 1;
+}
+.btn:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+}
+.btn:disabled,
+.btnMothActive:disabled,
+.btnAnimalActive:disabled,
+.btnUnclearActive:disabled,
+.btnClear:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.btnMothActive {
+  background: var(--accent-camera, #f5a623);
+  color: #000;
+  border-color: var(--accent-camera, #f5a623);
+}
+.btnAnimalActive {
+  background: var(--accent-green);
+  color: #000;
+  border-color: var(--accent-green);
+}
+.btnUnclearActive {
+  background: var(--text-mid);
+  color: var(--bg-1);
+  border-color: var(--text-mid);
+}
+.btnClear {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+}
+
+/* Floating refresh button — bottom-right so it's reachable on phone
+   without needing to reach the header. */
+.refreshFloat {
+  position: fixed;
+  bottom: var(--sp-4);
+  right: var(--sp-4);
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  font-size: 18px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+.refreshFloat:hover {
+  filter: brightness(1.15);
+}

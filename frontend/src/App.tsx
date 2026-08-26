@@ -1,6 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AlertsPage } from "./pages/AlertsPage";
 import { BaselinesPage } from "./pages/BaselinesPage";
+import { DropsPage } from "./pages/DropsPage";
 import { LivePreviewPage } from "./pages/LivePreviewPage";
 import { StatusDashboard } from "./pages/StatusDashboard";
 
@@ -25,6 +26,7 @@ export function App() {
         <Route path="/preview" element={<LivePreviewPage />} />
         <Route path="/status" element={<StatusDashboard />} />
         <Route path="/alerts" element={<AlertsPage />} />
+        <Route path="/drops" element={<DropsPage />} />
         <Route path="/baselines" element={<BaselinesPage />} />
         <Route path="*" element={<Navigate to="/preview" replace />} />
       </Routes>
