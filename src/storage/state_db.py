@@ -136,6 +136,34 @@ class StateDB:
         ]:
             self._exec(idx_ddl)
 
+        # ── Pre-VLM drop labels (project #137 Phase 3, follow-up) ────
+        # Insect pre-filter drops don't get alert rows (by design —
+        # they never reach the operator via the VLM path). But we
+        # sample them into logs/pre_vlm_drops.jsonl + crops on disk,
+        # and this table stores hand-labels for training a pre-VLM
+        # classifier that can eventually retire the brightness-
+        # threshold treadmill (`NIGHT_INSECT_BRIGHTNESS_MIN`).
+        #
+        # `drop_id` = the crop's relative path under logs/pre_vlm_drops
+        # (e.g. `yard/2026-08-25/1724567890_track1234.jpg`). Same as the
+        # `snapshot` field in the JSONL row — stable, deterministic,
+        # doesn't require a separate ID column in the JSONL.
+        self._exec("""
+            CREATE TABLE IF NOT EXISTS pre_vlm_drop_labels (
+                drop_id       TEXT PRIMARY KEY,
+                label         TEXT NOT NULL,
+                label_species TEXT,
+                label_notes   TEXT,
+                labeled_at    DOUBLE PRECISION NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW()),
+                labeled_by    TEXT NOT NULL DEFAULT 'operator'
+            )
+        """)
+        for idx_ddl in [
+            "CREATE INDEX IF NOT EXISTS idx_pre_vlm_drop_labels_label ON pre_vlm_drop_labels(label)",
+            "CREATE INDEX IF NOT EXISTS idx_pre_vlm_drop_labels_labeled_at ON pre_vlm_drop_labels(labeled_at DESC)",
+        ]:
+            self._exec(idx_ddl)
+
     # ── Writes ──────────────────────────────────────────────────────────────
 
     def append_alert(
@@ -428,6 +456,72 @@ class StateDB:
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute("SELECT snapshot FROM alerts WHERE snapshot IS NOT NULL")
             return {row[0] for row in cur.fetchall()}
+
+    # ── Pre-VLM drop labels (Phase 3 follow-up) ─────────────────────────
+    # These are hand-labels on rows the insect pre-filter dropped BEFORE
+    # the VLM saw them. Feed into a future pre-VLM binary classifier
+    # that can retire the brightness-threshold treadmill.
+
+    _DROP_LABELS_ALLOWED = {"moth", "real_animal", "unclear"}
+
+    def set_drop_label(
+        self,
+        drop_id: str,
+        label: str | None,
+        label_species: str | None = None,
+        notes: str | None = None,
+    ) -> bool:
+        """Upsert a label on a pre-VLM drop. `label=None` deletes the
+        row (undo). Returns True on any state change."""
+        if label is not None and label not in self._DROP_LABELS_ALLOWED:
+            raise ValueError(
+                f"label must be one of {sorted(self._DROP_LABELS_ALLOWED)} or None"
+            )
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            if label is None:
+                cur.execute("DELETE FROM pre_vlm_drop_labels WHERE drop_id = %s", (drop_id,))
+                return cur.rowcount > 0
+            cur.execute(
+                """INSERT INTO pre_vlm_drop_labels
+                     (drop_id, label, label_species, label_notes, labeled_at)
+                   VALUES (%s, %s, %s, %s, EXTRACT(EPOCH FROM NOW()))
+                   ON CONFLICT (drop_id) DO UPDATE SET
+                     label         = EXCLUDED.label,
+                     label_species = EXCLUDED.label_species,
+                     label_notes   = EXCLUDED.label_notes,
+                     labeled_at    = EXTRACT(EPOCH FROM NOW())""",
+                (drop_id, label, label_species, notes),
+            )
+            return True
+
+    def get_drop_labels(self, drop_ids: list[str]) -> dict[str, dict]:
+        """Bulk fetch labels for a set of drop_ids. Returns a dict keyed
+        by drop_id — missing keys mean unlabeled. Used by /api/drops so
+        the frontend can render existing labels on paginated pages."""
+        if not drop_ids:
+            return {}
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT drop_id, label, label_species, label_notes, labeled_at
+                   FROM pre_vlm_drop_labels WHERE drop_id = ANY(%s)""",
+                (list(drop_ids),),
+            )
+            return {
+                r[0]: {
+                    "label": r[1],
+                    "label_species": r[2],
+                    "label_notes": r[3],
+                    "labeled_at": float(r[4]) if r[4] is not None else None,
+                }
+                for r in cur.fetchall()
+            }
+
+    def drop_label_counts(self) -> dict[str, int]:
+        """Histogram of labels — used by the /api/drops list to show
+        progress in the UI header (`labeled: N / M`)."""
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute("SELECT label, COUNT(*) FROM pre_vlm_drop_labels GROUP BY label")
+            return {r[0]: int(r[1]) for r in cur.fetchall()}
 
     # ── Housekeeping ────────────────────────────────────────────────────────
 
