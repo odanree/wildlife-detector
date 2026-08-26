@@ -50,15 +50,16 @@ export function DropsPage() {
   // filter switch) so stale overlays don't linger.
   const [labelOverlay, setLabelOverlay] = useState<Map<string, DropLabel | null>>(() => new Map());
   const [busyIds, setBusyIds] = useState<Set<string>>(() => new Set());
-  // Reset overlays when the underlying query changes — deps are the
-  // fire trigger, effect body only calls setters (no reads of the
-  // deps). biome-ignore matches useSecondaryPane's pattern.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional — deps ARE the fire trigger for the reset
-  useEffect(() => {
+
+  // Single-writer reset for labeling state — called inline from every
+  // filter/pagination setter below instead of via an effect subscribing
+  // to those deps. That's the you-might-not-need-an-effect pattern the
+  // repo's anti-pattern CI gate enforces (#36).
+  const resetLabelingState = useCallback(() => {
     setLabelOverlay(new Map());
     setBusyIds(new Set());
     setSelected(0);
-  }, [offset, camera, filter, boundary, meanRange]);
+  }, []);
 
   const applyLabel = useCallback(
     async (drop_id: string, label: DropLabel | null) => {
@@ -155,6 +156,7 @@ export function DropsPage() {
                 onChange={(e) => {
                   setCamera(e.target.value);
                   setOffset(0);
+                  resetLabelingState();
                 }}
               >
                 <option value="">all</option>
@@ -173,6 +175,7 @@ export function DropsPage() {
                 onChange={(e) => {
                   setFilter(e.target.value as DropsFilter);
                   setOffset(0);
+                  resetLabelingState();
                 }}
               >
                 <option value="unlabeled">unlabeled</option>
@@ -190,6 +193,7 @@ export function DropsPage() {
                 onChange={(e) => {
                   setBoundary(e.target.checked);
                   setOffset(0);
+                  resetLabelingState();
                 }}
               />
               boundary
@@ -206,6 +210,7 @@ export function DropsPage() {
                   onChange={(e) => {
                     setMeanRange([Number.parseInt(e.target.value, 10) || 0, meanRange[1]]);
                     setOffset(0);
+                    resetLabelingState();
                   }}
                 />
                 {"–"}
@@ -218,6 +223,7 @@ export function DropsPage() {
                   onChange={(e) => {
                     setMeanRange([meanRange[0], Number.parseInt(e.target.value, 10) || 255]);
                     setOffset(0);
+                    resetLabelingState();
                   }}
                 />
               </span>
@@ -225,7 +231,10 @@ export function DropsPage() {
             <button
               type="button"
               className={styles.pageBtn}
-              onClick={() => setOffset(Math.max(0, offset - limit))}
+              onClick={() => {
+                setOffset(Math.max(0, offset - limit));
+                resetLabelingState();
+              }}
               disabled={!canPrev}
             >
               ‹ prev
@@ -233,7 +242,10 @@ export function DropsPage() {
             <button
               type="button"
               className={styles.pageBtn}
-              onClick={() => setOffset(offset + limit)}
+              onClick={() => {
+                setOffset(offset + limit);
+                resetLabelingState();
+              }}
               disabled={!canNext}
             >
               next ›
