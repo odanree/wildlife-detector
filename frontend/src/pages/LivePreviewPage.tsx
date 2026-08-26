@@ -2,12 +2,14 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { CameraPane, type ViewMode } from "../components/CameraPane";
 import { GlobalHeader } from "../components/GlobalHeader";
+import { ManualDetectOverlay } from "../components/ManualDetectOverlay";
 import { type MaskMode, MaskOverlay } from "../components/MaskOverlay";
 import { SlewPresetPanel } from "../components/SlewPresetPanel";
 import { SlewPresetsOverlay } from "../components/SlewPresetsOverlay";
 import { type EditMode, ZoneOverlay } from "../components/ZoneOverlay";
 import { useCameras } from "../hooks/useCameras";
 import { useDetectionSize } from "../hooks/useDetectionSize";
+import { useManualDetectMode } from "../hooks/useManualDetectMode";
 import { useMaskEditor } from "../hooks/useMaskEditor";
 import { useSecondaryPane } from "../hooks/useSecondaryPane";
 import { useSlewPresetEditor } from "../hooks/useSlewPresetEditor";
@@ -97,6 +99,7 @@ export function LivePreviewPage() {
   const zone = useZoneEditor(primary);
   const mask = useMaskEditor(primary);
   const slew = useSlewPresetEditor(primary);
+  const manualDetect = useManualDetectMode();
 
   // View mode is keyed by camera (not pane slot) so it follows a
   // camera across a promote-swap. Session-only.
@@ -256,6 +259,32 @@ export function LivePreviewPage() {
               onSave={mask.save}
               onCancel={mask.cancel}
             />
+            <div className={styles.editorGroup}>
+              <span className={styles.editorLabel}>manual</span>
+              <button
+                type="button"
+                className={manualDetect.mode !== "off" ? styles.editorBtnActive : styles.editorBtn}
+                onClick={manualDetect.toggle}
+                disabled={manualDetect.mode === "submitting"}
+                title={
+                  manualDetect.mode === "off"
+                    ? "Arm manual detection: click-drag on the primary pane to box a stationary animal MOG can't reach"
+                    : "Click-drag on the primary pane, or click this to cancel"
+                }
+              >
+                {manualDetect.mode === "off"
+                  ? "○ draw bbox"
+                  : manualDetect.mode === "armed"
+                    ? "● click-drag on pane"
+                    : "⏳ submitting…"}
+              </button>
+              {manualDetect.status.kind === "success" && (
+                <span className={styles.editorLabel}>✓ track {manualDetect.status.trackId}</span>
+              )}
+              {manualDetect.status.kind === "error" && (
+                <span className={styles.editorErr}>err: {manualDetect.status.message}</span>
+              )}
+            </div>
             <span className={styles.spacer} />
             <button
               type="button"
@@ -328,6 +357,12 @@ export function LivePreviewPage() {
               masks={displayedMasks}
               mode={mask.mode}
               onChange={mask.setWorkingMasks}
+            />
+            <ManualDetectOverlay
+              baseW={detW}
+              baseH={detH}
+              mode={manualDetect.mode}
+              onSubmit={(bbox) => manualDetect.submit(primary, bbox)}
             />
           </CameraPane>
           {pane.secondary && (
