@@ -132,6 +132,7 @@ export function DropsPage() {
       } else if (key === "x") {
         e.preventDefault();
         void applyLabel(cur.drop_id, null);
+        setSelected((n) => Math.min(n + 1, items.length - 1));
       } else if (key === "j") {
         e.preventDefault();
         setSelected((n) => Math.max(0, n - 1));
