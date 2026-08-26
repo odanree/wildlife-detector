@@ -145,6 +145,26 @@
   color: var(--accent-green);
   border-color: var(--accent-green);
 }
+/* Manual-detect "armed" state — amber to match the overlay's
+   rubber-band rectangle so operator's eye stays on the same color
+   for the whole flow. Distinct from Save's green + err's red. */
+.editorBtnActive {
+  background: var(--bg-2);
+  color: var(--accent-camera, #f5a623);
+  border: 1px solid var(--accent-camera, #f5a623);
+  padding: 2px 8px;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+.editorBtnActive:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+.editorBtnActive:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 .editorErr {
   color: var(--accent-err);
   font-size: 11px;

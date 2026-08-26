@@ -1,0 +1,45 @@
+/* Shared positioning — same shape as ZoneOverlay/MaskOverlay so the
+   overlay sits directly on top of the MJPEG stream inside CameraPane's
+   canvas div. viewBox handles image-coord ↔ CSS-px scaling. */
+
+.overlayArmed,
+.overlaySubmitting {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.overlayArmed {
+  pointer-events: auto;
+  cursor: crosshair;
+}
+
+.overlaySubmitting {
+  pointer-events: none;
+  cursor: wait;
+}
+
+/* Rubber-band rectangle while operator is drawing. Amber = manual
+   action, distinct from green (zone save) and red (alert flash). */
+.rectArmed {
+  fill: var(--accent-camera, #f5a623);
+  fill-opacity: 0.18;
+  stroke: var(--accent-camera, #f5a623);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  stroke-dasharray: 6 4;
+}
+
+/* Post-submit: dim + solid so the operator knows the bbox is
+   in-flight. Cleared when parent transitions mode from
+   `submitting` → `off`. */
+.rectSubmitting {
+  fill: var(--accent-camera, #f5a623);
+  fill-opacity: 0.08;
+  stroke: var(--accent-camera, #f5a623);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  opacity: 0.5;
+}
