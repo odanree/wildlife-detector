@@ -748,6 +748,45 @@ services:
       postgres:
         condition: service_healthy
 
+  # ── Remote-access tunnel (Cloudflare) ───────────────────────────────
+  # Outbound-only tunnel from this host to Cloudflare's edge. Public
+  # HTTPS URL (e.g. https://wildlife.danhle.net) fronts wildlife-web
+  # WITHOUT port-forwarding on the router or exposing 8100/8200 on
+  # the LAN's public interface. Wrap the hostname with Cloudflare
+  # Access (Zero Trust → Access → Applications) for email-based
+  # auth so the UI isn't world-open.
+  #
+  # Setup (one-time, on Cloudflare dashboard):
+  #   1. Zero Trust → Networks → Tunnels → Create tunnel → name it
+  #      `wildlife-detector` → copy the token → paste into .env as
+  #      TUNNEL_TOKEN=eyJhIjo...
+  #   2. On the same tunnel: Public hostnames → Add
+  #      → subdomain `wildlife` (or whatever) → domain `danhle.net`
+  #      → service HTTP → URL `wildlife-web:8100` (the compose-
+  #      internal name, NOT localhost or a host port)
+  #   3. Zero Trust → Access → Applications → Add self-hosted app
+  #      → domain matches above → policy: allow email <yours>
+  #
+  # Then: `docker compose up -d cloudflared`. Reload with:
+  #   `docker compose restart cloudflared` after any hostname config
+  #   changes on the dashboard.
+  #
+  # Empty TUNNEL_TOKEN skips the service (docker compose profile
+  # `remote-access` gates it — only starts when `--profile
+  # remote-access` is passed, so home-lab-only setups aren't forced
+  # to install cloudflared).
+  cloudflared:
+    profiles: [remote-access]
+    image: cloudflare/cloudflared:latest
+    container_name: wildlife-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?TUNNEL_TOKEN must be set in .env when using the remote-access profile}
+    depends_on:
+      web:
+        condition: service_healthy
+
 volumes:
   # Bind-mounts on ./data, ./snapshots, ./logs, ./clips live in the
   # service blocks. `models` stays a named volume — YOLO auto-downloaded
