@@ -22,6 +22,7 @@ export interface DropRow {
   trigger: string | null;
   baseline_mode: string | null;
   crop_url: string; // /drops/<path>
+  crop_wide_url: string | null; // /drops/<path>_wide.jpg; null for older drops recorded before the wide-crop dump landed
   label: DropLabel | null;
   label_species: string | null;
   labeled_at: number | null;

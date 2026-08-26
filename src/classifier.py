@@ -217,19 +217,25 @@ class PreVlmDropSink:
             return True
         return random.random() < self._sample
 
-    def _save_crop(self, crop_jpeg: bytes, camera_id: str, ts: float,
-                   track_id: Any) -> str | None:
+    def _save_crop_file(
+        self, crop_jpeg: bytes, camera_id: str, ts: float, track_id: Any,
+        suffix: str = "",
+    ) -> str | None:
+        """Write one JPEG to <crop_dir>/<camera>/<date>/<ts>_track<id>[<suffix>].jpg.
+        Returns the relative path from crop_dir, or None on failure.
+        `suffix` is empty for the tight crop and "_wide" for the wider-
+        context crop that shows the operator enough surrounding pixels
+        to actually distinguish moth-vs-rodent (the labeling-UX gap
+        that motivated this)."""
         if self._crop_dir is None or not crop_jpeg:
             return None
         try:
             day = time.strftime("%Y-%m-%d", time.localtime(ts))
             cam_dir = self._crop_dir / str(camera_id) / day
             cam_dir.mkdir(parents=True, exist_ok=True)
-            fname = f"{int(ts)}_track{track_id}.jpg"
+            fname = f"{int(ts)}_track{track_id}{suffix}.jpg"
             fpath = cam_dir / fname
             fpath.write_bytes(crop_jpeg)
-            # Relative path from the crop root — matches how the alerts
-            # UI stores its `snapshot` field.
             return str(fpath.relative_to(self._crop_dir)).replace("\\", "/")
         except Exception:
             if not self._crop_warned:
@@ -237,7 +243,12 @@ class PreVlmDropSink:
                 self._crop_warned = True
             return None
 
-    def record(self, crop_jpeg: bytes | None = None, **fields: Any) -> None:
+    def record(
+        self,
+        crop_jpeg: bytes | None = None,
+        wide_crop_jpeg: bytes | None = None,
+        **fields: Any,
+    ) -> None:
         if self._fh is None:
             return
         mean = fields.get("mean")
@@ -245,15 +256,18 @@ class PreVlmDropSink:
             return
         ts = time.time()
         row: dict[str, Any] = {"ts": ts, **fields}
+        camera_id = str(fields.get("camera_id", "unknown"))
+        track_id = fields.get("track_id", "unknown")
         if crop_jpeg is not None:
-            snap = self._save_crop(
-                crop_jpeg,
-                camera_id=str(fields.get("camera_id", "unknown")),
-                ts=ts,
-                track_id=fields.get("track_id", "unknown"),
-            )
+            snap = self._save_crop_file(crop_jpeg, camera_id, ts, track_id, suffix="")
             if snap:
                 row["snapshot"] = snap
+        if wide_crop_jpeg is not None:
+            wide_snap = self._save_crop_file(
+                wide_crop_jpeg, camera_id, ts, track_id, suffix="_wide",
+            )
+            if wide_snap:
+                row["snapshot_wide"] = wide_snap
         try:
             self._fh.write(json.dumps(row, default=str) + "\n")
         except Exception:
