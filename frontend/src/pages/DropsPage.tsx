@@ -282,12 +282,27 @@ export function DropsPage() {
                 key={r.drop_id}
                 className={`${styles.card} ${isSelected ? styles.cardSelected : ""} ${labelClass}`}
               >
-                <img
-                  className={styles.crop}
-                  src={r.crop_url}
-                  alt={`drop ${r.drop_id}`}
-                  loading={i < 20 ? "eager" : "lazy"}
-                />
+                <div className={styles.cropStack}>
+                  {/* Wide crop as primary — same region VLM+alerts use,
+                      gives operator enough context to distinguish moth
+                      vs rodent. Falls back to tight for older drops
+                      recorded before the wide-dump landed. */}
+                  <img
+                    className={styles.crop}
+                    src={r.crop_wide_url ?? r.crop_url}
+                    alt={`drop ${r.drop_id}`}
+                    loading={i < 20 ? "eager" : "lazy"}
+                  />
+                  {r.crop_wide_url && (
+                    <img
+                      className={styles.cropTightBadge}
+                      src={r.crop_url}
+                      alt="tight bbox"
+                      loading="lazy"
+                      title="Tight MOG bbox — the exact pixels that fired the pre-filter"
+                    />
+                  )}
+                </div>
                 <div className={styles.meta}>
                   <div className={styles.metaRow}>
                     <span className={styles.badgeCam}>{r.camera_id}</span>

@@ -143,3 +143,32 @@ def test_pre_vlm_drop_sink_dumps_crop(monkeypatch, tmp_path):
     dumped = crop_dir / row["snapshot"]
     assert dumped.exists()
     assert dumped.read_bytes() == fake_jpeg
+
+
+def test_pre_vlm_drop_sink_dumps_wide_crop_alongside_tight(monkeypatch, tmp_path):
+    """When wide_crop_jpeg is passed, saves it with `_wide` suffix and
+    surfaces the relative path in the JSONL row as `snapshot_wide`.
+    Older callers that don't pass wide_crop_jpeg keep working with
+    just the tight crop (backward compat)."""
+    out = tmp_path / "drops.jsonl"
+    crop_dir = tmp_path / "crops"
+    monkeypatch.setenv("PRE_VLM_DROP_LOG_PATH", str(out))
+    monkeypatch.setenv("PRE_VLM_DROP_LOG_SAMPLE", "1.0")
+    monkeypatch.setenv("PRE_VLM_DROP_CROP_DIR", str(crop_dir))
+    s = clf_mod.get_pre_vlm_drop_sink()
+    tight = b"\xff\xd8\xff\xe0" + b"\x00" * 100
+    wide = b"\xff\xd8\xff\xe0" + b"\x11" * 200
+    s.record(
+        crop_jpeg=tight,
+        wide_crop_jpeg=wide,
+        camera_id="backyard",
+        track_id=99,
+        mean=130.0,
+    )
+    lines = out.read_text().strip().splitlines()
+    assert len(lines) == 1
+    row = json.loads(lines[0])
+    assert row["snapshot"].endswith("_track99.jpg")
+    assert row["snapshot_wide"].endswith("_track99_wide.jpg")
+    assert (crop_dir / row["snapshot"]).read_bytes() == tight
+    assert (crop_dir / row["snapshot_wide"]).read_bytes() == wide

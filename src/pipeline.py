@@ -1903,6 +1903,7 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         # the crop dir + sample gate.
                         if _pre_vlm_drop_sink.enabled():
                             _drop_crop_jpeg: bytes | None = None
+                            _drop_wide_jpeg: bytes | None = None
                             _dx1, _dy1, _dx2, _dy2 = det.bbox
                             _drop_crop = frame[
                                 max(0, _dy1):_dy2, max(0, _dx1):_dx2
@@ -1914,8 +1915,24 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                                 )
                                 if _ok_crop:
                                     _drop_crop_jpeg = _crop_buf.tobytes()
+                            # Wide crop — same region VLM+alerts use,
+                            # gives the operator enough surrounding
+                            # context to actually distinguish moth-vs-
+                            # rodent when labeling. Fixes the 98%-
+                            # unclear rate we saw on the tight-only
+                            # labeling flow.
+                            _wx1, _wy1, _wx2, _wy2 = _wide_bbox_coords(frame.shape, det.bbox)
+                            _drop_wide = frame[_wy1:_wy2, _wx1:_wx2]
+                            if _drop_wide.size > 0:
+                                _ok_wide, _wide_buf = cv2.imencode(
+                                    ".jpg", _drop_wide,
+                                    [cv2.IMWRITE_JPEG_QUALITY, 80],
+                                )
+                                if _ok_wide:
+                                    _drop_wide_jpeg = _wide_buf.tobytes()
                             _pre_vlm_drop_sink.record(
                                 crop_jpeg=_drop_crop_jpeg,
+                                wide_crop_jpeg=_drop_wide_jpeg,
                                 camera_id=_camera_id_env,
                                 track_id=det.track_id,
                                 bbox=list(det.bbox),

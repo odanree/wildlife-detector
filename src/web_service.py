@@ -1195,6 +1195,10 @@ def create_app(registry: DetectorRegistry) -> Flask:
                 "trigger":     r.get("trigger"),
                 "baseline_mode": r.get("baseline_mode"),
                 "crop_url":    f"/drops/{snap}",
+                "crop_wide_url": (
+                    f"/drops/{r['snapshot_wide']}"
+                    if r.get("snapshot_wide") else None
+                ),
                 "label":       lbl["label"] if lbl else None,
                 "label_species": lbl.get("label_species") if lbl else None,
                 "labeled_at":  lbl.get("labeled_at") if lbl else None,
