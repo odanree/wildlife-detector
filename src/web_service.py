@@ -246,6 +246,13 @@ class DetectorRegistry:
 
 _SNAPSHOT_DIR = Path(os.getenv("SNAPSHOT_DIR", "snapshots")).resolve()
 _CLIPS_DIR = Path(os.getenv("CLIPS_DIR", "clips")).resolve()
+# Pre-VLM drop crops — same dir the detector's PreVlmDropSink writes
+# to via PRE_VLM_DROP_CROP_DIR. Read-only bind mount in the web
+# container's compose block. Serves at /drops/<path> for the labeling
+# UI. Empty default means the endpoint 404s; ops can point it at the
+# right dir via WEB_DROP_CROP_DIR.
+_DROP_CROP_DIR = Path(os.getenv("WEB_DROP_CROP_DIR", "logs/pre_vlm_drops")).resolve()
+_DROP_LOG_PATH = Path(os.getenv("WEB_DROP_LOG_PATH", "logs/pre_vlm_drops.jsonl")).resolve()
 _DATA_DIR = Path("data")
 _DETECTION_CFG = Path("config/detection.yaml")
 
@@ -1086,6 +1093,145 @@ def create_app(registry: DetectorRegistry) -> Flask:
         traversal. Long max_age since alert_id-derived paths are
         immutable — the clip for alert=156386 is always the same file."""
         return send_from_directory(_CLIPS_DIR, filename, max_age=86400)
+
+    @app.get("/drops/<path:filename>")
+    def serve_drop_crop(filename: str):
+        """Serve pre-VLM drop crops for the labeling UI.
+        send_from_directory blocks ../ traversal. Long max_age since
+        the crop's path (`<camera>/<date>/<ts>_track<id>.jpg`) is
+        immutable per detection event."""
+        return send_from_directory(_DROP_CROP_DIR, filename, max_age=86400)
+
+    # ── Pre-VLM drops labeling (project #137 Phase 3, follow-up) ──────────
+    # Reads the drop JSONL from disk (produced by src.classifier's
+    # PreVlmDropSink) + labels from Postgres. Frontend paginates through
+    # crops, applies labels, and the labels feed a future pre-VLM
+    # classifier training set. Backend contract:
+    #   GET  /api/drops             — list with filters + pagination
+    #   POST /api/drops/label       — set/clear label on one drop
+    #   GET  /api/drops/counts      — histogram for the UI header
+
+    @app.get("/api/drops")
+    def api_drops():
+        """List pre-VLM drops with pagination + filter. Query params:
+          limit=<N>              default 100, max 500
+          offset=<N>             default 0
+          camera=<id>            filter to one camera
+          filter=unlabeled|labeled|all   default unlabeled (positive-hunt UX)
+          boundary=1|0           default 1 = only rows in the 110-145 boundary band
+                                 (the high-value near-threshold crops)
+          mean_min / mean_max    override the boundary band with an explicit range
+        """
+        try:
+            limit = min(500, max(1, int(request.args.get("limit", "100"))))
+        except ValueError:
+            limit = 100
+        try:
+            offset = max(0, int(request.args.get("offset", "0")))
+        except ValueError:
+            offset = 0
+        camera = (request.args.get("camera") or "").strip() or None
+        label_filter = (request.args.get("filter") or "unlabeled").strip().lower()
+        boundary = request.args.get("boundary", "1") == "1"
+        try:
+            mean_min = int(request.args.get("mean_min", "110")) if boundary else None
+            mean_max = int(request.args.get("mean_max", "145")) if boundary else None
+        except ValueError:
+            mean_min, mean_max = 110, 145
+
+        # Stream the JSONL, keep the rows that pass the coarse filters.
+        # 10k-row files parse in <100ms so we don't bother with an index.
+        rows: list[dict] = []
+        if _DROP_LOG_PATH.exists():
+            with _DROP_LOG_PATH.open(encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        r = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if camera and r.get("camera_id") != camera:
+                        continue
+                    if boundary and mean_min is not None and mean_max is not None:
+                        m = r.get("mean")
+                        if not isinstance(m, (int, float)) or not (mean_min <= m <= mean_max):
+                            continue
+                    if "snapshot" not in r:
+                        # Older rows written before the crop-dump landed
+                        # don't have a viewable crop — skip.
+                        continue
+                    rows.append(r)
+
+        # Join labels — bulk fetch by drop_id then apply the label_filter.
+        drop_ids = [r["snapshot"] for r in rows]
+        labels = _state.get_drop_labels(drop_ids) if _state else {}
+        if label_filter == "unlabeled":
+            rows = [r for r in rows if r["snapshot"] not in labels]
+        elif label_filter == "labeled":
+            rows = [r for r in rows if r["snapshot"] in labels]
+        # 'all' = no filter
+
+        total = len(rows)
+        # Newest first — most recent drops are the ones the operator
+        # can most reliably remember the scene for. Paginate after.
+        rows.sort(key=lambda r: r.get("ts", 0), reverse=True)
+        page = rows[offset:offset + limit]
+        items = []
+        for r in page:
+            snap = r["snapshot"]
+            lbl = labels.get(snap)
+            items.append({
+                "drop_id":     snap,
+                "camera_id":   r.get("camera_id"),
+                "ts":          r.get("ts"),
+                "bbox":        r.get("bbox"),
+                "bbox_w":      r.get("bbox_w"),
+                "bbox_h":      r.get("bbox_h"),
+                "area":        r.get("area"),
+                "mean":        r.get("mean"),
+                "max":         r.get("max"),
+                "ar":          r.get("ar"),
+                "wide_mean":   r.get("wide_mean"),
+                "wide_max":    r.get("wide_max"),
+                "trigger":     r.get("trigger"),
+                "baseline_mode": r.get("baseline_mode"),
+                "crop_url":    f"/drops/{snap}",
+                "label":       lbl["label"] if lbl else None,
+                "label_species": lbl.get("label_species") if lbl else None,
+                "labeled_at":  lbl.get("labeled_at") if lbl else None,
+            })
+        return jsonify({"total": total, "items": items})
+
+    @app.post("/api/drops/label")
+    def api_drops_label():
+        """Set/clear a label on one drop.
+        Body: {"drop_id": "yard/2026-08-25/...jpg",
+               "label": "moth" | "real_animal" | "unclear" | null,
+               "label_species": "real_rodent" | ... (optional),
+               "notes": "..." (optional)}
+        label=null clears the label (undo)."""
+        if not _state:
+            return jsonify({"error": "state db unavailable"}), 503
+        body = request.get_json(silent=True) or {}
+        drop_id = body.get("drop_id")
+        if not drop_id or not isinstance(drop_id, str):
+            return jsonify({"error": "drop_id required (string)"}), 400
+        label = body.get("label")
+        try:
+            _state.set_drop_label(
+                drop_id,
+                label,
+                label_species=body.get("label_species"),
+                notes=body.get("notes"),
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        return jsonify({"ok": True})
+
+    @app.get("/api/drops/counts")
+    def api_drops_counts():
+        """Histogram of labels — feeds the UI header progress display."""
+        counts = _state.drop_label_counts() if _state else {}
+        return jsonify(counts)
 
     # ── Zone (direct YAML read; write via detector command) ────────────────
 
