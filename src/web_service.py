@@ -1114,6 +1114,24 @@ def create_app(registry: DetectorRegistry) -> Flask:
         result, status_code = detector.post_command("/internal/zone", json_body=body)
         return jsonify(result), status_code
 
+    @app.post("/api/manual-detect")
+    def post_manual_detect():
+        """Fan-out entry for operator-drawn manual detection. Body is
+        forwarded verbatim to the resolved detector's
+        /internal/manual-detect. Camera resolution: `?camera=` query
+        param (same pattern as /api/zone). Response is the detector's
+        JSON response verbatim including the reserved track_id.
+
+        Frontend contract: POST /api/manual-detect?camera=<id>
+          body: {"bbox": [x1, y1, x2, y2]}  detection-frame coords
+        """
+        detector = _pick(request)
+        body = request.get_json(silent=True) or {}
+        result, status_code = detector.post_command(
+            "/internal/manual-detect", json_body=body,
+        )
+        return jsonify(result), status_code
+
     # ── Slew presets (direct YAML read; write via detector command) ───────
     # Same shape as zone/masks: web reads yaml on GET (no detector round-
     # trip), forwards mutations to /internal/slew/presets so the detector
