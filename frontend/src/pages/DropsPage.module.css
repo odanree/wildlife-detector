@@ -150,15 +150,21 @@
   position: absolute;
   top: 6px;
   right: 6px;
-  width: 36%;
-  max-width: 120px;
+  width: 45%;
+  max-width: 140px;
   aspect-ratio: 1;
   object-fit: contain;
-  background: rgba(0, 0, 0, 0.7);
+  background: rgba(0, 0, 0, 0.75);
   border: 2px solid var(--accent-camera, #f5a623);
   border-radius: var(--r-sm);
   padding: 2px;
   image-rendering: pixelated;
+  cursor: pointer;
+  transition: border-color 100ms ease;
+}
+.cropTightBadge:hover {
+  border-color: var(--accent-blue);
+  filter: brightness(1.1);
 }
 
 .meta {

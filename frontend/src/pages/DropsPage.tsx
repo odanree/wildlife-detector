@@ -50,6 +50,11 @@ export function DropsPage() {
   // filter switch) so stale overlays don't linger.
   const [labelOverlay, setLabelOverlay] = useState<Map<string, DropLabel | null>>(() => new Map());
   const [busyIds, setBusyIds] = useState<Set<string>>(() => new Set());
+  // Per-card swap state: click the tight-crop badge to make it the
+  // primary image (with wide moving into the badge slot). Click again
+  // to swap back. Set of drop_ids where the swap is active. Cleared
+  // on page/filter change via resetLabelingState().
+  const [swappedIds, setSwappedIds] = useState<Set<string>>(() => new Set());
 
   // Single-writer reset for labeling state — called inline from every
   // filter/pagination setter below instead of via an effect subscribing
@@ -58,7 +63,17 @@ export function DropsPage() {
   const resetLabelingState = useCallback(() => {
     setLabelOverlay(new Map());
     setBusyIds(new Set());
+    setSwappedIds(new Set());
     setSelected(0);
+  }, []);
+
+  const toggleSwap = useCallback((drop_id: string) => {
+    setSwappedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(drop_id)) next.delete(drop_id);
+      else next.add(drop_id);
+      return next;
+    });
   }, []);
 
   const applyLabel = useCallback(
@@ -283,25 +298,42 @@ export function DropsPage() {
                 className={`${styles.card} ${isSelected ? styles.cardSelected : ""} ${labelClass}`}
               >
                 <div className={styles.cropStack}>
-                  {/* Wide crop as primary — same region VLM+alerts use,
-                      gives operator enough context to distinguish moth
-                      vs rodent. Falls back to tight for older drops
-                      recorded before the wide-dump landed. */}
-                  <img
-                    className={styles.crop}
-                    src={r.crop_wide_url ?? r.crop_url}
-                    alt={`drop ${r.drop_id}`}
-                    loading={i < 20 ? "eager" : "lazy"}
-                  />
-                  {r.crop_wide_url && (
-                    <img
-                      className={styles.cropTightBadge}
-                      src={r.crop_url}
-                      alt="tight bbox"
-                      loading="lazy"
-                      title="Tight MOG bbox — the exact pixels that fired the pre-filter"
-                    />
-                  )}
+                  {/* Wide crop as default primary — same region VLM+alerts
+                      use. Click the tight-crop badge to swap: tight
+                      becomes primary at full card size, wide becomes the
+                      inset. Click again to swap back. Falls back to
+                      tight-only for older drops without wide. */}
+                  {(() => {
+                    const swapped = swappedIds.has(r.drop_id);
+                    const primarySrc =
+                      r.crop_wide_url && swapped ? r.crop_url : (r.crop_wide_url ?? r.crop_url);
+                    const badgeSrc = r.crop_wide_url && swapped ? r.crop_wide_url : r.crop_url;
+                    return (
+                      <>
+                        <img
+                          className={styles.crop}
+                          src={primarySrc}
+                          alt={`drop ${r.drop_id}`}
+                          loading={i < 20 ? "eager" : "lazy"}
+                        />
+                        {r.crop_wide_url && (
+                          // biome-ignore lint/a11y/useKeyWithClickEvents: labeling flow uses M/A/U/J/K keys — badge swap is a mouse affordance only, keyboard operators can inspect via label modal (future work)
+                          <img
+                            className={styles.cropTightBadge}
+                            src={badgeSrc}
+                            alt={swapped ? "wide context" : "tight bbox"}
+                            loading="lazy"
+                            title={
+                              swapped
+                                ? "Wide context. Click to swap back."
+                                : "Tight MOG bbox — the pixels that fired the pre-filter. Click to view full-size."
+                            }
+                            onClick={() => toggleSwap(r.drop_id)}
+                          />
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
                 <div className={styles.meta}>
                   <div className={styles.metaRow}>
