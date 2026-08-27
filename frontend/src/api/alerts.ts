@@ -109,6 +109,12 @@ export interface AlertsQuery {
    *  Distinct from `species` (detector-assigned like "rat", "mouse"). Composable
    *  with label_filter — e.g. label_filter='correct' + label_species='real_rodent'. */
   label_species?: string;
+  /** ISO date YYYY-MM-DD, interpreted as start-of-day America/Los_Angeles
+   *  (project convention). Alerts with ts < from-day-00:00:00 excluded. */
+  from?: string;
+  /** ISO date YYYY-MM-DD, interpreted as end-of-day INCLUSIVE
+   *  America/Los_Angeles. Alerts with ts > to-day-23:59:59.999 excluded. */
+  to?: string;
 }
 
 export async function fetchAlerts(
@@ -122,6 +128,8 @@ export async function fetchAlerts(
   if (query.scope) params.set("scope", query.scope);
   if (query.label_filter) params.set("label_filter", query.label_filter);
   if (query.label_species) params.set("label_species", query.label_species);
+  if (query.from) params.set("from", query.from);
+  if (query.to) params.set("to", query.to);
   const r = await fetch(`/api/alerts?${params.toString()}`, { signal });
   if (!r.ok) throw new Error(`/api/alerts ${r.status}`);
   return (await r.json()) as AlertsResponse;

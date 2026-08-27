@@ -55,6 +55,10 @@ export interface AlertsFiltersApi {
   labelSpecies: string;
   autoRefresh: boolean;
   grouped: boolean;
+  /** YYYY-MM-DD, empty = no lower bound. Session-only (not persisted). */
+  dateFrom: string;
+  /** YYYY-MM-DD end-of-day inclusive, empty = no upper bound. Session-only. */
+  dateTo: string;
   setSpecies: (v: string) => void;
   setCamera: (v: string) => void;
   setScope: (v: AlertsScope) => void;
@@ -62,6 +66,8 @@ export interface AlertsFiltersApi {
   setLabelSpecies: (v: string) => void;
   setAutoRefresh: (v: boolean) => void;
   setGrouped: (v: boolean) => void;
+  setDateFrom: (v: string) => void;
+  setDateTo: (v: string) => void;
 }
 
 function readLocal<T extends string>(key: string, valid: readonly T[], fallback: T): T {
@@ -86,6 +92,12 @@ export function useAlertsFilters(): AlertsFiltersApi {
   );
   const [grouped, setGrouped] = useState<boolean>(true);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
+  // Date range — session-only (not persisted). Date filters are
+  // context-specific ("what did the rats do overnight?" today, "what
+  // did that raccoon do last Tuesday?" tomorrow) — never something
+  // the operator wants stuck across a reload.
+  const [dateFrom, setDateFromState] = useState<string>("");
+  const [dateTo, setDateToState] = useState<string>("");
 
   const setSpecies = useCallback((v: string) => setSpeciesState(v), []);
 
@@ -125,6 +137,9 @@ export function useAlertsFilters(): AlertsFiltersApi {
     else localStorage.removeItem("alertsLabelSpecies");
   }, []);
 
+  const setDateFrom = useCallback((v: string) => setDateFromState(v), []);
+  const setDateTo = useCallback((v: string) => setDateToState(v), []);
+
   return {
     species,
     camera,
@@ -133,6 +148,8 @@ export function useAlertsFilters(): AlertsFiltersApi {
     labelSpecies,
     autoRefresh,
     grouped,
+    dateFrom,
+    dateTo,
     setSpecies,
     setCamera,
     setScope,
@@ -140,5 +157,7 @@ export function useAlertsFilters(): AlertsFiltersApi {
     setLabelSpecies,
     setAutoRefresh,
     setGrouped,
+    setDateFrom,
+    setDateTo,
   };
 }

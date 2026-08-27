@@ -257,6 +257,42 @@ _DATA_DIR = Path("data")
 _DETECTION_CFG = Path("config/detection.yaml")
 
 
+def _parse_date_range(
+    from_str: str | None, to_str: str | None,
+) -> tuple[float | None, float | None]:
+    """Parse `from`/`to` YYYY-MM-DD strings into epoch seconds. Both
+    are interpreted in America/Los_Angeles (project convention) with
+    `from` = start-of-day (00:00:00) and `to` = end-of-day inclusive
+    (23:59:59.999999). Silent-ignore on parse failure so an
+    in-progress date input doesn't 400 the whole request.
+    """
+    from datetime import datetime, time, timedelta
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("America/Los_Angeles")
+
+    def parse_date(s: str | None) -> "datetime | None":
+        if not s:
+            return None
+        try:
+            return datetime.strptime(s.strip(), "%Y-%m-%d")
+        except ValueError:
+            return None
+
+    d_from = parse_date(from_str)
+    d_to = parse_date(to_str)
+    since_ts = None
+    until_ts = None
+    if d_from:
+        since_ts = datetime.combine(d_from.date(), time.min, tzinfo=tz).timestamp()
+    if d_to:
+        # End-of-day inclusive — `to=2026-08-27` covers everything
+        # through 2026-08-27 23:59:59.999999 local time.
+        end_of_day = datetime.combine(d_to.date(), time.max, tzinfo=tz)
+        until_ts = end_of_day.timestamp()
+    return since_ts, until_ts
+
+
 def _local_clip_path_for(alert_id: int, alert_ts: float) -> Path:
     """Mirror of ClipArchiver.clip_path — kept in sync manually since
     web doesn't import the archiver package (avoids the extra install
@@ -692,8 +728,17 @@ def create_app(registry: DetectorRegistry) -> Flask:
         # so we don't have to widen this list every time a new species
         # tag joins the vocabulary — bad values just return 0 rows.
         label_species_filter = (request.args.get("label_species") or "").strip() or None
+        # from / to date filters — parsed as YYYY-MM-DD in
+        # America/Los_Angeles. `from` becomes 00:00:00 that day
+        # (inclusive), `to` becomes 23:59:59.999999 that day
+        # (inclusive). Bad values silently ignored so the UI can send
+        # an in-progress value without 400ing the whole request.
+        since_ts, until_ts = _parse_date_range(
+            request.args.get("from"), request.args.get("to"),
+        )
         items = _state.list_alerts(
             limit=limit, species=species_filter,
+            since_ts=since_ts, until_ts=until_ts,
             camera_id=camera_filter,
             scope=scope if scope in ("historical", "live") else None,
             label_filter=lf if lf in _lf_valid else None,

@@ -243,6 +243,7 @@ class StateDB:
         limit: int = 200,
         species: str | None = None,
         since_ts: float | None = None,
+        until_ts: float | None = None,
         camera_id: str | None = None,
         scope: str | None = None,
         label_filter: str | None = None,
@@ -260,6 +261,9 @@ class StateDB:
         if since_ts is not None:
             clauses.append("ts >= %s")
             params.append(since_ts)
+        if until_ts is not None:
+            clauses.append("ts <= %s")
+            params.append(until_ts)
         if camera_id:
             clauses.append("camera_id = %s")
             params.append(camera_id)
