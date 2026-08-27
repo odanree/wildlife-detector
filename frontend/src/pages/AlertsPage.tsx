@@ -57,6 +57,8 @@ export function AlertsPage() {
       scope: filters.scope === "all" ? undefined : filters.scope,
       label_filter: filters.labelFilter === "all" ? undefined : filters.labelFilter,
       label_species: filters.labelSpecies || undefined,
+      from: filters.dateFrom || undefined,
+      to: filters.dateTo || undefined,
     },
     filters.autoRefresh ? 5000 : 3600_000,
   );
@@ -210,6 +212,58 @@ export function AlertsPage() {
                 </optgroup>
               </select>
             </label>
+            <label className={styles.label}>
+              from
+              <input
+                type="date"
+                className={styles.select}
+                value={filters.dateFrom}
+                onChange={(e) => filters.setDateFrom(e.target.value)}
+                title="Include alerts on/after this date (America/Los_Angeles, start-of-day)"
+              />
+            </label>
+            <label className={styles.label}>
+              to
+              <input
+                type="date"
+                className={styles.select}
+                value={filters.dateTo}
+                onChange={(e) => filters.setDateTo(e.target.value)}
+                title="Include alerts on/before this date (America/Los_Angeles, end-of-day inclusive)"
+              />
+            </label>
+            <button
+              type="button"
+              className={styles.selectBtn}
+              onClick={() => {
+                // "Today" preset — clamp both from + to to today's
+                // local date. Cheap muscle-memory shortcut for the
+                // most common "what fired since I woke up?" query.
+                const now = new Date();
+                const y = now.getFullYear();
+                const m = String(now.getMonth() + 1).padStart(2, "0");
+                const d = String(now.getDate()).padStart(2, "0");
+                const today = `${y}-${m}-${d}`;
+                filters.setDateFrom(today);
+                filters.setDateTo(today);
+              }}
+              title="Set both from + to to today"
+            >
+              today
+            </button>
+            {(filters.dateFrom || filters.dateTo) && (
+              <button
+                type="button"
+                className={styles.selectBtn}
+                onClick={() => {
+                  filters.setDateFrom("");
+                  filters.setDateTo("");
+                }}
+                title="Clear date range"
+              >
+                × dates
+              </button>
+            )}
             <label className={styles.label}>
               <input
                 type="checkbox"
