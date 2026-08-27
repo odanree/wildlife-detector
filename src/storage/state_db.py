@@ -238,21 +238,19 @@ class StateDB:
 
     # ── Reads ───────────────────────────────────────────────────────────────
 
-    def list_alerts(
-        self,
-        limit: int = 200,
-        species: str | None = None,
-        since_ts: float | None = None,
-        until_ts: float | None = None,
-        camera_id: str | None = None,
-        scope: str | None = None,
-        label_filter: str | None = None,
-        label_species: str | None = None,
-    ) -> list[dict]:
-        """Return alerts, newest first. Same filter semantics as the
-        SQLite version — see the pre-migration docstring for scope /
-        label_filter meanings."""
-        query = "SELECT * FROM alerts"
+    @staticmethod
+    def _build_alerts_filter(
+        species: str | None,
+        since_ts: float | None,
+        until_ts: float | None,
+        camera_id: str | None,
+        scope: str | None,
+        label_filter: str | None,
+        label_species: str | None,
+    ) -> tuple[str, list[Any]]:
+        """Shared WHERE-clause builder used by list_alerts + count_alerts_filtered.
+        Returns (where_sql, params). where_sql is empty string when no
+        filters are active — caller appends verbatim (no leading space)."""
         clauses: list[str] = []
         params: list[Any] = []
         if species:
@@ -279,26 +277,58 @@ class StateDB:
             clauses.append("label_verdict = %s")
             params.append(label_filter)
         elif label_filter == "needs-species":
-            # Worklist filter: TPs that still need a species tag.
-            # Species-tagging is a second pass over the "correct" verdict
-            # set — this filter surfaces just the rows still to do so the
-            # list drains as the operator labels.
             clauses.append("label_verdict = 'correct' AND label_species IS NULL")
         if label_species:
-            # Filter by human-assigned species tag (real_rodent, real_cat,
-            # FP:human, etc.) — distinct from the `species` filter above
-            # which targets the detector-assigned species. Composable
-            # with label_filter so operator can view e.g. all correct
-            # real_rodent rows, or all incorrect FP:human rows.
             clauses.append("label_species = %s")
             params.append(label_species)
-        if clauses:
-            query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY ts DESC LIMIT %s"
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        return where, params
+
+    def list_alerts(
+        self,
+        limit: int = 200,
+        species: str | None = None,
+        since_ts: float | None = None,
+        until_ts: float | None = None,
+        camera_id: str | None = None,
+        scope: str | None = None,
+        label_filter: str | None = None,
+        label_species: str | None = None,
+    ) -> list[dict]:
+        """Return alerts, newest first. Same filter semantics as the
+        SQLite version — see the pre-migration docstring for scope /
+        label_filter meanings."""
+        where, params = self._build_alerts_filter(
+            species, since_ts, until_ts, camera_id, scope, label_filter, label_species,
+        )
+        query = f"SELECT * FROM alerts{where} ORDER BY ts DESC LIMIT %s"
         params.append(int(limit))
         with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             cur.execute(query, params)
             return [self._normalize(row) for row in cur.fetchall()]
+
+    def count_alerts_filtered(
+        self,
+        species: str | None = None,
+        since_ts: float | None = None,
+        until_ts: float | None = None,
+        camera_id: str | None = None,
+        scope: str | None = None,
+        label_filter: str | None = None,
+        label_species: str | None = None,
+    ) -> int:
+        """Count of alerts matching the SAME filter set as list_alerts
+        (minus limit). Used by /api/alerts to report a filter-aware
+        `total` in the header instead of the system-wide total_alerts
+        which was misleading — filtering by date / label / species
+        would still show `total 31745` regardless of what the operator
+        was actually looking at."""
+        where, params = self._build_alerts_filter(
+            species, since_ts, until_ts, camera_id, scope, label_filter, label_species,
+        )
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM alerts{where}", params)
+            return int(cur.fetchone()[0])
 
     def latest_alert(self) -> dict | None:
         with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
