@@ -744,12 +744,26 @@ def create_app(registry: DetectorRegistry) -> Flask:
             label_filter=lf if lf in _lf_valid else None,
             label_species=label_species_filter,
         )
+        # `total` = FILTER-AWARE count so the header reflects what the
+        # operator is actually looking at (was misleading before —
+        # applying a date / label / species filter would still show
+        # 30k+ total). Uses the same WHERE clause as list_alerts. Note:
+        # header unread badge in the alerts UI is now a bit off when
+        # totalfilter is narrower than the per-camera unread watermark
+        # (badge diffs read-watermark against `total`); AlertsPage
+        # already treats badges as system-wide via /api/alerts/counts,
+        # so this change only affects the informational `total 12345`
+        # display next to `shown N` in the header. Acceptable trade.
+        total = _state.count_alerts_filtered(
+            species=species_filter,
+            since_ts=since_ts, until_ts=until_ts,
+            camera_id=camera_filter,
+            scope=scope if scope in ("historical", "live") else None,
+            label_filter=lf if lf in _lf_valid else None,
+            label_species=label_species_filter,
+        )
         return jsonify({
-            # Scope total to the same camera filter as items — otherwise
-            # the header unread badge diffs a per-camera watermark against
-            # an all-cameras counter and shows "you have 5 unread yard
-            # alerts" when in fact 5 rooftop alerts fired.
-            "total": _state.total_alerts(camera_id=camera_filter),
+            "total": total,
             "items": items,
         })
 
