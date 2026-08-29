@@ -66,6 +66,8 @@ from src.classifier import (
     get_classifier,
     get_classifier_shadow_log,
     get_pre_vlm_drop_sink,
+    get_pre_vlm_filter,
+    get_pre_vlm_filter_shadow_log,
 )
 
 # Preview server hooks — no-ops when preview isn't started (Flask missing).
@@ -834,6 +836,22 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     _classifier = get_classifier() if _CLASSIFIER_MODE != "off" else None
     _pre_vlm_drop_sink = get_pre_vlm_drop_sink()
     _classifier_shadow_log = get_classifier_shadow_log()
+
+    # Pre-VLM filter — SHADOW MODE ONLY. Predicts P(real_animal) on
+    # every insect-pre-filter drop and logs it alongside the existing
+    # drop-sink record (for retraining sample) and to a persistent
+    # unsampled shadow log (for aggregate would-suppress volume). No
+    # gate change — filter stays at NIGHT_INSECT_BRIGHTNESS_MIN until
+    # we've measured agreement.
+    _PRE_VLM_FILTER_THRESHOLD = float(os.getenv("PRE_VLM_FILTER_THRESHOLD", "0.5"))
+    _pre_vlm_filter = get_pre_vlm_filter()
+    _pre_vlm_filter_shadow_log = get_pre_vlm_filter_shadow_log()
+    if _pre_vlm_filter.enabled():
+        logger.info(
+            "Pre-VLM filter loaded (shadow mode) threshold=%.2f shadow_log=%s",
+            _PRE_VLM_FILTER_THRESHOLD,
+            "on" if _pre_vlm_filter_shadow_log.enabled() else "off",
+        )
     if _classifier is not None and _classifier.enabled():
         logger.info(
             "Classifier mode=%s threshold=%.2f active_cameras=%s",
@@ -1910,6 +1928,43 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         # region) so hand-labeling later is possible; sink
                         # decides whether to actually persist it based on
                         # the crop dir + sample gate.
+                        # SHADOW-MODE pre-VLM filter prediction. Runs on
+                        # every drop regardless of drop-sink sampling so
+                        # the shadow log gets full-population coverage
+                        # for volume estimates; sampled sink still gets
+                        # the prob field for retraining/labeling context.
+                        _pre_vlm_prob: float | None = None
+                        _pre_vlm_would_suppress: bool | None = None
+                        if _pre_vlm_filter.enabled():
+                            _pre_vlm_prob = _pre_vlm_filter.predict({
+                                "mean": _is.mean,
+                                "max": _is.max,
+                                "ar": _is.aspect_ratio,
+                                "bbox_w": _is.w,
+                                "bbox_h": _is.h,
+                                "area": _is.area,
+                                "wide_mean": _is.wide_mean,
+                                "wide_max": _is.wide_max,
+                                "camera_id": _camera_id_env,
+                                "trigger": _trigger,
+                            })
+                            if _pre_vlm_prob is not None:
+                                # would_suppress = filter WOULD drop this
+                                # as moth. Positive class = real_animal,
+                                # so low prob → suppress.
+                                _pre_vlm_would_suppress = _pre_vlm_prob < _PRE_VLM_FILTER_THRESHOLD
+                                if _pre_vlm_filter_shadow_log.enabled():
+                                    _pre_vlm_filter_shadow_log.record(
+                                        camera_id=_camera_id_env,
+                                        track_id=det.track_id,
+                                        prob=_pre_vlm_prob,
+                                        would_suppress=_pre_vlm_would_suppress,
+                                        threshold=_PRE_VLM_FILTER_THRESHOLD,
+                                        mean=_is.mean,
+                                        max=_is.max,
+                                        wide_mean=_is.wide_mean,
+                                        trigger=_trigger,
+                                    )
                         if _pre_vlm_drop_sink.enabled():
                             _drop_crop_jpeg: bytes | None = None
                             _drop_wide_jpeg: bytes | None = None
@@ -1955,6 +2010,8 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                                 wide_max=_is.wide_max,
                                 trigger=_trigger,
                                 baseline_mode=_baseline_cache[0][1] if _baseline_np is not None else None,
+                                pre_vlm_prob=_pre_vlm_prob,
+                                pre_vlm_would_suppress=_pre_vlm_would_suppress,
                             )
                         _preview_stats.record_vlm_insect()
                         last_vlm_ts[det.track_id] = now
