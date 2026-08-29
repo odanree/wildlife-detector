@@ -351,3 +351,160 @@ def get_classifier_shadow_log() -> ClassifierShadowLog:
         path = os.getenv("CLASSIFIER_SHADOW_LOG_PATH", "")
         _shadow_log = ClassifierShadowLog(path)
     return _shadow_log
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Pre-VLM filter — LightGBM re-scorer over the same brightness features
+# the hand-tuned NIGHT_INSECT_BRIGHTNESS_MIN gate uses. Purpose: recover
+# the real animals the insect pre-filter is killing (per the drops-
+# labeling loop). Shadow-mode only for now: pipeline logs
+# P(real_animal | features) alongside every drop but the current
+# threshold gate is unchanged. After a soak we'll compare the
+# classifier's would-suppress vs the operator's labels to pick an
+# operating threshold.
+#
+# Fail-open (same shape as AnimalClassifier): missing model file, meta,
+# or lightgbm import → no-op. The filter is a decision-augmenting layer,
+# not a hard dependency of detection.
+# ─────────────────────────────────────────────────────────────────────
+
+
+class PreVlmFilter:
+    """LightGBM pre-VLM filter — reuses AnimalClassifier's contract with
+    a distinct feature set and its own model file. Fail-open on any
+    load error. Same pattern as [[AnimalClassifier]] — separate class
+    only so future changes to one contract don't perturb the other."""
+
+    def __init__(self, model_path: str, meta_path: str | None = None):
+        self._model = None
+        self._features: list[str] = []
+        self._categorical: list[str] = []
+        self._warned_missing_feature: set[str] = set()
+        self._load(model_path, meta_path)
+
+    def _load(self, model_path: str, meta_path: str | None) -> None:
+        p = Path(model_path)
+        if not p.exists():
+            logger.warning(
+                "Pre-VLM filter model not found at %s — running in no-op mode",
+                model_path,
+            )
+            return
+        try:
+            import lightgbm as lgb
+        except ImportError:
+            logger.warning("lightgbm not installed — pre-VLM filter in no-op mode")
+            return
+        try:
+            self._model = lgb.Booster(model_file=str(p))
+        except Exception:
+            logger.exception(
+                "Failed loading pre-VLM filter model from %s — no-op mode",
+                model_path,
+            )
+            return
+
+        meta_p = Path(meta_path) if meta_path else p.with_suffix(".meta.json")
+        if not meta_p.exists():
+            logger.warning("Pre-VLM filter metadata not found at %s — no-op mode", meta_p)
+            self._model = None
+            return
+        try:
+            meta = json.loads(meta_p.read_text())
+            self._features = list(meta["features"])
+            self._categorical = list(meta.get("categorical_features", []))
+            logger.info(
+                "Pre-VLM filter loaded from %s (features=%d, categorical=%d)",
+                model_path, len(self._features), len(self._categorical),
+            )
+        except Exception:
+            logger.exception(
+                "Failed parsing pre-VLM filter metadata %s — no-op mode", meta_p,
+            )
+            self._model = None
+
+    def enabled(self) -> bool:
+        return self._model is not None
+
+    def predict(self, features: dict[str, Any]) -> float | None:
+        if self._model is None:
+            return None
+        try:
+            import pandas as pd
+        except ImportError:
+            return None
+        row: dict[str, Any] = {}
+        for name in self._features:
+            if name not in features:
+                if name not in self._warned_missing_feature:
+                    logger.warning("Pre-VLM filter feature %r missing at predict time", name)
+                    self._warned_missing_feature.add(name)
+                return None
+            row[name] = features[name]
+        df = pd.DataFrame([row], columns=self._features)
+        for col in self._categorical:
+            df[col] = df[col].astype("category")
+        try:
+            return float(self._model.predict(df)[0])
+        except Exception:
+            logger.exception("Pre-VLM filter predict failed")
+            return None
+
+
+_pre_vlm_filter: PreVlmFilter | None = None
+
+
+def get_pre_vlm_filter() -> PreVlmFilter:
+    global _pre_vlm_filter
+    if _pre_vlm_filter is None:
+        model_path = os.getenv("PRE_VLM_FILTER_MODEL_PATH", "/app/models-host/pre_vlm_filter.txt")
+        meta_path = os.getenv("PRE_VLM_FILTER_META_PATH", "")
+        _pre_vlm_filter = PreVlmFilter(model_path, meta_path or None)
+    return _pre_vlm_filter
+
+
+class PreVlmFilterShadowLog:
+    """Persistent JSONL sink for every pre-VLM filter prediction.
+    Unsampled — one row per drop — so aggregate would-suppress volume
+    is measurable without extrapolating from a sample rate. Rows are
+    small (no crops, no bbox), so I/O cost is bounded by drop volume.
+    Same fail-open shape as [[ClassifierShadowLog]]."""
+
+    def __init__(self, path: str):
+        self._path = Path(path) if path else None
+        self._fh = None
+        self._warned = False
+        if self._path:
+            try:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                self._fh = self._path.open("a", buffering=1, encoding="utf-8")
+                logger.info("Pre-VLM filter shadow log open at %s", self._path)
+            except Exception:
+                logger.exception("Failed to open pre-VLM filter shadow log %s", self._path)
+
+    def enabled(self) -> bool:
+        return self._fh is not None
+
+    def record(self, **fields: Any) -> None:
+        if self._fh is None:
+            return
+        row = {"ts": time.time(), **fields}
+        try:
+            self._fh.write(json.dumps(row, default=str) + "\n")
+        except Exception:
+            if not self._warned:
+                logger.exception(
+                    "Pre-VLM filter shadow log write failed (further errors suppressed)",
+                )
+                self._warned = True
+
+
+_pre_vlm_filter_shadow_log: PreVlmFilterShadowLog | None = None
+
+
+def get_pre_vlm_filter_shadow_log() -> PreVlmFilterShadowLog:
+    global _pre_vlm_filter_shadow_log
+    if _pre_vlm_filter_shadow_log is None:
+        path = os.getenv("PRE_VLM_FILTER_SHADOW_LOG_PATH", "")
+        _pre_vlm_filter_shadow_log = PreVlmFilterShadowLog(path)
+    return _pre_vlm_filter_shadow_log
