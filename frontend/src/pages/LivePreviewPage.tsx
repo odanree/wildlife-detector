@@ -11,6 +11,7 @@ import { useCameras } from "../hooks/useCameras";
 import { useDetectionSize } from "../hooks/useDetectionSize";
 import { useManualDetectMode } from "../hooks/useManualDetectMode";
 import { useMaskEditor } from "../hooks/useMaskEditor";
+import { usePauseState } from "../hooks/usePauseState";
 import { useSecondaryPane } from "../hooks/useSecondaryPane";
 import { useSlewPresetEditor } from "../hooks/useSlewPresetEditor";
 import { useStatus } from "../hooks/useStatus";
@@ -123,23 +124,11 @@ export function LivePreviewPage() {
     });
   };
 
-  // Global operator pause — file-sentinel backed. Detectors check the
-  // flag file at top of main loop and skip detection when present.
-  // Polls once on mount + refresh after toggle; another operator toggling
-  // from another tab won't reflect until this component remounts.
-  const [paused, setPaused] = useState<boolean>(false);
-  useEffect(() => {
-    fetch("/api/pause")
-      .then((r) => r.json())
-      .then((d) => setPaused(!!d.paused))
-      .catch(() => {});
-  }, []);
-  const togglePause = () => {
-    fetch("/api/pause", { method: "POST" })
-      .then((r) => r.json())
-      .then((d) => setPaused(!!d.paused))
-      .catch(() => {});
-  };
+  // Per-camera + fan-out pause state via usePauseState — sole writer
+  // for both this page's "pause all" toolbar button and the per-pane
+  // toggle in each CameraPane. Same hook instance drives both so
+  // they never drift out of sync.
+  const pause = usePauseState();
 
   // Editors target the primary camera. detW/detH come from primary's
   // status with useDetectionSize's cache filling the gap during a
@@ -288,15 +277,26 @@ export function LivePreviewPage() {
             <span className={styles.spacer} />
             <button
               type="button"
-              className={paused ? styles.pauseBtnActive : styles.pauseBtn}
-              onClick={togglePause}
+              className={pause.allPaused ? styles.pauseBtnActive : styles.pauseBtn}
+              onClick={() => {
+                // Fan-out toggle: if every camera is currently paused,
+                // this resumes all; otherwise pauses all (partial paused
+                // state → the click brings you to fully-paused first).
+                void pause.toggleAll(!pause.allPaused);
+              }}
               title={
-                paused
-                  ? "Detection paused globally — click to resume all cameras"
-                  : "Pause detection on all cameras (touches config/pause_all.flag)"
+                pause.allPaused
+                  ? "All cameras paused — click to resume all"
+                  : pause.anyPaused
+                    ? "Some cameras paused — click to pause the rest too"
+                    : "Pause detection on all cameras"
               }
             >
-              {paused ? "▶ resume" : "⏸ pause all"}
+              {pause.allPaused
+                ? "▶ resume all"
+                : pause.anyPaused
+                  ? `⏸ pause all (${Object.values(pause.cameras).filter(Boolean).length}/${Object.keys(pause.cameras).length} paused)`
+                  : "⏸ pause all"}
             </button>
             {pane.secondary ? null : (
               <button
@@ -334,6 +334,8 @@ export function LivePreviewPage() {
             otherPaneCamera={pane.secondary ?? undefined}
             viewMode={viewModes[primary] ?? "live"}
             onViewModeChange={setViewModeFor(primary)}
+            paused={!!pause.cameras[primary]}
+            onTogglePause={() => void pause.togglePause(primary)}
           >
             {slewOverlaysVisible && (
               <SlewPresetsOverlay
@@ -376,6 +378,8 @@ export function LivePreviewPage() {
               onRemove={pane.remove}
               viewMode={viewModes[pane.secondary] ?? "live"}
               onViewModeChange={setViewModeFor(pane.secondary)}
+              paused={!!pause.cameras[pane.secondary]}
+              onTogglePause={() => pane.secondary && void pause.togglePause(pane.secondary)}
             />
           )}
         </div>
