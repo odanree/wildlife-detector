@@ -619,26 +619,76 @@ def create_app(registry: DetectorRegistry) -> Flask:
             "default": registry.default,
         })
 
-    # ── Global operator pause (file-sentinel) ─────────────────────────
-    # Detectors check config/pause_all.flag at top of main loop and skip
-    # detection when present. All three detectors bind-mount ./config so
-    # a single file toggle reaches every camera.
-    _pause_flag = Path("config/pause_all.flag")
+    # ── Per-camera operator pause (file-sentinel) ─────────────────────
+    # Each detector reads its own config/pause_<camera_id>.flag at the
+    # top of its main loop and skips detection when present, publishing
+    # an "operator paused" banner on the preview stream. All detectors
+    # bind-mount ./config so writes here reach the right container.
+    # Replaces the old single config/pause_all.flag — that file, if
+    # present from before, is now orphaned and ignored (safe to delete).
+    _pause_dir = Path("config")
+
+    def _pause_flag_path(cam_id: str) -> Path:
+        return _pause_dir / f"pause_{cam_id}.flag"
+
+    def _pause_state() -> dict[str, bool]:
+        """Return { camera_id: paused_bool } for every registered camera."""
+        return {c: _pause_flag_path(c).exists() for c in registry.camera_ids}
+
+    def _set_pause(cam_id: str, paused: bool) -> None:
+        p = _pause_flag_path(cam_id)
+        if paused:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.touch()
+        elif p.exists():
+            p.unlink()
 
     @app.get("/api/pause")
     def api_pause_get():
-        return jsonify({"paused": _pause_flag.exists()})
+        cams = _pause_state()
+        return jsonify({
+            "cameras": cams,
+            "all_paused": all(cams.values()) if cams else False,
+            "any_paused": any(cams.values()),
+        })
 
     @app.post("/api/pause")
-    def api_pause_toggle():
-        if _pause_flag.exists():
-            _pause_flag.unlink()
-            paused = False
-        else:
-            _pause_flag.parent.mkdir(parents=True, exist_ok=True)
-            _pause_flag.touch()
-            paused = True
-        return jsonify({"paused": paused})
+    def api_pause_post():
+        """Toggle / set pause. Three forms:
+
+          POST /api/pause?camera=yard              — toggle just yard
+          POST /api/pause?camera=yard&paused=true  — set yard's state explicitly
+          POST /api/pause?all=1&paused=true        — fan-out set all cameras
+          POST /api/pause?all=1                    — fan-out toggle
+                                                     (paused unless all already paused)
+        """
+        camera = (request.args.get("camera") or "").strip() or None
+        all_flag = request.args.get("all") in ("1", "true", "True")
+        explicit = request.args.get("paused")
+        want_paused: bool | None = None
+        if explicit in ("true", "True", "1"):
+            want_paused = True
+        elif explicit in ("false", "False", "0"):
+            want_paused = False
+
+        if all_flag:
+            cams = _pause_state()
+            if want_paused is None:
+                # Fan-out toggle: pause unless every camera is already paused
+                want_paused = not all(cams.values()) if cams else True
+            for cam_id in registry.camera_ids:
+                _set_pause(cam_id, want_paused)
+            return jsonify(_pause_state() | {"all_paused": want_paused})
+
+        if not camera:
+            return jsonify({"error": "camera query param required (or all=1)"}), 400
+        if camera not in registry.camera_ids:
+            return jsonify({"error": f"unknown camera '{camera}'"}), 404
+        if want_paused is None:
+            # No explicit value → toggle current state
+            want_paused = not _pause_flag_path(camera).exists()
+        _set_pause(camera, want_paused)
+        return jsonify({"camera": camera, "paused": want_paused})
 
     # ── Frames / stream (proxy to detector) ────────────────────────────────
 
