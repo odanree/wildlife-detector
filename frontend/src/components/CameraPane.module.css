@@ -109,6 +109,29 @@
   background: rgba(107, 221, 255, 0.1);
 }
 
+.pausePaneBtn,
+.pausePaneBtnActive {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 3px 8px;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  margin-left: var(--sp-2);
+}
+.pausePaneBtn:hover {
+  border-color: var(--accent-blue);
+}
+.pausePaneBtnActive {
+  color: var(--accent-camera, #f5a623);
+  border-color: var(--accent-camera, #f5a623);
+}
+.pausePaneBtnActive:hover {
+  filter: brightness(1.15);
+}
+
 .zoomBtns {
   display: inline-flex;
   gap: var(--sp-1);

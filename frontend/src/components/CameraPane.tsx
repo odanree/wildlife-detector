@@ -41,6 +41,11 @@ interface CameraPaneProps {
    *  the primary pane to slot in Zone/Mask overlays. Secondary passes
    *  nothing — editors live on primary only. */
   children?: ReactNode;
+  /** Current pause state for this camera (from usePauseState). When
+   *  undefined the pause button hides — page must always pass this. */
+  paused?: boolean;
+  /** Toggle pause for THIS camera. */
+  onTogglePause?: () => void;
 }
 
 /**
@@ -65,6 +70,8 @@ export function CameraPane({
   viewMode,
   onViewModeChange,
   children,
+  paused,
+  onTogglePause,
 }: CameraPaneProps) {
   const { data: status } = useStatus(camera || undefined);
   const [detW, detH] = useDetectionSize(camera, status?.detection_size);
@@ -224,6 +231,25 @@ export function CameraPane({
 
       <div className={styles.paneToolbar}>
         <StatusBar camera={camera} />
+        {onTogglePause && (
+          // Per-camera pause — file-sentinel backed via /api/pause.
+          // Toolbar button is compact and always visible so the pause
+          // action is one click away for each pane. Distinct amber
+          // "paused" state so a resumed operator can tell at a glance
+          // which cams are still muted.
+          <button
+            type="button"
+            className={paused ? styles.pausePaneBtnActive : styles.pausePaneBtn}
+            onClick={onTogglePause}
+            title={
+              paused
+                ? `${camera}: detection paused — click to resume`
+                : `${camera}: click to pause detection`
+            }
+          >
+            {paused ? "▶ resume" : "⏸ pause"}
+          </button>
+        )}
         <BaselineControls camera={camera} />
         <ViewModeButtons
           viewMode={viewMode}

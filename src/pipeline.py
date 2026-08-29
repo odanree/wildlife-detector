@@ -866,13 +866,22 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     #                    Backyard uses this (user wants exact 7 PM start).
     #   "brightness_only": ignore time signal, use brightness only.
     _DAYTIME_SKIP_TRIGGER_MODE = os.getenv("DAYTIME_SKIP_TRIGGER_MODE", "or").lower()
-    # Operator pause flag — file-sentinel at /app/config/pause_all.flag.
-    # When present, all detectors skip the entire detection path with an
-    # "operator paused" banner. Toggled via web UI (POST /api/pause).
+    # Operator pause flag — per-camera file-sentinel at
+    # /app/config/pause_<camera_id>.flag. When present, THIS detector
+    # skips the detection path with an "operator paused" banner.
+    # Toggled via web UI (POST /api/pause?camera=<id>) or the "pause
+    # all" fan-out (POST /api/pause?all=1&paused=true|false).
     # File-based instead of env so it's runtime-toggleable without a
-    # restart; each detector's config/ is bind-mounted from the same host
-    # dir so a single touch/rm reaches all three.
-    _PAUSE_FLAG_PATH = os.getenv("OPERATOR_PAUSE_FLAG_PATH", "/app/config/pause_all.flag")
+    # restart; each detector's config/ is bind-mounted from the same
+    # host dir so a single web request lands on the right container's
+    # view of the file.
+    # Replaces the old /app/config/pause_all.flag (single global). If
+    # that file exists on disk from before the migration it's ignored
+    # (orphaned) — safe to delete manually.
+    _PAUSE_FLAG_PATH = os.getenv(
+        "OPERATOR_PAUSE_FLAG_PATH",
+        f"/app/config/pause_{_camera_id_env}.flag",
+    )
     # Scene-chaos bulkhead — two orthogonal signals that gate the per-det
     # inner loop when the frame isn't worth processing. Isolates chaotic
     # frames from the stable detection path so one bad frame doesn't drag
