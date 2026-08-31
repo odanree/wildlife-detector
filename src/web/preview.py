@@ -790,16 +790,27 @@ def init_alert_log(snapshot_dir: str, capacity: int = 500,
 class ZoneHolder:
     """Thread-safe polygon holder + persistence path.
 
-    Pipeline reads .snapshot() each iteration and rebuilds ZoneFilter when the
-    version increments. Save writes to the config file on disk AND bumps the
-    version so the pipeline picks it up next frame — atomic-enough for this
-    single-writer / single-reader setup.
+    Pipeline reads .snapshot(mode=…) each iteration and rebuilds ZoneFilter
+    when the version increments OR the mode changes. Save writes to the config
+    file on disk AND bumps the version so the pipeline picks it up next frame
+    — atomic-enough for this single-writer / single-reader setup.
 
-    Coord policy: the polygon is stored on disk as **normalized 0..1 floats**
-    when a det_w/det_h is set, so it stays valid when INPUT_WIDTH/HEIGHT change.
-    Legacy YAML with absolute pixel coords is auto-detected on load and returned
-    to callers unchanged (pipeline scales it based on the same heuristic).
+    **Day/night polygons (project #137 follow-up):** each zone carries a
+    required base polygon (used at night AND as daytime fallback) plus an
+    optional `polygon_day` that supersedes it when `mode='day'` is requested.
+    Cameras without a day polygon behave exactly as before (both modes
+    return the base polygon). Two-mode swap is atomic — set_polygon and
+    snapshot both take a `mode` param so writes go to the correct key and
+    reads pick the correct polygon per-frame.
+
+    Coord policy: polygons are stored on disk as **normalized 0..1 floats**
+    when a det_w/det_h is set, so they stay valid when INPUT_WIDTH/HEIGHT
+    change. Legacy YAML with absolute pixel coords is auto-detected on load
+    and returned to callers unchanged (pipeline scales it based on the same
+    heuristic).
     """
+
+    _MODES = ("night", "day")   # day is optional; night doubles as day fallback
 
     def __init__(self, config_path: str, zone_key: str,
                  det_w: int | None = None, det_h: int | None = None) -> None:
@@ -808,38 +819,72 @@ class ZoneHolder:
         self._zone_key = zone_key
         self._det_w = det_w   # required to normalize on save; if None, save as pixels
         self._det_h = det_h
-        self._polygon: list[tuple[int, int]] = []
+        # Two polygons keyed by mode; day is None when the zone has no
+        # day-specific polygon (falls back to night at snapshot time).
+        self._polygons: dict[str, list[tuple[int, int]] | None] = {
+            "night": [],
+            "day": None,
+        }
         self._version = 0
         self._last_mtime: float = 0.0
         self._reload_from_disk()
+
+    @classmethod
+    def _polygon_yaml_key(cls, mode: str) -> str:
+        """Yaml field name for a given mode. `night` is the historical
+        `polygon` key (kept for backwards compat); `day` is the new
+        `polygon_day` key. Extend this map to add new modes later."""
+        if mode == "night":
+            return "polygon"
+        if mode == "day":
+            return "polygon_day"
+        raise ValueError(f"unknown zone mode {mode!r}")
+
+    def _load_mode_polygon(self, cfg: dict, mode: str) -> list[tuple[int, int]] | None:
+        """Load one mode's polygon from a yaml cfg dict. Returns None
+        when the key is absent (day mode has this as the 'no override'
+        signal); returns a possibly-empty list when the key exists."""
+        raw = cfg.get("zones", {}).get(self._zone_key, {}).get(
+            self._polygon_yaml_key(mode),
+        )
+        if raw is None:
+            return None
+        # Scale normalized → pixel using known dims (fallback 1280×720).
+        # Callers always see pixel coords regardless of on-disk format.
+        is_norm = all(all(v <= 1.5 for v in p) for p in raw) if raw else False
+        if is_norm and self._det_w and self._det_h:
+            return [
+                (int(round(x * self._det_w)), int(round(y * self._det_h)))
+                for x, y in raw
+            ]
+        return [(int(x), int(y)) for x, y in raw]
 
     def _reload_from_disk(self) -> None:
         try:
             with self._config_path.open(encoding="utf-8") as fh:
                 cfg = yaml.safe_load(fh) or {}
-            raw = cfg.get("zones", {}).get(self._zone_key, {}).get("polygon", [])
-            # If normalized floats in YAML, scale to pixel space using known dims
-            # (fallback 1280×720 if not set). Callers see pixel coords.
-            is_norm = all(all(v <= 1.5 for v in p) for p in raw) if raw else False
-            if is_norm and self._det_w and self._det_h:
-                self._polygon = [(int(round(x * self._det_w)), int(round(y * self._det_h))) for x, y in raw]
-            else:
-                self._polygon = [(int(x), int(y)) for x, y in raw]
+            night = self._load_mode_polygon(cfg, "night")
+            self._polygons["night"] = night if night is not None else []
+            self._polygons["day"] = self._load_mode_polygon(cfg, "day")
             try:
                 self._last_mtime = self._config_path.stat().st_mtime
             except OSError:
                 self._last_mtime = 0.0
         except Exception:
             logger.exception("ZoneHolder: failed to load %s", self._config_path)
-            self._polygon = []
+            self._polygons = {"night": [], "day": None}
 
-    def snapshot(self) -> tuple[list[tuple[int, int]], int]:
-        """Return (polygon, version). Cheap mtime check on every call —
-        if the yaml on disk was modified by something OTHER than
-        set_polygon (a git checkout, a manual edit, a backup restore),
-        reload and bump the version so the pipeline hot-reload picks
-        up the change. Guards against 'file changed under us' desync
-        where in-memory polygon and on-disk yaml disagree."""
+    def snapshot(
+        self, mode: str = "night",
+    ) -> tuple[list[tuple[int, int]], int]:
+        """Return (polygon, version) for the requested mode. Day mode
+        falls back to night polygon when no day-specific override is
+        configured. Cheap mtime check on every call — if the yaml on
+        disk was modified by something OTHER than set_polygon (a git
+        checkout, a manual edit, a backup restore), reload and bump
+        the version so the pipeline hot-reload picks up the change."""
+        if mode not in self._MODES:
+            mode = "night"
         with self._lock:
             try:
                 mtime = self._config_path.stat().st_mtime
@@ -852,19 +897,52 @@ class ZoneHolder:
                     self._version += 1
             except OSError:
                 pass  # file gone temporarily during atomic-write swap — skip this tick
-            return list(self._polygon), self._version
+            # Day falls back to night when no day polygon is set.
+            active = self._polygons.get(mode)
+            if active is None:
+                active = self._polygons["night"] or []
+            return list(active), self._version
 
-    def set_polygon(self, polygon: list[tuple[int, int]], persist: bool = True) -> None:
+    def has_day_polygon(self) -> bool:
+        """True when a day-specific polygon is configured (used by the
+        preview overlay to distinguish 'inherits night zone' from
+        'day-only zone actually set')."""
+        with self._lock:
+            day = self._polygons.get("day")
+            return day is not None and len(day) >= 3
+
+    def set_polygon(
+        self, polygon: list[tuple[int, int]], persist: bool = True,
+        mode: str = "night",
+    ) -> None:
+        if mode not in self._MODES:
+            raise ValueError(f"unknown zone mode {mode!r}")
         clean = [(int(x), int(y)) for x, y in polygon]
         if len(clean) < 3:
             raise ValueError("polygon needs at least 3 vertices")
         with self._lock:
-            self._polygon = clean
+            self._polygons[mode] = clean
             self._version += 1
             if persist:
-                self._persist(clean)
+                self._persist(clean, mode=mode)
 
-    def _persist(self, polygon: list[tuple[int, int]]) -> None:
+    def clear_polygon(self, mode: str = "day", persist: bool = True) -> None:
+        """Remove a mode's polygon override. Only valid for `day` —
+        night is the required base and must always exist. After clear,
+        snapshot(mode='day') falls back to night."""
+        if mode == "night":
+            raise ValueError("cannot clear night polygon — it is the required base")
+        if mode not in self._MODES:
+            raise ValueError(f"unknown zone mode {mode!r}")
+        with self._lock:
+            self._polygons[mode] = None
+            self._version += 1
+            if persist:
+                self._persist_clear(mode=mode)
+
+    def _persist(
+        self, polygon: list[tuple[int, int]], mode: str = "night",
+    ) -> None:
         """Rewrite the YAML with the new polygon as NORMALIZED coords when we
         know det_w/det_h — so it stays valid across INPUT_WIDTH/HEIGHT changes.
         Comments are LOST — accept the tradeoff for MVP.
@@ -881,7 +959,8 @@ class ZoneHolder:
                 ]
             else:
                 to_write = [[int(x), int(y)] for x, y in polygon]
-            cfg.setdefault("zones", {}).setdefault(self._zone_key, {})["polygon"] = to_write
+            key = self._polygon_yaml_key(mode)
+            cfg.setdefault("zones", {}).setdefault(self._zone_key, {})[key] = to_write
             tmp = self._config_path.with_suffix(self._config_path.suffix + ".tmp")
             with tmp.open("w", encoding="utf-8") as fh:
                 yaml.safe_dump(cfg, fh, sort_keys=False, default_flow_style=None)
@@ -893,11 +972,38 @@ class ZoneHolder:
                 self._last_mtime = self._config_path.stat().st_mtime
             except OSError:
                 pass
-            logger.info("ZoneHolder: persisted %d-vertex polygon to %s (format=%s)",
-                        len(polygon), self._config_path,
+            logger.info("ZoneHolder: persisted %d-vertex polygon to %s (mode=%s format=%s)",
+                        len(polygon), self._config_path, mode,
                         "normalized" if self._det_w else "pixel")
         except Exception:
             logger.exception("ZoneHolder: persist failed for %s", self._config_path)
+
+    def _persist_clear(self, mode: str) -> None:
+        """Remove a mode's polygon key from yaml. Only called for
+        optional modes (day) — night key must always exist."""
+        try:
+            with self._config_path.open(encoding="utf-8") as fh:
+                cfg = yaml.safe_load(fh) or {}
+            key = self._polygon_yaml_key(mode)
+            zone_block = cfg.get("zones", {}).get(self._zone_key)
+            if zone_block and key in zone_block:
+                del zone_block[key]
+                tmp = self._config_path.with_suffix(self._config_path.suffix + ".tmp")
+                with tmp.open("w", encoding="utf-8") as fh:
+                    yaml.safe_dump(cfg, fh, sort_keys=False, default_flow_style=None)
+                tmp.replace(self._config_path)
+                try:
+                    self._last_mtime = self._config_path.stat().st_mtime
+                except OSError:
+                    pass
+                logger.info(
+                    "ZoneHolder: cleared %s polygon from %s", mode, self._config_path,
+                )
+        except Exception:
+            logger.exception(
+                "ZoneHolder: persist_clear failed for %s (mode=%s)",
+                self._config_path, mode,
+            )
 
 
 _zones: ZoneHolder | None = None

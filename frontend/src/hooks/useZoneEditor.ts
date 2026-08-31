@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { type Point, saveZone } from "../api/zone";
+import { type Point, type ZoneMode, clearDayZone, saveZone } from "../api/zone";
 import type { EditMode } from "../components/ZoneOverlay";
 import { polygonIsSimple } from "../util/polygon";
 import { useZone } from "./useZone";
@@ -33,11 +33,22 @@ import { useZone } from "./useZone";
  */
 export interface ZoneEditorApi {
   mode: EditMode;
+  /** Which polygon variant the editor is currently addressing —
+   *  night (base) or day (optional override). Persisted decisions
+   *  (draw/tweak/save/clear) all route through this. */
+  zoneMode: ZoneMode;
+  setZoneMode: (mode: ZoneMode) => void;
+  /** True when a day-specific polygon is set for the current camera.
+   *  Consumers use this to render the "day zone: set / inherits night"
+   *  indicator and enable/disable Clear. */
+  hasDayPolygon: boolean;
   /** Working polygon in draw/tweak modes. Reset to server value on
    *  every idle transition. Read this ONLY when mode !== "idle". */
   workingPolygon: Point[];
-  /** Ambient server-side polygon. Consumers should render this when
-   *  mode === "idle" and workingPolygon otherwise. */
+  /** Ambient server-side polygon for the current zoneMode. Consumers
+   *  should render this when mode === "idle" and workingPolygon
+   *  otherwise. When zoneMode === 'day' AND no day polygon is set,
+   *  this is empty (UI shows "inherits night" state — draw to create). */
   serverPolygon: Point[];
   /** True while polygon is self-intersecting — save is blocked. */
   isSimple: boolean;
@@ -51,25 +62,30 @@ export interface ZoneEditorApi {
    *  draw → tweak without discarding the working polygon. */
   closeDrawing: () => void;
   save: () => Promise<void>;
+  /** Clear the day-polygon override so day inherits night. Only valid
+   *  when zoneMode === 'day' AND hasDayPolygon; no-op otherwise. */
+  clearDayOverride: () => Promise<void>;
 }
 
 export function useZoneEditor(camera: string): ZoneEditorApi {
-  const { data: zoneData, refresh: refreshZone } = useZone(camera);
+  const [zoneMode, setZoneMode] = useState<ZoneMode>("night");
+  const { data: zoneData, refresh: refreshZone } = useZone(camera, zoneMode);
   const [mode, setMode] = useState<EditMode>("idle");
   const [workingPolygon, setWorkingPolygon] = useState<Point[]>([]);
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState<string | null>(null);
 
   const serverPolygon = zoneData?.polygon ?? [];
+  const hasDayPolygon = zoneData?.has_day_polygon ?? false;
 
-  // Cancel editing on camera change via adjust-state-during-rendering.
-  // React docs' "You Might Not Need an Effect" — set the sentinel state
-  // during render, then setState fires and React re-renders with the
-  // fresh mode. No subscribing effect → no tier-1 anti-pattern from the
-  // ESLint plugin.
-  const [prevCamera, setPrevCamera] = useState(camera);
-  if (camera !== prevCamera) {
-    setPrevCamera(camera);
+  // Cancel editing on camera OR zoneMode change via adjust-state-during-
+  // rendering (You Might Not Need an Effect). Prevents a stale
+  // workingPolygon from carrying over when the operator switches between
+  // day and night zones mid-edit.
+  const [prevKey, setPrevKey] = useState(`${camera}::${zoneMode}`);
+  const currentKey = `${camera}::${zoneMode}`;
+  if (currentKey !== prevKey) {
+    setPrevKey(currentKey);
     setMode("idle");
     setSaveErr(null);
   }
@@ -81,6 +97,10 @@ export function useZoneEditor(camera: string): ZoneEditorApi {
   }, []);
 
   const enterTweak = useCallback(() => {
+    // Tweak from current server polygon; when day-mode inherits
+    // (empty serverPolygon), seed the tweak from the caller's choice —
+    // but the button is disabled in that case (see LivePreviewPage),
+    // so this branch is defensive only.
     setWorkingPolygon(zoneData?.polygon ?? []);
     setMode("tweak");
     setSaveErr(null);
@@ -108,7 +128,7 @@ export function useZoneEditor(camera: string): ZoneEditorApi {
     setSaving(true);
     setSaveErr(null);
     try {
-      await saveZone(camera, workingPolygon);
+      await saveZone(camera, workingPolygon, zoneMode);
       refreshZone();
       setMode("idle");
     } catch (e) {
@@ -116,10 +136,29 @@ export function useZoneEditor(camera: string): ZoneEditorApi {
     } finally {
       setSaving(false);
     }
-  }, [camera, workingPolygon, saving, refreshZone]);
+  }, [camera, workingPolygon, saving, zoneMode, refreshZone]);
+
+  const clearDayOverride = useCallback(async () => {
+    if (zoneMode !== "day" || !hasDayPolygon || saving) return;
+    setSaving(true);
+    setSaveErr(null);
+    try {
+      await clearDayZone(camera);
+      refreshZone();
+      setMode("idle");
+      setWorkingPolygon([]);
+    } catch (e) {
+      setSaveErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }, [camera, zoneMode, hasDayPolygon, saving, refreshZone]);
 
   return {
     mode,
+    zoneMode,
+    setZoneMode,
+    hasDayPolygon,
     workingPolygon,
     serverPolygon,
     isSimple: polygonIsSimple(workingPolygon),
@@ -131,5 +170,6 @@ export function useZoneEditor(camera: string): ZoneEditorApi {
     cancel,
     closeDrawing,
     save,
+    clearDayOverride,
   };
 }

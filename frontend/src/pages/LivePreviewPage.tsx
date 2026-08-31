@@ -230,6 +230,9 @@ export function LivePreviewPage() {
             <span className={styles.editorScope}>editing: primary</span>
             <ZoneEditorButtons
               mode={zone.mode}
+              zoneMode={zone.zoneMode}
+              onZoneModeChange={zone.setZoneMode}
+              hasDayPolygon={zone.hasDayPolygon}
               vertexCount={zone.workingPolygon.length}
               isSimple={zone.isSimple}
               saving={zone.saving}
@@ -238,6 +241,7 @@ export function LivePreviewPage() {
               onTweak={enterZoneTweak}
               onSave={zone.save}
               onCancel={zone.cancel}
+              onClearDay={zone.clearDayOverride}
             />
             <MaskEditorButtons
               mode={mask.mode}
@@ -390,6 +394,9 @@ export function LivePreviewPage() {
 
 function ZoneEditorButtons({
   mode,
+  zoneMode,
+  onZoneModeChange,
+  hasDayPolygon,
   vertexCount,
   isSimple,
   saving,
@@ -398,8 +405,12 @@ function ZoneEditorButtons({
   onTweak,
   onSave,
   onCancel,
+  onClearDay,
 }: {
   mode: EditMode;
+  zoneMode: "day" | "night";
+  onZoneModeChange: (m: "day" | "night") => void;
+  hasDayPolygon: boolean;
   vertexCount: number;
   isSimple: boolean;
   saving: boolean;
@@ -408,29 +419,92 @@ function ZoneEditorButtons({
   onTweak: () => void;
   onSave: () => void;
   onCancel: () => void;
+  onClearDay: () => void;
 }) {
+  // Day/night pill selector — always visible. Disabled while a
+  // draw/tweak is in progress (switching mid-edit would drop the
+  // working polygon into the wrong slot). The zoneEditor hook also
+  // force-cancels on mode change, but disabling the toggle prevents
+  // the confusing UX of an unexplained state loss.
+  const modePicker = (
+    <div className={styles.editorGroup}>
+      <span className={styles.editorLabel}>zone</span>
+      <button
+        type="button"
+        className={zoneMode === "night" ? styles.editorBtnActive : styles.editorBtn}
+        onClick={() => onZoneModeChange("night")}
+        disabled={mode !== "idle"}
+        title="Edit the night polygon (base zone — used at night and as day fallback)"
+      >
+        night
+      </button>
+      <button
+        type="button"
+        className={zoneMode === "day" ? styles.editorBtnActive : styles.editorBtn}
+        onClick={() => onZoneModeChange("day")}
+        disabled={mode !== "idle"}
+        title="Edit the daytime polygon (optional override — supersedes night while _is_daytime)"
+      >
+        day
+      </button>
+    </div>
+  );
+
   if (mode === "idle") {
+    // Idle-mode buttons — Tweak disabled when day-mode inherits (no
+    // day polygon to tweak). Clear only shown for day + set.
+    const canTweak = vertexCount >= 3;
+    const dayInherits = zoneMode === "day" && !hasDayPolygon;
     return (
-      <div className={styles.editorGroup}>
-        <span className={styles.editorLabel}>zone</span>
-        <button
-          type="button"
-          className={styles.editorBtn}
-          onClick={onDraw}
-          title="Draw a new zone polygon from scratch"
-        >
-          Draw
-        </button>
-        <button
-          type="button"
-          className={styles.editorBtn}
-          onClick={onTweak}
-          title="Edit vertices of the current polygon"
-          disabled={vertexCount < 3}
-        >
-          Tweak
-        </button>
-      </div>
+      <>
+        {modePicker}
+        <div className={styles.editorGroup}>
+          {dayInherits && (
+            <span
+              className={styles.editorLabel}
+              title="No day polygon set — day inherits the night zone. Draw one to override."
+            >
+              inherits night
+            </span>
+          )}
+          <button
+            type="button"
+            className={styles.editorBtn}
+            onClick={onDraw}
+            title={
+              zoneMode === "day"
+                ? "Draw a daytime polygon that supersedes the night zone while _is_daytime"
+                : "Draw a new zone polygon from scratch"
+            }
+          >
+            Draw
+          </button>
+          <button
+            type="button"
+            className={styles.editorBtn}
+            onClick={onTweak}
+            title={
+              dayInherits
+                ? "No day polygon to tweak — Draw to create one"
+                : "Edit vertices of the current polygon"
+            }
+            disabled={!canTweak}
+          >
+            Tweak
+          </button>
+          {zoneMode === "day" && hasDayPolygon && (
+            <button
+              type="button"
+              className={styles.editorBtn}
+              onClick={onClearDay}
+              disabled={saving}
+              title="Delete the day polygon so day inherits the night zone"
+            >
+              {saving ? "Clearing…" : "Clear day"}
+            </button>
+          )}
+        </div>
+      </>
     );
   }
   const canSave = vertexCount >= 3 && !saving && isSimple;
@@ -438,32 +512,37 @@ function ZoneEditorButtons({
     ? "Polygon self-intersects — one edge crosses another. Adjust vertices before saving."
     : vertexCount < 3
       ? "Need at least 3 vertices"
-      : "Save polygon to config";
+      : `Save ${zoneMode} polygon to config`;
   return (
-    <div className={styles.editorGroup}>
-      <span className={styles.editorLabel}>
-        {mode === "draw" ? "drawing" : "tweaking"} zone · {vertexCount} pts
-      </span>
-      <button
-        type="button"
-        className={`${styles.editorBtn} ${styles.editorBtnSave}`}
-        onClick={onSave}
-        disabled={!canSave}
-        title={saveTitle}
-      >
-        {saving ? "Saving…" : "Save"}
-      </button>
-      <button
-        type="button"
-        className={styles.editorBtn}
-        onClick={onCancel}
-        title="Discard unsaved changes"
-      >
-        Cancel
-      </button>
-      {!isSimple && vertexCount >= 4 && <span className={styles.editorErr}>self-intersecting</span>}
-      {saveErr && <span className={styles.editorErr}>err: {saveErr}</span>}
-    </div>
+    <>
+      {modePicker}
+      <div className={styles.editorGroup}>
+        <span className={styles.editorLabel}>
+          {mode === "draw" ? "drawing" : "tweaking"} {zoneMode} zone · {vertexCount} pts
+        </span>
+        <button
+          type="button"
+          className={`${styles.editorBtn} ${styles.editorBtnSave}`}
+          onClick={onSave}
+          disabled={!canSave}
+          title={saveTitle}
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+        <button
+          type="button"
+          className={styles.editorBtn}
+          onClick={onCancel}
+          title="Discard unsaved changes"
+        >
+          Cancel
+        </button>
+        {!isSimple && vertexCount >= 4 && (
+          <span className={styles.editorErr}>self-intersecting</span>
+        )}
+        {saveErr && <span className={styles.editorErr}>err: {saveErr}</span>}
+      </div>
+    </>
   );
 }
 
