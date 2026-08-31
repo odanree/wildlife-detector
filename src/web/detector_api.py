@@ -116,6 +116,14 @@ def create_app() -> Flask:
 
     @app.post("/internal/zone")
     def post_zone():
+        """Save a zone polygon. Body:
+            {"polygon": [[x,y], ...], "mode": "day"|"night"}   # save
+            {"mode": "day", "clear": true}                      # clear day override
+
+        `mode` defaults to "night" for backwards compat — existing clients
+        that omit it write the base polygon unchanged. `clear: true` is
+        only valid for the optional `day` mode; night is the required base.
+        """
         auth_err = _require_auth()
         if auth_err:
             return auth_err
@@ -123,13 +131,21 @@ def create_app() -> Flask:
         if z is None:
             return jsonify({"error": "zone editor not initialized"}), 503
         body = request.get_json(silent=True) or {}
+        mode = (body.get("mode") or "night").lower()
+        if body.get("clear"):
+            try:
+                z.clear_polygon(mode=mode, persist=True)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            _, ver = z.snapshot(mode=mode)
+            return jsonify({"ok": True, "version": ver, "mode": mode, "cleared": True})
         poly = body.get("polygon", [])
         try:
-            z.set_polygon(poly, persist=True)
+            z.set_polygon(poly, persist=True, mode=mode)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
-        _, ver = z.snapshot()
-        return jsonify({"ok": True, "version": ver})
+        _, ver = z.snapshot(mode=mode)
+        return jsonify({"ok": True, "version": ver, "mode": mode})
 
     @app.post("/internal/manual-detect")
     def post_manual_detect():

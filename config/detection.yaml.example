@@ -49,6 +49,19 @@ zones:
     - [0.0171, 0.9731]
     - [0.0132, 0.5226]
     - [0.0156, 0.1832]
+    # Optional daytime-only override. When present, this polygon is
+    # used at the pipeline's zone-check gate while `_is_daytime` is
+    # True (baseline mode = "day"); otherwise the base `polygon` above
+    # is used for both modes. Draw one via the UI (day/night pill
+    # in the zone editor toolbar) or hand-edit here. Delete the key
+    # to revert day → inherits night.
+    # Example: exclude the ground and only cover above the fence line
+    # to suppress daytime FPs from ground-level activity.
+    # polygon_day:
+    # - [0.05, 0.05]
+    # - [0.95, 0.05]
+    # - [0.95, 0.45]
+    # - [0.05, 0.45]
 slew_presets:
 - name: default
   polygon:

@@ -703,6 +703,12 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     # and rebuilds ZoneFilter when the version changes.
     # det_w/det_h passed so the holder normalizes polygon coords when persisting.
     zone_holder = _preview_init_zones("config/detection.yaml", zone_key, det_w=det_w, det_h=det_h)
+    # Track the day/night mode the current ZoneFilter was built with —
+    # rebuild when baseline mode transitions so day/night polygons swap
+    # atomically at dawn/dusk. Init "night" so the first frame at startup
+    # picks the base polygon; the actual mode is re-read per-frame from
+    # _baseline_cache below.
+    _zone_mode = "night"
     _zone_version = 0
     if zone_holder is not None:
         _, _zone_version = zone_holder.snapshot()
@@ -1191,13 +1197,32 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             # ── Zone hot-reload check ────────────────────────────────────
             # The preview editor bumps the polygon version on POST; rebuild
             # ZoneFilter (cheap — just a Path constructor).
+            #
+            # Also swap on day/night baseline transition: pick the mode
+            # from _baseline_cache (one detection stale = single-frame lag
+            # on dawn/dusk, acceptable). Zones without a day polygon see
+            # the same base polygon in both modes so the check is a no-op.
             if zone_holder is not None:
-                _new_poly, _new_ver = zone_holder.snapshot()
-                if _new_ver != _zone_version and len(_new_poly) >= 3:
+                _mode_now = _baseline_cache[0][1] or "night"
+                if _mode_now not in ("day", "night"):
+                    _mode_now = "night"
+                _new_poly, _new_ver = zone_holder.snapshot(mode=_mode_now)
+                _needs_reload = (
+                    (_new_ver != _zone_version or _mode_now != _zone_mode)
+                    and len(_new_poly) >= 3
+                )
+                if _needs_reload:
                     zone_polygon = _new_poly
                     zone_filter = ZoneFilter(zones={zone_key: _new_poly})
+                    _prev_mode = _zone_mode
                     _zone_version = _new_ver
-                    logger.info("Zone reloaded (v=%d, %d vertices)", _new_ver, len(_new_poly))
+                    _zone_mode = _mode_now
+                    logger.info(
+                        "Zone reloaded (v=%d, mode=%s%s, %d vertices)",
+                        _new_ver, _mode_now,
+                        f" ← {_prev_mode}" if _prev_mode != _mode_now else "",
+                        len(_new_poly),
+                    )
 
             # ── OSD mask hot-reload check ────────────────────────────────
             if mask_holder is not None:
