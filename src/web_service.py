@@ -427,20 +427,32 @@ def _load_detection_cfg() -> tuple[dict, int]:
         return {}, 0
 
 
-def _read_zone_polygon(zone_key: str | None = None) -> tuple[list, int]:
+_ZONE_MODE_YAML_KEY = {"night": "polygon", "day": "polygon_day"}
+
+
+def _read_zone_polygon(
+    zone_key: str | None = None, mode: str = "night",
+) -> tuple[list, int]:
     """Read polygon coords from YAML directly. Returns (polygon, mtime_version).
 
     The mtime is used as a coarse version so we can tell the browser 'poly
     changed, redraw' without a full pubsub. Coords are returned in pixel
     space at the detector's current detection resolution (fetched via
-    detector's /status)."""
+    detector's /status).
+
+    `mode='day'` returns the optional `polygon_day` override; when unset
+    for the zone, returns an empty list (NOT the night fallback — the UI
+    editor needs to know whether a day polygon exists so the operator can
+    distinguish 'inherits night zone' from 'day polygon = <empty draft>').
+    """
     cfg, version = _load_detection_cfg()
     if not cfg:
         return [], version
     # Priority: explicit zone_key arg > yaml top-level default.
     key = zone_key or cfg.get("zone_key", "yard_zone")
-    raw = cfg.get("zones", {}).get(key, {}).get("polygon", [])
-    return raw, version
+    yaml_field = _ZONE_MODE_YAML_KEY.get(mode, "polygon")
+    raw = cfg.get("zones", {}).get(key, {}).get(yaml_field, [])
+    return raw or [], version
 
 
 def _read_osd_masks(camera_id: str = "yard") -> tuple[list, int]:
@@ -1352,7 +1364,13 @@ def create_app(registry: DetectorRegistry) -> Flask:
     def get_zone():
         # Need det_w/det_h + zone_key from detector's status so the right
         # polygon is fetched (yard_zone vs rooftop_zone) and scaled correctly.
+        # `?mode=day` returns the optional daytime override (empty when
+        # unset — the UI editor uses that to distinguish 'inherits night'
+        # from 'day polygon = <in-progress draft>'). Default: night.
         detector = _pick(request)
+        mode = (request.args.get("mode") or "night").lower()
+        if mode not in ("day", "night"):
+            mode = "night"
         try:
             st = detector.status()
             det_w, det_h = st.get("detection_size", [1280, 720])
@@ -1360,10 +1378,16 @@ def create_app(registry: DetectorRegistry) -> Flask:
         except Exception:
             det_w, det_h = 1280, 720
             zone_key = None
-        raw, ver = _read_zone_polygon(zone_key=zone_key)
+        raw, ver = _read_zone_polygon(zone_key=zone_key, mode=mode)
+        # has_day = "is a day polygon configured for this zone?" — cheap
+        # extra field so the UI can render the "day zone: inherits / set"
+        # indicator without a second fetch.
+        raw_day, _ = _read_zone_polygon(zone_key=zone_key, mode="day")
         return jsonify({
             "polygon": _scale_normalized_polygon(raw, det_w, det_h),
             "version": ver,
+            "mode": mode,
+            "has_day_polygon": bool(raw_day),
         })
 
     @app.post("/api/zone")
