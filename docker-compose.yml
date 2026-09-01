@@ -366,6 +366,13 @@ services:
       RTSP_URL: rtsp://admin:windows98@192.168.1.145:554/Streaming/Channels/101
       # Rooftop baselines live in the same data/ volume, keyed by CAMERA_ID.
       BASELINE_PATH: data/baseline_rooftop.jpg
+      # Day/night baseline picker threshold. Rooftop's IR-lit night mean is
+      # ~136 (measured 2026-09-01 on baseline_rooftop_night.jpg) — well above
+      # the default 100, which caused the picker to return "day" 24/7 and
+      # break every _is_daytime-gated branch (day/night zone swap, VLM
+      # prompt tuning, daytime skepticism gate). Sun-lit day baseline is
+      # ~197, so 165 gives ~30-pt margin on both sides.
+      DAY_NIGHT_BRIGHTNESS_THRESHOLD: "165"
       # Rooftop's 4K source needs higher pipeline resolution to preserve
       # rat-scale detail. Yard's default 1088x612 works fine for the closer
       # side-angle view; rooftop at 4K→1088x612 downsamples rat body to ~15x8
