@@ -154,15 +154,17 @@ services:
       # if we later rename the default.
       ZONE_KEY: yard_zone
       # RTSP source. 2026-08-09: replaced the original 1080p H.264
-      # cam at .86 with a Reolink 4K HEVC at .104 (same physical
-      # mount, same NVR channel 5). Old URL:
+      # cam at .86 with a Reolink 4K HEVC (same physical mount, same
+      # NVR channel 5). 2026-08-26: IP re-assigned .104 → .100.
+      # Old URLs:
       #   rtsp://admin:123456@192.168.1.86:554/stream1
-      # New URL is HEVC main-stream — ffprobe shows 3840x2160 @ 25fps.
-      # Sub-stream (h264, 896x512) would be cheaper decode but LOWER
-      # resolution than the old cam's 1080p, so we'd lose small-target
-      # detail. Keep main + bump INPUT_WIDTH if you see MOG missing
-      # rats after the swap.
-      RTSP_URL: rtsp://admin:windows98@192.168.1.104:554/h264Preview_01_main
+      #   rtsp://admin:windows98@192.168.1.104:554/h264Preview_01_main
+      # Current URL is HEVC main-stream — ffprobe shows 3840x2160
+      # @ 25fps. Sub-stream (h264, 896x512) would be cheaper decode
+      # but LOWER resolution than the old cam's 1080p, so we'd lose
+      # small-target detail. Keep main + bump INPUT_WIDTH if you see
+      # MOG missing rats after the swap.
+      RTSP_URL: rtsp://admin:windows98@192.168.1.100:554/h264Preview_01_main
       # Per-mode baseline files: derives baseline_day.jpg + baseline_night.jpg.
       # Keeping the legacy path so existing baselines migrate for free.
       BASELINE_PATH: data/baseline.jpg
@@ -257,7 +259,7 @@ services:
       # polygon (anchored to home view) points at the wrong region →
       # real animals fall out of zone → alerts drop. Monitor pauses
       # detection until camera returns to home preset.
-      PTZ_HOST_1: "192.168.1.104"
+      PTZ_HOST_1: "192.168.1.100"
       PTZ_USER_1: "admin"
       PTZ_PASS_1: "windows98"
       # ONVIF backend for OUR slew commands (unused on yard for now).
@@ -519,21 +521,19 @@ services:
       # detection.
       RTSP_URL: rtsp://admin:123456@192.168.1.118:554/Streaming/Channels/101
       BASELINE_PATH: data/baseline_backyard.jpg
-      # Match yard: skip detection during daytime (shadow FPs dominate on
-      # side-angle view). Uses default DAY_NIGHT_BRIGHTNESS_THRESHOLD=100
-      # since backyard's IR night mode is dimmer than yard's Reolink.
-      SKIP_DAYTIME_DETECTION: "1"
-      DAYTIME_SKIP_BRIGHTNESS_THRESHOLD: "90"
-      # PR #134 widened to 6-20 for twilight color-mode; reverted 08/14
-      # because live obs: rodents active at 7:30 PM on backyard. End=20
-      # was killing that detection window. Back to 7-19. Filter at
-      # threshold=130 has enough headroom to handle twilight brightness
-      # without misclipping (labeled rodent max mean = 114 << 130).
-      SKIP_DAYTIME_START_HOUR: "7"
-      SKIP_DAYTIME_END_HOUR: "19"
-      # time_only: brightness signal ignored so backyard resumes detection
-      # at exactly the end hour, not extended by lingering dusk brightness.
-      DAYTIME_SKIP_TRIGGER_MODE: time_only
+      # Daytime detection: HISTORICALLY skipped wholesale because ground-
+      # level shadow FPs dominated the daytime signal. PR #165 shipped
+      # day/night zone polygons — backyard now uses `polygon_day`
+      # (above-fence-line only) to shrink the daytime search area to a
+      # low-FP subset, so the wholesale skip is redundant. Left the
+      # tuning env vars in place (commented) as a rollback lever if the
+      # day polygon proves insufficient. Yard/rooftop keep their
+      # existing skip config since they don't have day polygons yet.
+      SKIP_DAYTIME_DETECTION: "0"
+      # DAYTIME_SKIP_BRIGHTNESS_THRESHOLD: "90"
+      # SKIP_DAYTIME_START_HOUR: "7"
+      # SKIP_DAYTIME_END_HOUR: "19"
+      # DAYTIME_SKIP_TRIGGER_MODE: time_only
       TZ: America/Los_Angeles
       # 4K source → downsample to 2048x928. Same rationale as rooftop:
       # yard's 1088x612 default would collapse a 30 px rat crop to
