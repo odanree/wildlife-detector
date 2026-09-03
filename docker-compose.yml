@@ -206,6 +206,15 @@ services:
       TZ: America/Los_Angeles
       # Yard is optimized for rodent detection — small bbox floor.
       MIN_MOTION_BBOX_PX: "22"
+      # Post-VLM classifier: yard-only active mode (Phase 3 rollout,
+      # project #137). Per-camera overrides of the .env-wide shadow
+      # defaults. Agreement analysis 2026-09-02 (n=873 labeled yard
+      # rows in shadow log): F1=0.893, miss=3.2% at threshold=0.20 —
+      # the safest of the three cameras to flip. Backyard follows
+      # after yard soak; rooftop needs its own model first.
+      # See scripts/eval_animal_vs_fp.py + PR #169 for the analysis.
+      CLASSIFIER_MODE: active
+      CLASSIFIER_ACTIVE_CAMERAS: yard
       # VLM per-track throttle: 3s between VLM calls for the same
       # track_id. Bumped from default 2s to cut spam on high-motion
       # scenes while still catching quick-passing rats (typical rat
