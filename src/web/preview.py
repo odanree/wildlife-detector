@@ -697,6 +697,27 @@ _manual_detection_queue: "_queue.Queue[dict]" = _queue.Queue(maxsize=64)
 _manual_track_counter = 0
 _manual_counter_lock = threading.Lock()
 
+# ── Cancel infrastructure ─────────────────────────────────────────────
+# Two-tier so cancellation catches items at BOTH stages:
+#
+#   1. Queue-side  : items still awaiting drain — dropped in drain().
+#   2. In-flight   : items already drained (VLM running) — checked at
+#                    the alert-emit site in pipeline.py before firing.
+#
+# Cancel signal is a monotonically-advancing wall-clock marker:
+# `clear_manual_detections()` sets it to `time.time()`, and any manual
+# item whose submission `ts <= _manual_cancel_ts` is considered
+# cancelled. Same threshold-marker approach as the LSN-style
+# checkpoint pattern — no per-item bookkeeping, just a scalar barrier.
+#
+# `_manual_submission_ts` maps track_id → ts for in-flight lookups.
+# Entries evict on the pipeline's alert-emit path so this dict stays
+# O(concurrent manual detections) — never grows unbounded.
+_manual_cancel_ts: float = 0.0
+_manual_cancel_lock = threading.Lock()
+_manual_submission_ts: dict[int, float] = {}
+_manual_submission_lock = threading.Lock()
+
 
 def submit_manual_detection(bbox: tuple[int, int, int, int]) -> int | None:
     """Enqueue a manual bbox for the next pipeline iteration. Returns the
@@ -706,29 +727,101 @@ def submit_manual_detection(bbox: tuple[int, int, int, int]) -> int | None:
     with _manual_counter_lock:
         _manual_track_counter += 1
         tid = MANUAL_TRACK_ID_BASE + _manual_track_counter
+    now = time.time()
     try:
         _manual_detection_queue.put_nowait({
             "track_id": tid,
             "bbox": tuple(int(v) for v in bbox),
-            "ts": time.time(),
+            "ts": now,
         })
     except _queue.Full:
         logger.warning("Manual-detection queue full — dropping bbox=%s", bbox)
         return None
+    # Register for in-flight cancellation lookups. Cleaned up when the
+    # pipeline emits (or cancels) the alert — see is_manual_cancelled_tid.
+    with _manual_submission_lock:
+        _manual_submission_ts[tid] = now
     logger.info("Manual-detection enqueued: track_id=%d bbox=%s", tid, bbox)
     return tid
 
 
 def drain_manual_detections() -> list[dict]:
-    """Pop all queued manual-detection requests. Called by the pipeline
-    loop each iteration. Returns [] if none pending."""
+    """Pop all queued manual-detection requests, dropping any submitted
+    before the last `clear_manual_detections()` call. Called by the
+    pipeline loop each iteration; returns [] if none pending or all
+    pending have been cancelled."""
     out: list[dict] = []
+    with _manual_cancel_lock:
+        cancel_ts = _manual_cancel_ts
     while True:
         try:
-            out.append(_manual_detection_queue.get_nowait())
+            item = _manual_detection_queue.get_nowait()
         except _queue.Empty:
             break
+        if item["ts"] <= cancel_ts:
+            # Queue-side cancel — item was submitted before the operator's
+            # last view/pause change. Evict the submission entry so it
+            # doesn't leak into the in-flight dict.
+            with _manual_submission_lock:
+                _manual_submission_ts.pop(item["track_id"], None)
+            logger.info(
+                "Manual-detection cancelled at drain: track_id=%d "
+                "(submitted %.2fs before cancel marker)",
+                item["track_id"], cancel_ts - item["ts"],
+            )
+            continue
+        out.append(item)
     return out
+
+
+def clear_manual_detections() -> int:
+    """Advance the cancel marker and empty the pending queue. Any manual
+    detection currently in-flight (VLM in progress) is also cancelled at
+    its alert-emit site via `is_manual_cancelled_tid`.
+
+    Returns the count of queue items dropped so callers can log a
+    reasonable "N dropped" message. Idempotent — repeat calls just
+    advance the marker without harm."""
+    global _manual_cancel_ts
+    dropped = 0
+    with _manual_cancel_lock:
+        _manual_cancel_ts = time.time()
+    while True:
+        try:
+            item = _manual_detection_queue.get_nowait()
+            dropped += 1
+            with _manual_submission_lock:
+                _manual_submission_ts.pop(item["track_id"], None)
+        except _queue.Empty:
+            break
+    return dropped
+
+
+def is_manual_cancelled_tid(track_id: int) -> bool:
+    """True when the given manual track_id was cancelled — either because
+    its submission_ts predates the cancel marker, or its submission
+    record was already evicted (drain-time cancel). Pipeline calls this
+    at the alert-emit site so an in-flight VLM job whose operator has
+    since zoomed/paused doesn't fire an alert."""
+    with _manual_submission_lock:
+        ts = _manual_submission_ts.get(track_id)
+    if ts is None:
+        # No submission record → either already emitted (evicted below)
+        # or a stale tid. Either way, treat as cancelled — the pipeline
+        # only calls this for MANUAL_TRACK_ID_BASE track_ids so a missing
+        # record is a real anomaly worth suppressing.
+        return True
+    with _manual_cancel_lock:
+        return ts <= _manual_cancel_ts
+
+
+def release_manual_submission(track_id: int) -> None:
+    """Evict a manual submission from the in-flight dict — called by the
+    pipeline once it's decided whether to emit or suppress. Keeps
+    `_manual_submission_ts` bounded to O(concurrent manual detections)
+    instead of O(all manual detections ever)."""
+    with _manual_submission_lock:
+        _manual_submission_ts.pop(track_id, None)
 
 
 def get_state_db() -> "StateDB | None":
