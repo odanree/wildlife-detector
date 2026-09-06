@@ -147,6 +147,23 @@ def create_app() -> Flask:
         _, ver = z.snapshot(mode=mode)
         return jsonify({"ok": True, "version": ver, "mode": mode})
 
+    @app.post("/internal/manual-detect/cancel")
+    def post_manual_detect_cancel():
+        """Advance the manual-detect cancel marker and drop any pending
+        bboxes. Also cancels any in-flight manual detection at its
+        alert-emit site — see preview.is_manual_cancelled_tid.
+
+        Called by the frontend when the operator's context has moved on
+        (camera zoom/pan changed, pause toggled). No body needed.
+
+        Returns {ok, dropped} — dropped is the count of queue items
+        cleared. Idempotent."""
+        auth_err = _require_auth()
+        if auth_err:
+            return auth_err
+        dropped = preview.clear_manual_detections()
+        return jsonify({"ok": True, "dropped": dropped})
+
     @app.post("/internal/manual-detect")
     def post_manual_detect():
         """Operator-drawn bbox for manual detection. Bypasses MOG's
