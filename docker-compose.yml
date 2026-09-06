@@ -567,6 +567,20 @@ services:
       # = ~900 px² = usually not-a-real-target).
       MIN_MOTION_BBOX_PX: "30"
       VLM_INTERVAL_S: "3"
+      # Post-VLM classifier: backyard active mode (Phase 3 rollout,
+      # camera 2/3). Per-camera override of the .env-wide shadow
+      # defaults. Agreement analysis 2026-09-06 (n=3424 labeled
+      # backyard rows in shadow log): F1=0.805, miss=4.4% at
+      # threshold=0.30. Yard has soaked in active since 2026-09-02
+      # (4 days) with no regression, so bulkhead constraint met.
+      # Rooftop still needs its own model (F1 0.35, not viable).
+      # Threshold 0.30 (not yard's 0.20) reflects backyard's lower
+      # per-class discrimination — the classifier is barely doing
+      # better than base rate at 0.20, so we tighten the gate.
+      # See scripts/eval_animal_vs_fp.py + PR #169 for analysis.
+      CLASSIFIER_MODE: active
+      CLASSIFIER_ACTIVE_CAMERAS: backyard
+      CLASSIFIER_THRESHOLD: "0.30"
       # Bumped 110 → 160 after Aug 9 21:23 fence-rat miss: the backyard
       # fence slats reflect IR strongly (bbox mean_brightness on fence
       # blobs runs 116-182), so the default 110 threshold classified
