@@ -83,6 +83,8 @@ try:
         get_baseline as _preview_get_baseline,
         init_masks as _preview_init_masks,
         drain_manual_detections as _drain_manual_detections,
+        is_manual_cancelled_tid as _is_manual_cancelled_tid,
+        release_manual_submission as _release_manual_submission,
         MANUAL_TRACK_ID_BASE,
     )
 except ImportError:
@@ -104,6 +106,8 @@ except ImportError:
     def _preview_get_baseline(): return None
     def _preview_init_masks(_p, det_w=None, det_h=None): return None
     def _drain_manual_detections(): return []
+    def _is_manual_cancelled_tid(track_id: int) -> bool: return False  # noqa: ARG001
+    def _release_manual_submission(track_id: int) -> None: return None  # noqa: ARG001
     MANUAL_TRACK_ID_BASE = 900_000
 
 logger = logging.getLogger(__name__)
@@ -1431,6 +1435,20 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     result = fut.result()
                 except Exception:
                     logger.exception("VLM job for track=%d raised", tid)
+                    if tid >= MANUAL_TRACK_ID_BASE:
+                        _release_manual_submission(tid)
+                    continue
+
+                # Manual-detect in-flight cancel: operator zoomed / paused
+                # AFTER we dispatched to VLM. Drop the alert now that VLM
+                # has returned — the operator has moved on.
+                if tid >= MANUAL_TRACK_ID_BASE and _is_manual_cancelled_tid(tid):
+                    logger.info(
+                        "Manual-detection cancelled in-flight: track_id=%d "
+                        "(VLM completed but operator has moved on) — suppressing alert",
+                        tid,
+                    )
+                    _release_manual_submission(tid)
                     continue
 
                 _queue_age = time.time() - submit_ts
@@ -1579,6 +1597,8 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                             track_id=tid,
                             yolo_conf=yolo_conf,
                         )
+                        if tid >= MANUAL_TRACK_ID_BASE:
+                            _release_manual_submission(tid)
                     continue
 
                 # Positive rodent — fire alert + slew secondary camera.
@@ -1707,6 +1727,10 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     track_id=int(tid),
                     yolo_conf=float(yolo_conf) if yolo_conf is not None else None,
                 )
+                # Manual dets: release submission entry now that the alert
+                # has fired, so the in-flight lookup dict stays bounded.
+                if tid >= MANUAL_TRACK_ID_BASE:
+                    _release_manual_submission(tid)
 
             # Refresh the alert_ids set from the TTL map so the preview keeps the
             # red box visible for a few frames after the alert fires.

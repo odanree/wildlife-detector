@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { cancelManualDetect } from "../api/manualDetect";
 import { CameraPane, type ViewMode } from "../components/CameraPane";
 import { GlobalHeader } from "../components/GlobalHeader";
 import { ManualDetectOverlay } from "../components/ManualDetectOverlay";
@@ -340,6 +341,7 @@ export function LivePreviewPage() {
             onViewModeChange={setViewModeFor(primary)}
             paused={!!pause.cameras[primary]}
             onTogglePause={() => void pause.togglePause(primary)}
+            onViewInvalidated={() => cancelManualDetect(primary)}
           >
             {slewOverlaysVisible && (
               <SlewPresetsOverlay
@@ -384,6 +386,7 @@ export function LivePreviewPage() {
               onViewModeChange={setViewModeFor(pane.secondary)}
               paused={!!pause.cameras[pane.secondary]}
               onTogglePause={() => pane.secondary && void pause.togglePause(pane.secondary)}
+              onViewInvalidated={() => pane.secondary && cancelManualDetect(pane.secondary)}
             />
           )}
         </div>

@@ -1,6 +1,8 @@
 import {
   type CSSProperties,
   type ReactNode,
+  type WheelEvent as ReactWheelEvent,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -46,6 +48,13 @@ interface CameraPaneProps {
   paused?: boolean;
   /** Toggle pause for THIS camera. */
   onTogglePause?: () => void;
+  /** Fires whenever the operator interaction invalidates any in-flight
+   *  operator-drawn context for this camera — zoom step, wheel zoom,
+   *  zoom reset, or pause toggle. LivePreviewPage uses this to cancel
+   *  any pending manual detection whose bbox was drawn against the
+   *  previous view (see api/manualDetect.ts). Optional — panes without
+   *  a manual-detect flow can omit it. */
+  onViewInvalidated?: () => void;
 }
 
 /**
@@ -72,6 +81,7 @@ export function CameraPane({
   children,
   paused,
   onTogglePause,
+  onViewInvalidated,
 }: CameraPaneProps) {
   const { data: status } = useStatus(camera || undefined);
   const [detW, detH] = useDetectionSize(camera, status?.detection_size);
@@ -115,13 +125,48 @@ export function CameraPane({
   // preference follows it across a promote-swap. useZoom appends
   // `:<cameraId>` to storageKey, so passing the same prefix from both
   // panes gives us separate per-camera localStorage entries.
-  const { zoom, adjustBy, setZoomTo, onWheel } = useZoom(camera, {
+  const {
+    zoom,
+    adjustBy: adjustByRaw,
+    setZoomTo: setZoomToRaw,
+    onWheel: onWheelRaw,
+  } = useZoom(camera, {
     storageKey: "livePreviewZoom",
     min: 0.25,
     max: 3.0,
     step: 0.1,
     canvasRef,
   });
+
+  // Zoom + pause invalidate any in-flight operator-drawn manual bbox
+  // (it was drawn against a specific view). Wrap each mutation to fire
+  // the callback AFTER the underlying state change. Fire-and-forget —
+  // useZoom's own state updates are synchronous, the notification is
+  // just a signal that the operator's context has shifted. Callback is
+  // stable-per-mount from LivePreviewPage, so no ref dance needed.
+  const adjustBy = useCallback(
+    (delta: number) => {
+      const next = adjustByRaw(delta);
+      onViewInvalidated?.();
+      return next;
+    },
+    [adjustByRaw, onViewInvalidated],
+  );
+  const setZoomTo = useCallback(
+    (value: number) => {
+      const next = setZoomToRaw(value);
+      onViewInvalidated?.();
+      return next;
+    },
+    [setZoomToRaw, onViewInvalidated],
+  );
+  const onWheel = useCallback(
+    (e: ReactWheelEvent<HTMLElement>) => {
+      onWheelRaw(e);
+      onViewInvalidated?.();
+    },
+    [onWheelRaw, onViewInvalidated],
+  );
 
   const { data: baselineMeta } = useBaselineMeta(camera);
 
@@ -240,7 +285,10 @@ export function CameraPane({
           <button
             type="button"
             className={paused ? styles.pausePaneBtnActive : styles.pausePaneBtn}
-            onClick={onTogglePause}
+            onClick={() => {
+              onViewInvalidated?.();
+              onTogglePause();
+            }}
             title={
               paused
                 ? `${camera}: detection paused — click to resume`

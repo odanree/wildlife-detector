@@ -1397,6 +1397,20 @@ def create_app(registry: DetectorRegistry) -> Flask:
         result, status_code = detector.post_command("/internal/zone", json_body=body)
         return jsonify(result), status_code
 
+    @app.post("/api/manual-detect/cancel")
+    def post_manual_detect_cancel():
+        """Cancel any pending/in-flight manual detection on the selected
+        detector. Frontend fires this when the operator's view context
+        changes (zoom, pan, pause toggle) so a stale bbox doesn't fire
+        after they've moved on. `?camera=<id>` picks the detector; the
+        DetectorRegistry routes to that container's
+        /internal/manual-detect/cancel."""
+        detector = _pick(request)
+        result, status_code = detector.post_command(
+            "/internal/manual-detect/cancel", json_body={},
+        )
+        return jsonify(result), status_code
+
     @app.post("/api/manual-detect")
     def post_manual_detect():
         """Fan-out entry for operator-drawn manual detection. Body is
