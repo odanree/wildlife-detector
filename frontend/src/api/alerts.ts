@@ -122,7 +122,7 @@ export async function fetchAlerts(
   signal?: AbortSignal,
 ): Promise<AlertsResponse> {
   const params = new URLSearchParams();
-  params.set("limit", String(query.limit ?? 200));
+  params.set("limit", String(query.limit ?? 1000));
   if (query.species) params.set("species", query.species);
   if (query.camera) params.set("camera", query.camera);
   if (query.scope) params.set("scope", query.scope);

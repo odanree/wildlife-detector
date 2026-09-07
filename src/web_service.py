@@ -763,10 +763,16 @@ def create_app(registry: DetectorRegistry) -> Flask:
         """Unified alerts across all cameras. Filter with ?camera=<id> for
         per-camera view. Alerts are camera-tagged since the ADR-002 multi-cam
         migration; older rows default to camera_id='yard'."""
+        # Raised 200 → 1000 default + 500 → 5000 cap (2026-09-07) — labeling
+        # workflow was hitting the 200 wall after only a few hours of
+        # activity, forcing multiple round-trips through the pagination.
+        # 1000 rows is ~1.5 MB of JSON at current schema — comfortable on
+        # LAN, still snappy over the Cloudflare tunnel. Bumped cap gives
+        # room to sweep a full week without ?limit gymnastics.
         try:
-            limit = min(500, max(1, int(request.args.get("limit", "200"))))
+            limit = min(5000, max(1, int(request.args.get("limit", "1000"))))
         except ValueError:
-            limit = 200
+            limit = 1000
         species_filter = (request.args.get("species") or "").lower().strip() or None
         camera_filter = (request.args.get("camera") or "").strip() or None
         # scope=historical|live|all — used by labeling workflow to focus
