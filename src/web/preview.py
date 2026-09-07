@@ -1378,9 +1378,9 @@ def create_app() -> Flask:
     @app.get("/api/alerts")
     def api_alerts():
         try:
-            limit = min(500, max(1, int(request.args.get("limit", "200"))))
+            limit = min(5000, max(1, int(request.args.get("limit", "1000"))))
         except ValueError:
-            limit = 200
+            limit = 1000
         species_filter = (request.args.get("species") or "").lower().strip() or None
         # Filter + limit push into SQL now that AlertLog is SQLite-backed
         # (Phase 1 of ADR 002). Total is a COUNT(*), not the local stats
