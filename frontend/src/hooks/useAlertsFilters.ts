@@ -47,6 +47,9 @@ const LABEL_FILTER_VALUES: readonly AlertsLabelFilterUi[] = [
 
 const SCOPE_VALUES: readonly AlertsScope[] = ["historical", "live", "all"];
 
+export type AlertsPageSize = 200 | 500 | 1000;
+const PAGE_SIZE_VALUES: readonly AlertsPageSize[] = [200, 500, 1000];
+
 export interface AlertsFiltersApi {
   species: string;
   camera: string;
@@ -59,6 +62,10 @@ export interface AlertsFiltersApi {
   dateFrom: string;
   /** YYYY-MM-DD end-of-day inclusive, empty = no upper bound. Session-only. */
   dateTo: string;
+  /** Rows-per-fetch selector — persisted to localStorage so the choice
+   *  survives navigation. Backend cap is 5000; UI limits to a few
+   *  round steps to keep the picker compact. */
+  pageSize: AlertsPageSize;
   setSpecies: (v: string) => void;
   setCamera: (v: string) => void;
   setScope: (v: AlertsScope) => void;
@@ -68,6 +75,7 @@ export interface AlertsFiltersApi {
   setGrouped: (v: boolean) => void;
   setDateFrom: (v: string) => void;
   setDateTo: (v: string) => void;
+  setPageSize: (v: AlertsPageSize) => void;
 }
 
 function readLocal<T extends string>(key: string, valid: readonly T[], fallback: T): T {
@@ -98,6 +106,11 @@ export function useAlertsFilters(): AlertsFiltersApi {
   // the operator wants stuck across a reload.
   const [dateFrom, setDateFromState] = useState<string>("");
   const [dateTo, setDateToState] = useState<string>("");
+  const [pageSize, setPageSizeState] = useState<AlertsPageSize>(() => {
+    const raw = localStorage.getItem("alertsPageSize");
+    const n = raw ? Number.parseInt(raw, 10) : Number.NaN;
+    return (PAGE_SIZE_VALUES as readonly number[]).includes(n) ? (n as AlertsPageSize) : 1000;
+  });
 
   const setSpecies = useCallback((v: string) => setSpeciesState(v), []);
 
@@ -140,6 +153,11 @@ export function useAlertsFilters(): AlertsFiltersApi {
   const setDateFrom = useCallback((v: string) => setDateFromState(v), []);
   const setDateTo = useCallback((v: string) => setDateToState(v), []);
 
+  const setPageSize = useCallback((v: AlertsPageSize) => {
+    setPageSizeState(v);
+    localStorage.setItem("alertsPageSize", String(v));
+  }, []);
+
   return {
     species,
     camera,
@@ -150,6 +168,7 @@ export function useAlertsFilters(): AlertsFiltersApi {
     grouped,
     dateFrom,
     dateTo,
+    pageSize,
     setSpecies,
     setCamera,
     setScope,
@@ -159,5 +178,6 @@ export function useAlertsFilters(): AlertsFiltersApi {
     setGrouped,
     setDateFrom,
     setDateTo,
+    setPageSize,
   };
 }
