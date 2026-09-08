@@ -59,6 +59,7 @@ export function AlertsPage() {
       label_species: filters.labelSpecies || undefined,
       from: filters.dateFrom || undefined,
       to: filters.dateTo || undefined,
+      limit: filters.pageSize,
     },
     filters.autoRefresh ? 5000 : 3600_000,
   );
@@ -264,6 +265,21 @@ export function AlertsPage() {
                 × dates
               </button>
             )}
+            <label className={styles.label}>
+              rows{" "}
+              <select
+                className={styles.select}
+                value={filters.pageSize}
+                onChange={(e) =>
+                  filters.setPageSize(Number.parseInt(e.target.value, 10) as 200 | 500 | 1000)
+                }
+                title="Max alerts fetched per page. Backend cap is 5000; UI keeps a compact set of round choices."
+              >
+                <option value={200}>200</option>
+                <option value={500}>500</option>
+                <option value={1000}>1000</option>
+              </select>
+            </label>
             <label className={styles.label}>
               <input
                 type="checkbox"
