@@ -194,9 +194,15 @@ services:
       # auto-exposure sits yard at grayscale ~108 at 3PM (shaded view),
       # below the baseline picker's 150. Split thresholds so baseline
       # picker stays at 150 (correct for night IR ~100) while daytime
-      # skip trigger uses 90. Time-of-day belt-and-suspenders catches
-      # overcast dawn/dusk when brightness reads night-like.
-      DAYTIME_SKIP_BRIGHTNESS_THRESHOLD: "90"
+      # skip trigger uses this threshold. Time-of-day belt-and-suspenders
+      # catches overcast dawn/dusk when brightness reads night-like.
+      # 90 → 130 (2026-09-09): yard's IR-night live mean drifted to
+      # ~90.7 (measured 2026-09-09 01:04 from /snapshot). Trigger mode
+      # defaults to "or", so bright_hit at 90.7 ≥ 90 was firing the
+      # skip on every frame all night → zero detection for 3+ hours
+      # before we caught it. 130 gives safe margin above IR-night
+      # brightness while still tripping on actual daylight.
+      DAYTIME_SKIP_BRIGHTNESS_THRESHOLD: "130"
       # PR #134 widened 7-19 → 6-20; reverted 08/14 (backyard rodents
       # active at 7:30 PM proved widening was killing legit detection).
       # Yard uses OR mode so the brightness signal handles twilight
