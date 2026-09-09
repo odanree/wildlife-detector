@@ -50,6 +50,15 @@
   min-height: 30px;
 }
 
+/* Chromium renders <option> in the popup with its own theming and
+ * ignores most of the parent's inherited styles — the entries end up
+ * looking grayed-out on our dark background. Explicit bg/fg on option
+ * fixes contrast; the popup itself takes the same tokens. */
+.select option {
+  background: var(--bg-elevated);
+  color: var(--fg);
+}
+
 .readout {
   font-size: 13px;
   color: var(--fg-dim);
