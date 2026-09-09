@@ -631,6 +631,116 @@ def create_app(registry: DetectorRegistry) -> Flask:
             "default": registry.default,
         })
 
+    # ── NVR playback URL builder ────────────────────────────────────────────
+    # Ad-hoc RTSP playback URL for arbitrary time ranges — mirrors the
+    # Amcrest/Dahua /cam/playback contract but keeps credentials +
+    # channel lookup server-side. Frontend "playback tool" page hits
+    # this to compose an rtsp:// URL the operator opens in VLC.
+    #
+    # Sibling of /api/alerts/<id>/playback-url but decoupled from any
+    # specific alert row — takes (camera, start, end) directly. Same
+    # NVR_CHANNEL_<CAMERA> env lookup, same AMCREST_* creds.
+    @app.get("/api/playback-url")
+    def api_playback_url():
+        """Build an ad-hoc RTSP URL — NVR playback or direct-camera live.
+
+        Query params (channel OR camera required):
+          channel  raw NVR channel number (1..8). Wins over camera when both set.
+          camera   camera_id (yard/backyard/rooftop). Maps to NVR_CHANNEL_<X>.
+          source   'nvr' (default) → NVR /cam/playback with start/end;
+                   'direct'         → CAMERA_RTSP_<channel> live stream (start/end
+                                      ignored — direct-cam has no playback API).
+          start    YYYY-MM-DDTHH:MM:SS in America/Los_Angeles. Required for nvr.
+          end      YYYY-MM-DDTHH:MM:SS in America/Los_Angeles. Required for nvr.
+        Response: {url, camera, channel, start, end, source}
+        """
+        camera = (request.args.get("camera") or "").strip()
+        channel_arg = (request.args.get("channel") or "").strip()
+        source = (request.args.get("source") or "nvr").strip().lower()
+        start_str = (request.args.get("start") or "").strip()
+        end_str = (request.args.get("end") or "").strip()
+        if source not in ("nvr", "direct"):
+            return jsonify({"error": f"source must be nvr|direct, got {source!r}"}), 400
+        if source == "nvr" and (not start_str or not end_str):
+            return jsonify({"error": "start, end required for source=nvr"}), 400
+        if not channel_arg and not camera:
+            return jsonify({"error": "channel or camera required"}), 400
+
+        # Prefer explicit channel; fall back to camera → NVR_CHANNEL_<X> lookup.
+        if channel_arg:
+            try:
+                channel = int(channel_arg)
+            except ValueError:
+                return jsonify({"error": f"invalid channel: {channel_arg!r}"}), 400
+            if channel < 1 or channel > 32:
+                return jsonify({"error": "channel out of range (1..32)"}), 400
+        else:
+            env_channel = os.environ.get(f"NVR_CHANNEL_{camera.upper()}")
+            if not env_channel:
+                return jsonify({
+                    "error": f"NVR_CHANNEL_{camera.upper()} not set on web container",
+                }), 400
+            try:
+                channel = int(env_channel)
+            except ValueError:
+                return jsonify({"error": f"NVR_CHANNEL_{camera.upper()} is not an int"}), 500
+
+        # Parse as America/Los_Angeles (same convention as the alerts
+        # date-range filter — operator times are always PST/PDT).
+        try:
+            from datetime import datetime as _dt
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo("America/Los_Angeles")
+            start_dt = _dt.fromisoformat(start_str).replace(tzinfo=tz)
+            end_dt = _dt.fromisoformat(end_str).replace(tzinfo=tz)
+        except Exception as exc:
+            return jsonify({"error": f"invalid start/end format: {exc}"}), 400
+        if end_dt <= start_dt:
+            return jsonify({"error": "end must be after start"}), 400
+
+        if source == "direct":
+            # Full RTSP URL per channel — creds + host + path all baked in
+            # so cameras with different vendors (Reolink /h264Preview_01_main
+            # vs Hikvision /Streaming/Channels/101) all fit one env shape.
+            # Empty = channel isn't wired up for direct access yet.
+            direct_url = os.environ.get(f"CAMERA_RTSP_{channel}", "").strip()
+            if not direct_url:
+                return jsonify({
+                    "error": f"CAMERA_RTSP_{channel} not configured on web container",
+                }), 400
+            return jsonify({
+                "url": direct_url,
+                "camera": camera,
+                "channel": channel,
+                "source": "direct",
+            })
+
+        # source == "nvr" — the recording relay on the NVR itself.
+        host = os.environ.get("AMCREST_HOST", "")
+        user = os.environ.get("AMCREST_USER", "")
+        pwd = os.environ.get("AMCREST_PASS", "")
+        if not host or not user or not pwd:
+            return jsonify({"error": "AMCREST_HOST/USER/PASS not configured"}), 500
+
+        # NVR wants LOCAL wall-clock in its own zone (Los_Angeles). The
+        # parsed datetime is already in that zone; strftime yields the
+        # local components without offset formatting.
+        s_fmt = start_dt.strftime("%Y_%m_%d_%H_%M_%S")
+        e_fmt = end_dt.strftime("%Y_%m_%d_%H_%M_%S")
+        url = (
+            f"rtsp://{user}:{pwd}@{host}:554"
+            f"/cam/playback?channel={channel}&subtype=0"
+            f"&starttime={s_fmt}&endtime={e_fmt}"
+        )
+        return jsonify({
+            "url": url,
+            "camera": camera,
+            "channel": channel,
+            "start": start_str,
+            "end": end_str,
+            "source": "nvr",
+        })
+
     # ── Per-camera operator pause (file-sentinel) ─────────────────────
     # Each detector reads its own config/pause_<camera_id>.flag at the
     # top of its main loop and skips detection when present, publishing
