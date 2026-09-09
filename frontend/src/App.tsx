@@ -3,6 +3,7 @@ import { AlertsPage } from "./pages/AlertsPage";
 import { BaselinesPage } from "./pages/BaselinesPage";
 import { DropsPage } from "./pages/DropsPage";
 import { LivePreviewPage } from "./pages/LivePreviewPage";
+import { PlaybackUrlPage } from "./pages/PlaybackUrlPage";
 import { StatusDashboard } from "./pages/StatusDashboard";
 
 /**
@@ -28,6 +29,7 @@ export function App() {
         <Route path="/alerts" element={<AlertsPage />} />
         <Route path="/drops" element={<DropsPage />} />
         <Route path="/baselines" element={<BaselinesPage />} />
+        <Route path="/playback" element={<PlaybackUrlPage />} />
         <Route path="*" element={<Navigate to="/preview" replace />} />
       </Routes>
     </BrowserRouter>

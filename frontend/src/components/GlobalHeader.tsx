@@ -54,6 +54,9 @@ export function GlobalHeader({ right }: GlobalHeaderProps) {
         <Link to="/baselines" className={linkCls("/baselines")}>
           Baselines
         </Link>
+        <Link to="/playback" className={linkCls("/playback")}>
+          Playback
+        </Link>
         <Link to="/status" className={linkCls("/status")}>
           Status
         </Link>
