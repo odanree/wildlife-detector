@@ -11,6 +11,7 @@ import { type AlertRow, type LabelVerdict, snapshotUrl } from "../api/alerts";
 import { fmtTs } from "../util/time";
 import styles from "./AlertLightbox.module.css";
 import { LabelPicker } from "./LabelPicker";
+import { PlaybackToolLink } from "./PlaybackToolLink";
 import { ReplayButton } from "./ReplayButton";
 import { SnapshotImg } from "./SnapshotImg";
 
@@ -412,6 +413,7 @@ export function AlertLightbox({
               {fmtTs(current.ts)} · conf {confPct} · track #{current.track_id ?? "—"}
             </span>
             <ReplayButton alertId={current.id} size="md" />
+            <PlaybackToolLink camera={current.camera_id} ts={current.ts} size="md" />
           </div>
           <div className={styles.metaRow}>
             {(() => {
