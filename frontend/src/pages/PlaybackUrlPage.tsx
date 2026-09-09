@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { GlobalHeader } from "../components/GlobalHeader";
 import styles from "./PlaybackUrlPage.module.css";
 
@@ -26,6 +27,15 @@ const CHANNEL_LABEL: Record<number, string> = {
   5: "5 (yard)",
   6: "6 (rooftop)",
   8: "8 (backyard)",
+};
+
+// Inverse of NVR_CHANNEL_YARD/BACKYARD/ROOFTOP — the alerts page hands
+// us a camera_id in the deep link (?camera=yard), we translate to the
+// channel dropdown value.
+const CAMERA_TO_CHANNEL: Record<string, number> = {
+  yard: 5,
+  backyard: 8,
+  rooftop: 6,
 };
 
 const DURATION_OPTIONS: readonly { label: string; seconds: number }[] = [
@@ -57,7 +67,22 @@ function isoLocal(dt: Date): string {
 }
 
 export function PlaybackUrlPage() {
+  // Deep-link params: /playback?camera=yard&start=YYYY-MM-DDTHH:MM:SS
+  // (fired from the alerts page). Both are optional — bare visits use
+  // localStorage + "1 minute ago" as before. URL params win over
+  // localStorage for one-shot deep-links but don't overwrite the
+  // sticky value (the user's "usual channel" survives).
+  const [urlParams] = useSearchParams();
+  const paramCameraChannel = (() => {
+    const cam = (urlParams.get("camera") ?? "").toLowerCase();
+    if (cam && cam in CAMERA_TO_CHANNEL) return CAMERA_TO_CHANNEL[cam];
+    const c = Number.parseInt(urlParams.get("channel") ?? "", 10);
+    return CHANNELS.includes(c) ? c : null;
+  })();
+  const paramStart = urlParams.get("start");
+
   const [channel, setChannelRaw] = useState<number>(() => {
+    if (paramCameraChannel != null) return paramCameraChannel;
     const saved = Number.parseInt(localStorage.getItem("playbackUrlChannel") ?? "", 10);
     return CHANNELS.includes(saved) ? saved : 5;
   });
@@ -85,8 +110,13 @@ export function PlaybackUrlPage() {
   }, []);
 
   // Start defaults to "1 minute ago" so the operator can drop in a
-  // near-live view without touching the picker.
-  const [startStr, setStartStr] = useState<string>(() => isoLocal(new Date(Date.now() - 60_000)));
+  // near-live view without touching the picker. `?start=` from a deep
+  // link wins over that default — the alerts-page shortcut hands us
+  // the exact alert timestamp already offset for a bit of pre-roll.
+  const [startStr, setStartStr] = useState<string>(() => {
+    if (paramStart && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(paramStart)) return paramStart;
+    return isoLocal(new Date(Date.now() - 60_000));
+  });
 
   const [result, setResult] = useState<PlaybackUrlResponse | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "ok" | "err">("idle");
