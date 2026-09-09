@@ -824,6 +824,13 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     # Threshold=100 with size cap lifted catches ~53% of large-bbox FPs
     # while preserving all labeled rodents.
     _INSECT_MEAN_UNCAP_SIZE = os.getenv("INSECT_MEAN_UNCAP_SIZE", "0") == "1"
+    # Insect pre-filter is night-only by default — its thresholds are
+    # calibrated to IR-lit moths (small + bright). Daytime sunlit
+    # ground reads mean 190-210 and trips the filter on legit small
+    # animals (rooftop squirrels reproduced 2026-09-09 15:14 PST).
+    # Set INSECT_FILTER_DAY_MODE=on to force the filter active during
+    # day too (research use only — expect false-negatives).
+    _INSECT_FILTER_DAY_MODE = os.getenv("INSECT_FILTER_DAY_MODE", "off").lower() == "on"
     # ── Post-VLM animal-vs-FP classifier (project #137) ──────────────
     # Learned re-scorer that fires AFTER the VLM decides "wildlife
     # detected" but BEFORE the alert leaves the pipeline. Trained on
@@ -1944,21 +1951,45 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         det.track_id, det.bbox,
                     )
                 elif _is.area > 0:
-                    # Size-gated: max + elongation gates only fire on small
-                    # bboxes (rodents with bright eyeshine can hit max=255
-                    # legitimately at any size — protecting them).
-                    _size_gated = _is.area < _INSECT_FILTER_MAX_AREA_PX
-                    # Mean gate: uncap size when INSECT_MEAN_UNCAP_SIZE=1
-                    # (data-driven filter for large-bbox bright FPs like
-                    # wall reflections, IR-lit foliage). Otherwise falls
-                    # back to size-gated original behavior.
-                    _mean_size_ok = _size_gated or _INSECT_MEAN_UNCAP_SIZE
-                    _mean_hit = _mean_size_ok and _is.mean >= _NIGHT_INSECT_BRIGHTNESS_MIN
-                    _max_hit = _size_gated and _is.max >= _NIGHT_INSECT_MAX_BRIGHTNESS_MIN
-                    _elong_hit = _size_gated and (
-                        _is.aspect_ratio >= _NIGHT_INSECT_ELONGATION_MIN
-                        and _is.max >= _NIGHT_INSECT_MAX_BRIGHTNESS_MIN
+                    # Insect pre-filter is night-only: its thresholds
+                    # (mean >= NIGHT_INSECT_BRIGHTNESS_MIN, typically
+                    # 100-130) are calibrated to IR-lit moths where a
+                    # small bright blob is diagnostic. During daytime,
+                    # sunlit ground and reflective surfaces naturally
+                    # read mean 190-210 — every small sunlit motion
+                    # (squirrels, birds, distant rats) trips the filter
+                    # and skips VLM. Reproduced on rooftop 2026-09-09
+                    # 15:14 PST: 20+ Insect pre-filter hits in 3s on
+                    # what was a squirrel visible along the brick line
+                    # (see PR #178 write-up). Gate the entire block on
+                    # baseline mode == night; day path falls through
+                    # unchanged so the target reaches VLM. Override with
+                    # INSECT_FILTER_DAY_MODE=on to force the filter
+                    # active during day too (research use only).
+                    _mode_now = (
+                        _baseline_cache[0][1] if _baseline_np is not None else "night"
                     )
+                    _filter_active = (
+                        _mode_now != "day" or _INSECT_FILTER_DAY_MODE
+                    )
+                    if not _filter_active:
+                        _mean_hit = _max_hit = _elong_hit = False
+                    else:
+                        # Size-gated: max + elongation gates only fire on small
+                        # bboxes (rodents with bright eyeshine can hit max=255
+                        # legitimately at any size — protecting them).
+                        _size_gated = _is.area < _INSECT_FILTER_MAX_AREA_PX
+                        # Mean gate: uncap size when INSECT_MEAN_UNCAP_SIZE=1
+                        # (data-driven filter for large-bbox bright FPs like
+                        # wall reflections, IR-lit foliage). Otherwise falls
+                        # back to size-gated original behavior.
+                        _mean_size_ok = _size_gated or _INSECT_MEAN_UNCAP_SIZE
+                        _mean_hit = _mean_size_ok and _is.mean >= _NIGHT_INSECT_BRIGHTNESS_MIN
+                        _max_hit = _size_gated and _is.max >= _NIGHT_INSECT_MAX_BRIGHTNESS_MIN
+                        _elong_hit = _size_gated and (
+                            _is.aspect_ratio >= _NIGHT_INSECT_ELONGATION_MIN
+                            and _is.max >= _NIGHT_INSECT_MAX_BRIGHTNESS_MIN
+                        )
                     if _mean_hit or _max_hit or _elong_hit:
                         _trigger = "mean" if _mean_hit else ("max" if _max_hit else "elong")
                         logger.info(
