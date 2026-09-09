@@ -4,6 +4,7 @@ import { AlertLightbox } from "../components/AlertLightbox";
 import { BulkLabelBar } from "../components/BulkLabelBar";
 import { GlobalHeader } from "../components/GlobalHeader";
 import { LabelPicker } from "../components/LabelPicker";
+import { PlaybackToolLink } from "../components/PlaybackToolLink";
 import { ReplayButton } from "../components/ReplayButton";
 import { SnapshotImg } from "../components/SnapshotImg";
 import {
@@ -552,6 +553,7 @@ function Row({
       <td className={styles.track}>{alert.track_id != null ? `#${alert.track_id}` : "—"}</td>
       <td className={styles.track}>
         <ReplayButton alertId={alert.id} />
+        <PlaybackToolLink camera={alert.camera_id} ts={alert.ts} />
       </td>
     </tr>
   );
