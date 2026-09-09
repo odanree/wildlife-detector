@@ -40,10 +40,12 @@ export function PlaybackToolLink({
   return (
     <Link
       to={to}
+      target="_blank"
+      rel="noreferrer"
       className={`${styles.btn} ${size === "md" ? styles.md : ""}`}
-      title="Open in the /playback tool with this alert's camera + time pre-filled — lets you widen the window or switch to direct-live before opening in VLC"
+      title="Open in the /playback tool with this alert's camera + time pre-filled — lets you widen the window or switch to direct-live before opening in VLC. Opens a new tab so the alerts view stays put."
     >
-      🎬 tool
+      tool
     </Link>
   );
 }
