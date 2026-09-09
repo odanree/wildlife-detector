@@ -685,18 +685,20 @@ def create_app(registry: DetectorRegistry) -> Flask:
             except ValueError:
                 return jsonify({"error": f"NVR_CHANNEL_{camera.upper()} is not an int"}), 500
 
-        # Parse as America/Los_Angeles (same convention as the alerts
-        # date-range filter — operator times are always PST/PDT).
-        try:
-            from datetime import datetime as _dt
-            from zoneinfo import ZoneInfo
-            tz = ZoneInfo("America/Los_Angeles")
-            start_dt = _dt.fromisoformat(start_str).replace(tzinfo=tz)
-            end_dt = _dt.fromisoformat(end_str).replace(tzinfo=tz)
-        except Exception as exc:
-            return jsonify({"error": f"invalid start/end format: {exc}"}), 400
-        if end_dt <= start_dt:
-            return jsonify({"error": "end must be after start"}), 400
+        # Only parse start/end for source=nvr — direct-cam has no
+        # playback API so the time range is ignored.
+        start_dt = end_dt = None
+        if source == "nvr":
+            try:
+                from datetime import datetime as _dt
+                from zoneinfo import ZoneInfo
+                tz = ZoneInfo("America/Los_Angeles")
+                start_dt = _dt.fromisoformat(start_str).replace(tzinfo=tz)
+                end_dt = _dt.fromisoformat(end_str).replace(tzinfo=tz)
+            except Exception as exc:
+                return jsonify({"error": f"invalid start/end format: {exc}"}), 400
+            if end_dt <= start_dt:
+                return jsonify({"error": "end must be after start"}), 400
 
         if source == "direct":
             # Full RTSP URL per channel — creds + host + path all baked in
