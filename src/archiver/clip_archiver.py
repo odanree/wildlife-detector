@@ -377,10 +377,11 @@ class ClipArchiver:
         #
         # See PR that closed wildlife-detector#183 for the prod
         # incident (15-min outage at 04:14, 3 permanently-unrecoverable
-        # alerts) that motivated the split, and Fable's review that
-        # caught the boundary-seam false-positive-tombstone hazard on
-        # the first draft.
-        offset_seconds = max(0.0, (window_start_local - chunk_start_local).total_seconds())
+        # alerts) that motivated the split, and Fable's two review
+        # passes that caught: (1st) boundary-seam false-positive
+        # tombstones and (2nd) the alert_ts-vs-desired_end confusion
+        # that used to redirect alerts INSIDE a stale chunk to its
+        # successor (silently returning wrong footage).
         try:
             file_mtime = chunk_path.stat().st_mtime
         except OSError:
@@ -392,7 +393,9 @@ class ClipArchiver:
             chunk_age_s = now - file_mtime
 
             if chunk_age_s <= _AGENTDVR_CHUNK_STALE_SECONDS:
-                # Fresh chunk — AgentDVR still writing. Retry-later.
+                # Covering chunk is fresh — AgentDVR still writing. The
+                # tail of our desired window hasn't been flushed yet.
+                # Retry-later is right.
                 logger.info(
                     "Archiver: alert=%d in currently-open AgentDVR chunk "
                     "(%s, mtime=%.0f age=%.1fs, desired_end=%.0f). "
@@ -402,18 +405,61 @@ class ClipArchiver:
                 )
                 return None
 
-            # Stale chunk. Is there a seam to the next chunk?
+            # Covering chunk is stale (closed). Where does the ALERT
+            # MOMENT itself lie — inside A, or past A's close?
+            #
+            # Fable's 2nd review caught the subtle case: alert=14:14:00,
+            # A.mtime=14:14:35, B.start=14:14:36. desired_end (14:14:45)
+            # is past A.mtime, so the old code redirected to B and
+            # sliced from B.start=14:14:36 — 36 seconds AFTER the alert.
+            # Silent wrong evidence. Fix: only redirect / tombstone
+            # when the alert moment itself is past A's close time. If
+            # the alert falls INSIDE A, slice A even though the tail
+            # is truncated — ffmpeg -t gives us whatever's available
+            # and the resulting clip is correct if short.
+            if alert_ts <= file_mtime:
+                logger.info(
+                    "Archiver: alert=%d inside stale chunk %s "
+                    "(mtime=%.0f, alert_ts=%.0f); slicing truncated. "
+                    "Clip may be shorter than %ds but represents "
+                    "authoritative footage.",
+                    alert_id, chunk_path.name, file_mtime, alert_ts,
+                    self.duration_seconds,
+                )
+                return self._slice_agentdvr_chunk(
+                    alert_id, alert_ts, camera_id,
+                    chunk_path=chunk_path,
+                    chunk_start_local=chunk_start_local,
+                    window_start_local=window_start_local,
+                    out_path=out_path,
+                )
+
+            # Alert moment past A's close. Seam or gap?
             if next_chunk is not None:
                 next_path, next_start_local = next_chunk
                 seam_gap_s = (next_start_local.timestamp() - file_mtime)
                 if seam_gap_s <= _AGENTDVR_SEAM_TOLERANCE_SECONDS:
-                    # Boundary seam — footage continues in next chunk.
-                    # Recompute against it: offset from next.start (may
-                    # be 0 if alert crosses the seam), no re-check of
-                    # the open-chunk race here because we already know
-                    # next_chunk exists (which means AgentDVR moved on
-                    # past the seam and this file is closed too — its
-                    # mtime is authoritative on its content).
+                    # Boundary seam — footage continues in the next
+                    # chunk. But: B itself may be the currently-open
+                    # chunk. If B's mtime is fresh AND desired_end is
+                    # past B's mtime, the tail STILL isn't flushed —
+                    # retry-later applies to B too, not just A.
+                    try:
+                        next_mtime = next_path.stat().st_mtime
+                    except OSError:
+                        next_mtime = 0.0
+                    next_age_s = now - next_mtime
+                    if (next_age_s <= _AGENTDVR_CHUNK_STALE_SECONDS
+                            and desired_end_unix > next_mtime + 2.0):
+                        logger.info(
+                            "Archiver: alert=%d seams from %s into open "
+                            "chunk %s (next.mtime=%.0f age=%.1fs, "
+                            "desired_end=%.0f). Skipping — backfill "
+                            "after next chunk closes.",
+                            alert_id, chunk_path.name, next_path.name,
+                            next_mtime, next_age_s, desired_end_unix,
+                        )
+                        return None
                     return self._slice_agentdvr_chunk(
                         alert_id, alert_ts, camera_id,
                         chunk_path=next_path,
@@ -432,21 +478,15 @@ class ClipArchiver:
                     f"the gap; AgentDVR wasn't recording."
                 )
             else:
-                # No next chunk AND covering chunk is stale. Either
-                # AgentDVR crashed after this chunk closed and never
-                # came back, OR the covering chunk IS the latest one
-                # and we just haven't crossed the stale threshold in
-                # normal-recording mode (shouldn't happen — normal
-                # recording flushes mtime frequently). Tombstone the
-                # first case; false-positive risk on the second is
-                # small because the stale threshold is 30s and any
-                # active recorder updates mtime within a few seconds.
+                # No next chunk AND covering chunk is stale AND alert
+                # moment is past A's close. AgentDVR appears to have
+                # stopped recording after this chunk. Tombstone.
                 reason = (
                     f"agentdvr_gap: chunk {chunk_path.name} is the "
                     f"latest in the directory but closed "
                     f"{int(chunk_age_s)}s ago (mtime={file_mtime:.0f}). "
                     f"AgentDVR appears to have stopped recording; "
-                    f"desired_end={desired_end_unix:.0f} past close."
+                    f"alert_ts={alert_ts:.0f} past close."
                 )
             logger.warning(
                 "Archiver: alert=%d permanent failure — %s",
@@ -533,7 +573,7 @@ class ClipArchiver:
         return best
 
     def _list_agentdvr_chunks(
-        self, source_dir: Path, tz: Optional[timezone],
+        self, source_dir: Path, tz: Optional["datetime.tzinfo"],
     ) -> list[tuple[Path, datetime]]:
         """All valid chunks in source_dir, sorted by start ascending.
 
@@ -541,9 +581,21 @@ class ClipArchiver:
         best pre-target candidate. This one is used when we need to
         know about neighbors (seam detection, "is the directory empty
         vs. all-future" disambiguation for the tombstone logic).
+
+        Returns an empty list on OSError (bind mount vanished mid-run,
+        permission denied, etc.). Caller sees "empty listing" and
+        routes to the retry-safe branch instead of tombstoning.
         """
         chunks: list[tuple[Path, datetime]] = []
-        for entry in source_dir.iterdir():
+        try:
+            entries = list(source_dir.iterdir())
+        except OSError as e:
+            logger.warning(
+                "Archiver: iterdir failed on %s: %s. Treating as empty listing.",
+                source_dir, e,
+            )
+            return []
+        for entry in entries:
             if not entry.is_file():
                 continue
             m = _AGENTDVR_FILENAME_RE.match(entry.name)

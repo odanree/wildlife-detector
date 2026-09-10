@@ -242,6 +242,116 @@ def test_real_gap_between_chunks_marks_permanent_failure(
     assert chunk_b.name in body
 
 
+def test_alert_inside_stale_chunk_near_seam_slices_A_not_B(
+    archiver: ClipArchiver, tmp_path: Path, monkeypatch,
+) -> None:
+    """Alert lands INSIDE chunk A but 35s before A closes. Chunk B
+    exists 1s after A's close (normal seam). Old (Fable's 2nd review)
+    code redirected to B and sliced from B.start — 36s after the
+    alert. Wrong footage marked as success.
+
+    New code: alert_ts <= A.mtime means alert is inside A. Slice A
+    even though desired_end extends past A's close — truncated is
+    correct; the wrong-chunk redirect would silently mislabel the
+    clip.
+    """
+    monkeypatch.setenv("NVR_TZ", "America/Los_Angeles")
+    d = tmp_path / "agentdvr"
+    d.mkdir()
+
+    # A: closes at 14:14:35; alert at 14:14:00 (35s before close).
+    chunk_a = _touch_chunk(d, "4_2026-09-09_14-00-00_000.mkv")
+    close_a_mtime = datetime(2026, 9, 9, 14, 14, 35, tzinfo=LA).timestamp()
+    os.utime(chunk_a, (close_a_mtime, close_a_mtime))
+
+    # B: normal seam 1s after A's close.
+    chunk_b = _touch_chunk(d, "4_2026-09-09_14-14-36_000.mkv")
+    close_b_mtime = datetime(2026, 9, 9, 14, 29, 36, tzinfo=LA).timestamp()
+    os.utime(chunk_b, (close_b_mtime, close_b_mtime))
+
+    alert_ts = datetime(2026, 9, 9, 14, 14, 0, tzinfo=LA).timestamp()
+    assert alert_ts < close_a_mtime, "test premise: alert inside A"
+    out_path = archiver.clip_path(5555, alert_ts)
+
+    # Patch _run_ffmpeg so we can inspect the argv without needing
+    # ffmpeg installed. Assert on -i <chunk>: chunk A is the correct
+    # source; chunk B would be the wrong-chunk bug from the 2nd review.
+    captured: dict = {}
+    def fake_run(cmd, alert_id, camera_id, out_path_, source):
+        captured["cmd"] = cmd
+        return out_path_
+
+    monkeypatch.setattr(archiver, "_run_ffmpeg", fake_run)
+
+    result = archiver._pull_from_agentdvr(
+        alert_id=5555,
+        alert_ts=alert_ts,
+        camera_id="crawlspace",
+        agentdvr_dir=str(d),
+        out_path=out_path,
+    )
+
+    # Slice happened, no tombstone, and ffmpeg was invoked with A.
+    assert result == out_path
+    assert not archiver.failure_path(5555, alert_ts).exists()
+    assert "-i" in captured["cmd"]
+    input_arg = captured["cmd"][captured["cmd"].index("-i") + 1]
+    assert input_arg == str(chunk_a), (
+        f"expected A ({chunk_a.name}) but got {Path(input_arg).name} — "
+        f"the alert_ts <= file_mtime guard failed to prevent the "
+        f"wrong-chunk redirect."
+    )
+
+
+def test_seam_to_still_open_next_chunk_retries_later(
+    archiver: ClipArchiver, tmp_path: Path, monkeypatch,
+) -> None:
+    """Alert crosses the A→B seam, but B is the currently-open chunk
+    (fresh mtime) and desired_end is past B's flushed content. Retry-
+    later applies here too — must NOT slice a truncated open B and
+    write it as success."""
+    monkeypatch.setenv("NVR_TZ", "America/Los_Angeles")
+    d = tmp_path / "agentdvr"
+    d.mkdir()
+
+    now = time.time()
+    # A: closed 40s ago (stale).
+    chunk_a = _touch_chunk(d, "4_2026-09-09_14-00-00_000.mkv")
+    close_a_mtime = now - 40.0
+    os.utime(chunk_a, (close_a_mtime, close_a_mtime))
+
+    # B: started 1s after A closed, currently being written (fresh mtime,
+    # but not enough flushed for our desired_end).
+    b_start = datetime.fromtimestamp(close_a_mtime + 1.0, tz=LA).replace(microsecond=0)
+    chunk_b_name = f"4_{b_start.strftime('%Y-%m-%d_%H-%M-%S')}_000.mkv"
+    chunk_b = _touch_chunk(d, chunk_b_name)
+    os.utime(chunk_b, (now - 3.0, now - 3.0))  # fresh — being written
+
+    # Alert 5s after A closed — inside seam, but tail past B's flushed
+    # content.
+    alert_ts = close_a_mtime + 5.0
+    out_path = archiver.clip_path(6666, alert_ts)
+
+    called = {"ffmpeg": False}
+    def fake_run(*args, **kwargs):
+        called["ffmpeg"] = True
+        return out_path
+    monkeypatch.setattr(archiver, "_run_ffmpeg", fake_run)
+
+    result = archiver._pull_from_agentdvr(
+        alert_id=6666,
+        alert_ts=alert_ts,
+        camera_id="crawlspace",
+        agentdvr_dir=str(d),
+        out_path=out_path,
+    )
+
+    # Retry-later: no clip, no tombstone, ffmpeg never called.
+    assert result is None
+    assert not called["ffmpeg"]
+    assert not archiver.failure_path(6666, alert_ts).exists()
+
+
 def test_empty_directory_does_not_tombstone(
     archiver: ClipArchiver, tmp_path: Path, monkeypatch,
 ) -> None:
