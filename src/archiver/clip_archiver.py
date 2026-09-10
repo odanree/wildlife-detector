@@ -49,7 +49,7 @@ import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -573,7 +573,7 @@ class ClipArchiver:
         return best
 
     def _list_agentdvr_chunks(
-        self, source_dir: Path, tz: Optional["datetime.tzinfo"],
+        self, source_dir: Path, tz: Optional[tzinfo],
     ) -> list[tuple[Path, datetime]]:
         """All valid chunks in source_dir, sorted by start ascending.
 
