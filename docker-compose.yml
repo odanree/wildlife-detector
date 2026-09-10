@@ -687,6 +687,90 @@ services:
       retries: 3
       start_period: 30s
 
+  # Fourth camera (2026-09-10). Indoor crawlspace under the house — permanent
+  # IR-night scene (no sun cycle), close-range side-angle view of the floor
+  # and rat pathways near the ladder/Enphase gateway. Standalone Reolink-
+  # family cam at 192.168.1.229 (NOT on the Amcrest NVR — separate from the
+  # yard/rooftop/backyard trio). Fed by AgentDVR for recording + phone push;
+  # this detector runs in parallel as a pull-based RTSP consumer for the
+  # classifier layer. Two concurrent RTSP sessions on a budget cam is the
+  # only shared-fate concern — monitor for stream drops after cutover.
+  detector-crawlspace:
+    <<: *detector-common
+    container_name: wildlife-detector-crawlspace
+    environment:
+      CAMERA_ID: crawlspace
+      ZONE_KEY: crawlspace_zone
+      # 2304x1296 HEVC main stream on /stream1. ffprobe 2026-09-09 confirmed
+      # width=2304 height=1296 codec=hevc r_frame_rate=15/1. Sub-stream at
+      # /stream2 is 640x360 mpeg4cif — too small for rat detection.
+      RTSP_URL: rtsp://admin:123456@192.168.1.229:554/stream1
+      BASELINE_PATH: data/baseline_crawlspace.jpg
+      # Indoor crawlspace has no sun cycle — permanent IR-lit night scene.
+      # Force the day/night picker to always return "night" by setting an
+      # unreachable brightness threshold. Keeps day-gated logic (daytime
+      # skepticism gate, day polygon, day-only classifier config) inert.
+      DAY_NIGHT_BRIGHTNESS_THRESHOLD: "255"
+      # Never skip — indoor, no ambient light window to protect against.
+      SKIP_DAYTIME_DETECTION: "0"
+      TZ: America/Los_Angeles
+      # 2304x1296 source → downsample to 2048x1152 preserves aspect while
+      # matching the "2048-wide keeps small-target detail" heuristic from
+      # rooftop/backyard. Rats at close range project as ~40-80 px so we
+      # don't strictly need 2048, but consistency with the sibling
+      # detectors' downscale target simplifies debugging.
+      INPUT_WIDTH: "2048"
+      INPUT_HEIGHT: "1152"
+      # Rats at close range — 30 px matches backyard's floor. Yard's 22
+      # would work too; 30 is safer against IR-shimmer noise which will
+      # be the dominant FP source in this scene (no daytime moth stream,
+      # no fence reflections, but plenty of IR speckle on textured walls).
+      MIN_MOTION_BBOX_PX: "30"
+      VLM_INTERVAL_S: "3"
+      # Post-VLM classifier: shadow mode (default). No labeled crawlspace
+      # data yet — collect ≥ 500 labeled rows before evaluating agreement
+      # and flipping to active. Mirrors the rooftop hold pattern.
+      CLASSIFIER_MODE: shadow
+      # Insect brightness pre-filter — crawlspace is enclosed, so no moths
+      # or flying insects should reach the frame. Cobwebs and dust motes
+      # are the analog FP class. Start conservative (130 = backyard's
+      # tuned value) and re-tune once labeled FP data accumulates.
+      NIGHT_INSECT_BRIGHTNESS_MIN: "130"
+      INSECT_MEAN_UNCAP_SIZE: "1"
+      MOTION_MERGE_DIST_PX: "40"
+      MOTION_MERGE_MAX_CLUSTER: "5"
+      ALERT_ANNOTATE_HISTORY_FRAMES: "15"
+      MOTION_BACKEND: mog2
+      MOTION_HISTORY: "400"
+      MOTION_VAR_THRESHOLD: "18"
+      MOTION_MIN_AREA: "80"
+      MOTION_DETECT_SHADOWS: "0"
+      BASELINE_DIFF_THRESHOLD: "0.06"
+      DAY_BASELINE_DIFF_THRESHOLD: "0.18"
+      # Daytime rodent gate never fires (always-night above), but keep
+      # for symmetry with siblings.
+      DAYTIME_RODENT_MIN_CONF: "0.55"
+      EXCLUSION_MIN_CONF: "0.90"
+      VLM_BACKEND: ollama
+      OLLAMA_MODEL: qwen2.5vl:7b
+      CLAUDE_MODEL: claude-sonnet-5
+      CASCADE_CONFIRM_MODEL: claude-sonnet-5
+      OLLAMA_URL: http://host.docker.internal:11434
+      DETECTOR_INTERNAL_HOST: 0.0.0.0
+      # Fourth detector port — yard=8101, rooftop=8102, backyard=8103,
+      # crawlspace=8104. Web fan-out registry keys on the URL so this
+      # must be unique across the compose network.
+      DETECTOR_INTERNAL_PORT: 8104
+      # No PTZ — fixed cam, no self-slew, no position monitor.
+    expose:
+      - "8104"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8104/internal/health', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
   web:
     build:
       context: .
@@ -698,7 +782,7 @@ services:
     environment:
       # Comma-separated so the sidecar can fan-out /status + fan-in /api/alerts.
       # Order defines display order in the UI.
-      DETECTOR_URLS: http://detector-yard:8101,http://detector-rooftop:8102,http://detector-backyard:8103
+      DETECTOR_URLS: http://detector-yard:8101,http://detector-rooftop:8102,http://detector-backyard:8103,http://detector-crawlspace:8104
       # Back-compat: legacy single-detector consumers read this one.
       DETECTOR_INTERNAL_URL: http://detector-yard:8101
       PREVIEW_HOST: 0.0.0.0
@@ -725,7 +809,14 @@ services:
       # via `docker compose exec web python scripts/…` without a rebuild.
       - ./scripts:/app/scripts:ro
     ports:
-      - "8100:8100"   # user-facing UI
+      # Host port 8200 → container port 8100. Container-internal port
+      # stays 8100 (PREVIEW_PORT env, internal service bindings). Host
+      # 8100 AND 8090 were both blocked by Windows Hyper-V's TCP
+      # exclusion ranges on this machine (8091-8190, 8090 as a specific
+      # single reservation). 8200 sits in the free band between 8191
+      # and 8228. If the UI stops loading, check current exclusions:
+      #   netsh interface ipv4 show excludedportrange protocol=tcp
+      - "8200:8100"   # user-facing UI at http://localhost:8200
     depends_on:
       # `service_healthy` (not `service_started`) is load-bearing here: the
       # DetectorRegistry probes each detector's /internal/status ONCE at
@@ -777,9 +868,21 @@ services:
       NVR_CHANNEL_YARD: "5"
       NVR_CHANNEL_ROOFTOP: "6"
       NVR_CHANNEL_BACKYARD: "8"
+      # Crawlspace is NOT on the NVR — AgentDVR on the host continuously
+      # chunks the RTSP to local MKV (~15-min per file). Archiver reads
+      # from that local mirror instead of NVR RTSP for this camera. See
+      # `_pull_from_agentdvr` in src/archiver/clip_archiver.py. The bind
+      # mount below is read-only; nothing in the pipeline modifies
+      # AgentDVR's storage.
+      AGENTDVR_DIR_CRAWLSPACE: /agentdvr/crawlspace
     volumes:
       - ./clips:/app/clips
       - ./logs:/app/logs
+      # AgentDVR's local continuous recording directory. The trailing
+      # slash + quotes matter — the host path contains a space, and
+      # unquoted YAML breaks on it. Read-only: archiver never writes
+      # back to AgentDVR's storage.
+      - "C:/Program Files/Agent/Media/WebServerRoot/Media/video/UQCRY:/agentdvr/crawlspace:ro"
     depends_on:
       postgres:
         condition: service_healthy

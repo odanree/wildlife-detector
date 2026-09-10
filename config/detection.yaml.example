@@ -35,6 +35,16 @@ zones:
     - [0.7222, 0.3901]
     - [0.6587, 0.3319]
     - [0.394, 0.8308]
+  crawlspace_zone:
+    # Placeholder polygon — covers the lower ~65% of the frame (floor +
+    # rat pathways near the ladder/Enphase gateway). Draw the real
+    # polygon in the zone editor UI after `detector-crawlspace` is up
+    # and the baseline snapshot is captured. See ADR-002 zone editor.
+    polygon:
+    - [0.05, 0.30]
+    - [0.95, 0.30]
+    - [0.95, 0.95]
+    - [0.05, 0.95]
   backyard_zone:
     polygon:
     - [0.041, 0.0571]
