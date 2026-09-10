@@ -707,10 +707,31 @@ services:
       RTSP_URL: rtsp://admin:123456@192.168.1.229:554/stream1
       BASELINE_PATH: data/baseline_crawlspace.jpg
       # Indoor crawlspace has no sun cycle — permanent IR-lit night scene.
-      # Force the day/night picker to always return "night" by setting an
-      # unreachable brightness threshold. Keeps day-gated logic (daytime
-      # skepticism gate, day polygon, day-only classifier config) inert.
+      # Crawlspace is IR-lit 24/7 with essentially zero brightness delta
+      # between day and night (measured 130 mean at both 03:14 AM and
+      # 15:41 PM, September 2026). Baseline picking (which drives VLM
+      # prompt content, eyeshine gate, and baseline-diff sensitivity)
+      # therefore STAYS force-night via the unreachable brightness
+      # threshold — the pipeline reasons about scene lighting via
+      # baseline_mode and we don't want it thinking crawlspace is
+      # sunlit color when the sensor is still IR.
       DAY_NIGHT_BRIGHTNESS_THRESHOLD: "255"
+      # Zone polygon selection, on the other hand, correlates with sun
+      # position (proxy for human-active hours). Opt in to sun-based
+      # polygon picking so `polygon_day` fires between local sunrise
+      # and sunset and `polygon` fires overnight. Baseline slot stays
+      # night 24/7 — see the ZONE_POLYGON_MODE_SOURCE handling in
+      # src/pipeline.py and the split rationale from Fable's #187
+      # review.
+      ZONE_POLYGON_MODE_SOURCE: sun
+      # Astronomy source is the astral pure-Python package (no network
+      # dependency; see requirements.txt). Coords default to Orange
+      # County, CA — override in .env with SUN_LAT / SUN_LON for other
+      # locations. Timezone-independent: solar elevation at (lat, lon)
+      # is a pure function of the UTC instant, so no SUN_TZ env is
+      # needed regardless of container TZ.
+      SUN_LAT: "${SUN_LAT:-33.7455}"
+      SUN_LON: "${SUN_LON:--117.8677}"
       # Never skip — indoor, no ambient light window to protect against.
       SKIP_DAYTIME_DETECTION: "0"
       TZ: America/Los_Angeles

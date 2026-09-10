@@ -13,6 +13,7 @@ from __future__ import annotations
 import collections
 import copy
 import logging
+import math
 import os
 import re
 import threading
@@ -135,8 +136,14 @@ class Baseline:
 
     def snapshot_bytes(self, mode: str = "auto",
                        current_frame_jpeg: bytes | None = None) -> tuple[bytes, int, str]:
-        """Return (jpeg, version, mode_used). If mode='auto', pick based on
-        the current frame's brightness; otherwise use the explicit slot."""
+        """Return (jpeg, version, mode_used). If mode='auto', pick based
+        on the current frame's brightness; otherwise use the explicit
+        slot. Baseline picking is ALWAYS brightness-based — sun-based
+        picking only affects zone-polygon selection (see
+        `_detect_sun_polygon_mode` below) because the baseline mode
+        also drives VLM prompt, eyeshine gate, and baseline-diff
+        sensitivity, all of which reason about 'day' as a sunlit color
+        scene rather than 'sun is up on an IR camera.'"""
         if mode == "auto":
             mode = _detect_brightness_mode(current_frame_jpeg) if current_frame_jpeg else "day"
         with self._lock:
@@ -201,6 +208,106 @@ def _detect_brightness_mode(jpeg: bytes) -> str:
         return "day" if img.mean() >= _DAY_NIGHT_THRESHOLD else "night"
     except Exception:
         return "day"
+
+
+# Warn-once flag for sun-mode fallback — surfacing silent config
+# failures per the "surface silent fails" phase of the prototype-to-
+# production blueprint. First fallback in the process lifetime logs
+# a WARN with a specific reason; subsequent fallbacks stay quiet so
+# the render-loop log doesn't spam.
+_sun_fallback_warned = False
+
+
+def _detect_sun_polygon_mode() -> str:
+    """Return 'day' or 'night' from the sun's altitude at (SUN_LAT,
+    SUN_LON). USED ONLY for zone-polygon selection — baseline slot
+    picking stays brightness-based (see `_detect_brightness_mode` and
+    Fable's F review of #187 for why reusing the same discriminator
+    for both was an architectural landmine: `_is_daytime` drives VLM
+    prompt content, eyeshine hard-rail, and baseline-diff sensitivity,
+    all of which reason about 'day' as sunlit color rather than 'sun
+    happens to be up.'
+
+    Uses `astral.sun.elevation()` — never raises, works at any latitude
+    including polar summer/winter. Timezone-independent: solar altitude
+    at (lat, lon) is a pure function of the UTC instant, so `now` is
+    captured with `tz=UTC` and no SUN_TZ env is required (Fable's pass
+    2 caught the earlier SUN_TZ='UTC' guard as dead logic breaking
+    UTC-configured containers).
+
+    Threshold: `with_refraction=False` (geometric altitude) plus
+    `alt > -0.833°` — matches astral's own `sunrise()`/`sunset()`
+    within seconds (measured in pass-3 review). The -0.833° figure
+    breaks down as 0.567° for atmospheric refraction at the horizon +
+    0.267° for solar semi-diameter (the sun visibly rises when the top
+    of its disc crosses, not the center). Getting either factor wrong
+    shifts the polygon-swap boundary by ~4 minutes; this pair matches
+    astral exactly.
+
+    Coord validation: rejects None, empty string, whitespace, unparseable
+    floats, NaN, Inf, and out-of-range latitudes/longitudes. All route
+    through the same one-shot WARN fallback so misconfig is visible
+    without spamming the render loop. Env reads are call-time (not
+    module-scope) so tests can vary them without an import reload.
+    """
+    global _sun_fallback_warned
+
+    def _fall_back(reason: str) -> str:
+        global _sun_fallback_warned
+        if not _sun_fallback_warned:
+            logger.warning(
+                "sun-mode polygon picker falling back to 'night': %s. "
+                "Further fallbacks won't be logged. Verify SUN_LAT and "
+                "SUN_LON envs on the detector container.",
+                reason,
+            )
+            _sun_fallback_warned = True
+        return "night"
+
+    # Read each var independently and check for the set-but-empty
+    # trap (`SUN_LAT=""` with SUN_LON=-117 → `or 0` would silently
+    # yield equator). Missing = None; empty string = misconfig, not
+    # "default to zero."
+    lat_raw = os.getenv("SUN_LAT")
+    lon_raw = os.getenv("SUN_LON")
+    if lat_raw is None or lat_raw.strip() == "":
+        return _fall_back("SUN_LAT not set")
+    if lon_raw is None or lon_raw.strip() == "":
+        return _fall_back("SUN_LON not set")
+    try:
+        lat = float(lat_raw)
+        lon = float(lon_raw)
+    except ValueError as e:
+        return _fall_back(f"SUN_LAT/SUN_LON parse error: {e}")
+    # `float()` accepts NaN/Inf, and astral silently returns garbage
+    # for out-of-range coords (verified pass 3: latitude=95 produces
+    # a plausible-looking 4.65° altitude). Fable pass 3 flagged as
+    # the same shape as the empty-string trap — validate explicitly.
+    if not (math.isfinite(lat) and math.isfinite(lon)):
+        return _fall_back(f"SUN_LAT/SUN_LON not finite: lat={lat} lon={lon}")
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        return _fall_back(
+            f"SUN_LAT/SUN_LON out of range: lat={lat} (need -90..90), "
+            f"lon={lon} (need -180..180)"
+        )
+    if lat == 0.0 and lon == 0.0:
+        return _fall_back("SUN_LAT and SUN_LON both zero (Gulf of Guinea)")
+
+    try:
+        from astral import Observer
+        from astral.sun import elevation
+        from datetime import datetime, timezone as _tz
+        now = datetime.now(tz=_tz.utc)
+        alt = elevation(
+            Observer(latitude=lat, longitude=lon),
+            dateandtime=now,
+            with_refraction=False,
+        )
+        # -0.833° = 0.567° refraction + 0.267° semi-diameter; matches
+        # astral's sunrise()/sunset() geometric definition.
+        return "day" if alt > -0.833 else "night"
+    except Exception as e:
+        return _fall_back(f"astral raised: {type(e).__name__}: {e}")
 
 
 
