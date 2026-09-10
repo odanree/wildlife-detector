@@ -47,14 +47,31 @@ import os
 import re
 import subprocess
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Callable, Optional
 
 from src.stream.playback_url import build_nvr_playback_url
 
 logger = logging.getLogger(__name__)
+
+# Age at which we call an AgentDVR chunk "stale" — i.e. AgentDVR has moved
+# on and this file is a closed record, not the currently-being-written
+# chunk. During normal recording, mtime updates at least every few seconds
+# as ffmpeg flushes the encoder buffer; 30s of mtime silence is a strong
+# signal that AgentDVR closed the chunk and started (or failed to start)
+# a new one. In-container (Linux mount of the AgentDVR host dir) this is
+# fine; do NOT invoke from a Windows-native process (native NTFS lazily
+# updates directory mtime and would tombstone every current chunk).
+_AGENTDVR_CHUNK_STALE_SECONDS = 30.0
+
+# Max seconds between chunk N's close and chunk N+1's start before we
+# call it a real gap (as opposed to a normal file-rotation seam).
+# AgentDVR's normal seam is ~1s. 5s gives room for occasional flush
+# jitter without swallowing genuine short outages.
+_AGENTDVR_SEAM_TOLERANCE_SECONDS = 5.0
 
 # AgentDVR continuous-chunk filename shape:
 #   <cam_index>_<YYYY-MM-DD>_<HH-MM-SS>_<msec>.mkv
@@ -101,9 +118,45 @@ class ClipArchiver:
         day = datetime.fromtimestamp(alert_ts, tz=timezone.utc).strftime("%Y-%m-%d")
         return self.clips_dir / day / f"{alert_id}.mp4"
 
+    def failure_path(self, alert_id: int, alert_ts: float) -> Path:
+        """Permanent-failure sentinel path.
+
+        Lives beside `clip_path` with a `.failed` suffix so day-directory
+        listings show clips and failures side-by-side, and both share the
+        same rotation/backup rules. Presence means: this alert was
+        determined to be unrecoverable (AgentDVR outage gap, source
+        rotated off the NVR, etc.) and further archiver runs should not
+        attempt it. Semantically the "tombstone" pattern — a permanent
+        marker distinct from "haven't tried yet."
+        """
+        day = datetime.fromtimestamp(alert_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        return self.clips_dir / day / f"{alert_id}.failed"
+
     def has_clip(self, alert_id: int, alert_ts: float) -> bool:
         p = self.clip_path(alert_id, alert_ts)
         return p.exists() and p.stat().st_size > 0
+
+    def is_permanent_failure(self, alert_id: int, alert_ts: float) -> bool:
+        """True if a prior pull attempt marked this alert unrecoverable."""
+        return self.failure_path(alert_id, alert_ts).exists()
+
+    def _mark_permanent_failure(
+        self, alert_id: int, alert_ts: float, reason: str,
+    ) -> None:
+        """Drop the tombstone. Idempotent; a `.failed` file may already
+        exist from a prior attempt. Body carries the reason for later
+        forensics (why did we give up on this alert?)."""
+        p = self.failure_path(alert_id, alert_ts)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with p.open("w", encoding="utf-8") as f:
+                f.write(f"{reason}\n")
+        except OSError as e:
+            logger.warning(
+                "Archiver: failed to write tombstone for alert=%d: %s "
+                "(continuing — alert will be re-attempted on next backfill).",
+                alert_id, e,
+            )
 
     def submit(
         self,
@@ -122,6 +175,14 @@ class ClipArchiver:
             logger.debug("Archiver: clip exists for alert=%d, skipping", alert_id)
             if on_done:
                 on_done(alert_id, self.clip_path(alert_id, alert_ts))
+            return
+        if self.is_permanent_failure(alert_id, alert_ts):
+            logger.debug(
+                "Archiver: alert=%d already marked permanent failure, skipping",
+                alert_id,
+            )
+            if on_done:
+                on_done(alert_id, None)
             return
         with self._inflight_lock:
             if alert_id in self._inflight:
@@ -243,41 +304,225 @@ class ClipArchiver:
         target_local = self._alert_ts_to_local(alert_ts)
         window_start_local = target_local - timedelta(seconds=self.pre_roll_seconds)
 
-        chunk = self._pick_agentdvr_chunk(source_dir, window_start_local)
-        if chunk is None:
-            logger.info(
-                "Archiver: no AgentDVR chunk covers alert=%d (target=%s) in %s. "
-                "Camera may have been offline or retention rotated the file.",
-                alert_id, window_start_local.isoformat(), source_dir,
+        # Enumerate all chunks up front so we can reason about neighbors
+        # (seam vs. gap discrimination) and distinguish "dir is empty"
+        # from "all chunks postdate the alert."
+        all_chunks = self._list_agentdvr_chunks(source_dir, target_local.tzinfo)
+        if not all_chunks:
+            # Empty listing: bind mount is present but no chunks visible.
+            # Could be a mount that lost its backing store (external
+            # drive dropped, Docker Desktop share hiccup) or a genuine
+            # first-boot state before AgentDVR has written anything.
+            # Either way, tombstoning would be premature — the operator
+            # can re-run backfill after fixing the mount, and if this is
+            # first-boot the alert probably has no footage anyway but
+            # tombstoning locks that in permanently. Skip without a
+            # tombstone; retry-safe.
+            logger.warning(
+                "Archiver: alert=%d — AGENTDVR_DIR_%s='%s' is empty of "
+                "chunks. Bind mount or first-boot? Not tombstoning; "
+                "run backfill after diagnosing.",
+                alert_id, camera_id.upper(), agentdvr_dir,
             )
             return None
 
-        chunk_path, chunk_start_local = chunk
-        offset_seconds = (window_start_local - chunk_start_local).total_seconds()
-        if offset_seconds < 0:
-            # Shouldn't happen given the picker's start<=target invariant, but
-            # guard anyway — negative -ss is a silent misread in ffmpeg.
-            offset_seconds = 0.0
+        # Pick the covering chunk (latest with start ≤ window_start).
+        chunk_index: Optional[int] = None
+        for i, (_, start) in enumerate(all_chunks):
+            if start <= window_start_local:
+                chunk_index = i
+            else:
+                break
+        if chunk_index is None:
+            # Chunks exist but all start > target. Alert predates
+            # AgentDVR's recording history for this camera; no future
+            # backfill will find footage that never existed.
+            first_chunk_name = all_chunks[0][0].name
+            reason = (
+                f"predates_history: alert window_start "
+                f"{window_start_local.isoformat()} predates earliest "
+                f"chunk ({first_chunk_name}). Camera onboarded after "
+                f"the alert or retention rotated the covering chunk off."
+            )
+            logger.warning(
+                "Archiver: alert=%d permanent failure — %s",
+                alert_id, reason,
+            )
+            self._mark_permanent_failure(alert_id, alert_ts, reason)
+            return None
 
-        # Open-chunk race: if the picked file is being written now and the
-        # tail of our desired window (alert_ts + duration) hasn't been
-        # flushed to disk, ffmpeg -ss will return a truncated or empty
-        # clip. Use mtime as a proxy for "how much has been written" —
-        # if our desired end is beyond it, back off. Backfill script or a
-        # retry-later mechanism handles late materialization.
+        chunk_path, chunk_start_local = all_chunks[chunk_index]
+        next_chunk: Optional[tuple[Path, datetime]] = (
+            all_chunks[chunk_index + 1] if chunk_index + 1 < len(all_chunks) else None
+        )
+
+        # Three failure modes had to be teased apart from what previously
+        # looked like one "desired_end > mtime" skip:
+        #
+        #   OPEN CHUNK RACE — covering chunk is being written by
+        #     AgentDVR right now. Tail of our desired window hasn't
+        #     been flushed. Retry after chunk closes is correct.
+        #
+        #   BOUNDARY SEAM — covering chunk closed cleanly and the next
+        #     chunk started within ~5s. Alert crosses the seam. Footage
+        #     lives in the next chunk — slice from there with offset=0
+        #     (loses pre-roll if window_start < next.start, but that's
+        #     better than tombstoning recoverable footage).
+        #
+        #   AGENTDVR GAP — covering chunk closed and either no next
+        #     chunk exists yet (AgentDVR still down) or the next
+        #     chunk's start is far past the covering chunk's mtime
+        #     (real outage window). No footage will ever exist for the
+        #     alert's window. Tombstone.
+        #
+        # See PR that closed wildlife-detector#183 for the prod
+        # incident (15-min outage at 04:14, 3 permanently-unrecoverable
+        # alerts) that motivated the split, and Fable's two review
+        # passes that caught: (1st) boundary-seam false-positive
+        # tombstones and (2nd) the alert_ts-vs-desired_end confusion
+        # that used to redirect alerts INSIDE a stale chunk to its
+        # successor (silently returning wrong footage).
         try:
             file_mtime = chunk_path.stat().st_mtime
         except OSError:
             file_mtime = 0.0
         desired_end_unix = alert_ts + self.duration_seconds
+
         if desired_end_unix > file_mtime + 2.0:  # 2s safety margin for mtime lag
-            logger.info(
-                "Archiver: alert=%d falls in open AgentDVR chunk (%s, mtime=%.0f, "
-                "desired_end=%.0f). Skipping — backfill on next run.",
-                alert_id, chunk_path.name, file_mtime, desired_end_unix,
+            now = time.time()
+            chunk_age_s = now - file_mtime
+
+            if chunk_age_s <= _AGENTDVR_CHUNK_STALE_SECONDS:
+                # Covering chunk is fresh — AgentDVR still writing. The
+                # tail of our desired window hasn't been flushed yet.
+                # Retry-later is right.
+                logger.info(
+                    "Archiver: alert=%d in currently-open AgentDVR chunk "
+                    "(%s, mtime=%.0f age=%.1fs, desired_end=%.0f). "
+                    "Skipping — backfill after chunk closes.",
+                    alert_id, chunk_path.name, file_mtime, chunk_age_s,
+                    desired_end_unix,
+                )
+                return None
+
+            # Covering chunk is stale (closed). Where does the ALERT
+            # MOMENT itself lie — inside A, or past A's close?
+            #
+            # Fable's 2nd review caught the subtle case: alert=14:14:00,
+            # A.mtime=14:14:35, B.start=14:14:36. desired_end (14:14:45)
+            # is past A.mtime, so the old code redirected to B and
+            # sliced from B.start=14:14:36 — 36 seconds AFTER the alert.
+            # Silent wrong evidence. Fix: only redirect / tombstone
+            # when the alert moment itself is past A's close time. If
+            # the alert falls INSIDE A, slice A even though the tail
+            # is truncated — ffmpeg -t gives us whatever's available
+            # and the resulting clip is correct if short.
+            if alert_ts <= file_mtime:
+                logger.info(
+                    "Archiver: alert=%d inside stale chunk %s "
+                    "(mtime=%.0f, alert_ts=%.0f); slicing truncated. "
+                    "Clip may be shorter than %ds but represents "
+                    "authoritative footage.",
+                    alert_id, chunk_path.name, file_mtime, alert_ts,
+                    self.duration_seconds,
+                )
+                return self._slice_agentdvr_chunk(
+                    alert_id, alert_ts, camera_id,
+                    chunk_path=chunk_path,
+                    chunk_start_local=chunk_start_local,
+                    window_start_local=window_start_local,
+                    out_path=out_path,
+                )
+
+            # Alert moment past A's close. Seam or gap?
+            if next_chunk is not None:
+                next_path, next_start_local = next_chunk
+                seam_gap_s = (next_start_local.timestamp() - file_mtime)
+                if seam_gap_s <= _AGENTDVR_SEAM_TOLERANCE_SECONDS:
+                    # Boundary seam — footage continues in the next
+                    # chunk. But: B itself may be the currently-open
+                    # chunk. If B's mtime is fresh AND desired_end is
+                    # past B's mtime, the tail STILL isn't flushed —
+                    # retry-later applies to B too, not just A.
+                    try:
+                        next_mtime = next_path.stat().st_mtime
+                    except OSError:
+                        next_mtime = 0.0
+                    next_age_s = now - next_mtime
+                    if (next_age_s <= _AGENTDVR_CHUNK_STALE_SECONDS
+                            and desired_end_unix > next_mtime + 2.0):
+                        logger.info(
+                            "Archiver: alert=%d seams from %s into open "
+                            "chunk %s (next.mtime=%.0f age=%.1fs, "
+                            "desired_end=%.0f). Skipping — backfill "
+                            "after next chunk closes.",
+                            alert_id, chunk_path.name, next_path.name,
+                            next_mtime, next_age_s, desired_end_unix,
+                        )
+                        return None
+                    return self._slice_agentdvr_chunk(
+                        alert_id, alert_ts, camera_id,
+                        chunk_path=next_path,
+                        chunk_start_local=next_start_local,
+                        window_start_local=window_start_local,
+                        out_path=out_path,
+                    )
+                # Real gap between chunk and its successor.
+                reason = (
+                    f"agentdvr_gap: chunk {chunk_path.name} closed "
+                    f"{int(chunk_age_s)}s ago (mtime={file_mtime:.0f}), "
+                    f"next chunk {next_path.name} started "
+                    f"{seam_gap_s:.1f}s later — outside the "
+                    f"{_AGENTDVR_SEAM_TOLERANCE_SECONDS:.0f}s seam. "
+                    f"Alert desired_end={desired_end_unix:.0f} falls in "
+                    f"the gap; AgentDVR wasn't recording."
+                )
+            else:
+                # No next chunk AND covering chunk is stale AND alert
+                # moment is past A's close. AgentDVR appears to have
+                # stopped recording after this chunk. Tombstone.
+                reason = (
+                    f"agentdvr_gap: chunk {chunk_path.name} is the "
+                    f"latest in the directory but closed "
+                    f"{int(chunk_age_s)}s ago (mtime={file_mtime:.0f}). "
+                    f"AgentDVR appears to have stopped recording; "
+                    f"alert_ts={alert_ts:.0f} past close."
+                )
+            logger.warning(
+                "Archiver: alert=%d permanent failure — %s",
+                alert_id, reason,
             )
+            self._mark_permanent_failure(alert_id, alert_ts, reason)
             return None
 
+        return self._slice_agentdvr_chunk(
+            alert_id, alert_ts, camera_id,
+            chunk_path=chunk_path,
+            chunk_start_local=chunk_start_local,
+            window_start_local=window_start_local,
+            out_path=out_path,
+        )
+
+    def _slice_agentdvr_chunk(
+        self,
+        alert_id: int,
+        alert_ts: float,
+        camera_id: str,
+        *,
+        chunk_path: Path,
+        chunk_start_local: datetime,
+        window_start_local: datetime,
+        out_path: Path,
+    ) -> Optional[Path]:
+        """Stream-copy `duration_seconds` out of a specific chunk.
+
+        Split out of the main _pull_from_agentdvr flow so the boundary-
+        seam fallback can call it against the next chunk without
+        duplicating the ffmpeg invocation.
+        """
+        offset_seconds = max(
+            0.0, (window_start_local - chunk_start_local).total_seconds(),
+        )
         # -ss BEFORE -i: input seek, uses container index for fast keyframe
         # jump. -c:v copy preserves HEVC bytes; -tag:v hvc1 so the MP4
         # container declares HEVC in the box that Safari/QuickTime read.
@@ -326,6 +571,47 @@ class ClipArchiver:
             if best is None or start > best[1]:
                 best = (entry, start)
         return best
+
+    def _list_agentdvr_chunks(
+        self, source_dir: Path, tz: Optional[tzinfo],
+    ) -> list[tuple[Path, datetime]]:
+        """All valid chunks in source_dir, sorted by start ascending.
+
+        Distinct from `_pick_agentdvr_chunk` — that returns just the
+        best pre-target candidate. This one is used when we need to
+        know about neighbors (seam detection, "is the directory empty
+        vs. all-future" disambiguation for the tombstone logic).
+
+        Returns an empty list on OSError (bind mount vanished mid-run,
+        permission denied, etc.). Caller sees "empty listing" and
+        routes to the retry-safe branch instead of tombstoning.
+        """
+        chunks: list[tuple[Path, datetime]] = []
+        try:
+            entries = list(source_dir.iterdir())
+        except OSError as e:
+            logger.warning(
+                "Archiver: iterdir failed on %s: %s. Treating as empty listing.",
+                source_dir, e,
+            )
+            return []
+        for entry in entries:
+            if not entry.is_file():
+                continue
+            m = _AGENTDVR_FILENAME_RE.match(entry.name)
+            if not m:
+                continue
+            try:
+                start = datetime(
+                    int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                    int(m.group(4)), int(m.group(5)), int(m.group(6)),
+                    tzinfo=tz,
+                )
+            except ValueError:
+                continue
+            chunks.append((entry, start))
+        chunks.sort(key=lambda x: x[1])
+        return chunks
 
     def _alert_ts_to_local(self, alert_ts: float) -> datetime:
         """Convert unix UTC to the recorder's wall-clock zone (NVR_TZ)."""
