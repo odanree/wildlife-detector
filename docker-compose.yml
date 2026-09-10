@@ -727,11 +727,11 @@ services:
       # Astronomy source is the astral pure-Python package (no network
       # dependency; see requirements.txt). Coords default to Orange
       # County, CA — override in .env with SUN_LAT / SUN_LON for other
-      # locations. SUN_TZ must be set to a real IANA zone; a UTC-only
-      # setup with non-UTC coords silently maps every hour to "night".
+      # locations. Timezone-independent: solar elevation at (lat, lon)
+      # is a pure function of the UTC instant, so no SUN_TZ env is
+      # needed regardless of container TZ.
       SUN_LAT: "${SUN_LAT:-33.7455}"
       SUN_LON: "${SUN_LON:--117.8677}"
-      SUN_TZ: "${SUN_TZ:-America/Los_Angeles}"
       # Never skip — indoor, no ambient light window to protect against.
       SKIP_DAYTIME_DETECTION: "0"
       TZ: America/Los_Angeles

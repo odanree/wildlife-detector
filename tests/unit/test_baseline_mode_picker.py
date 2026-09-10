@@ -1,12 +1,12 @@
 """Unit tests for the sun-based zone-polygon mode picker.
 
-Note: baseline picking is intentionally NOT tested here — this PR
-deliberately keeps baseline slot selection on the pre-existing
-brightness path. Sun only chooses which zone polygon fires; VLM
-prompt content, eyeshine gate, and baseline-diff sensitivity all
-continue to read `_baseline_cache[0][1]`, which stays brightness-
-driven. See Fable's #187 review for the load-bearing rationale for
-that split.
+Note: baseline picking is intentionally NOT tested here for sun mode
+— this PR deliberately keeps baseline slot selection on the
+pre-existing brightness path. Sun only chooses which zone polygon
+fires; VLM prompt content, eyeshine gate, and baseline-diff
+sensitivity all continue to read `_baseline_cache[0][1]`, which stays
+brightness-driven. See Fable's #187 pass 1 review for the load-bearing
+rationale.
 
 Env reads happen at call time inside `_detect_sun_polygon_mode`, so
 `monkeypatch.setenv` works without an import reload — no test-order
@@ -14,7 +14,7 @@ state leakage.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -35,54 +35,72 @@ def _reset_fallback_flag(monkeypatch):
 def test_returns_night_when_coords_unset(monkeypatch):
     monkeypatch.delenv("SUN_LAT", raising=False)
     monkeypatch.delenv("SUN_LON", raising=False)
-    monkeypatch.setenv("SUN_TZ", "America/Los_Angeles")
+    assert preview._detect_sun_polygon_mode() == "night"
+
+
+def test_returns_night_when_coord_is_set_but_empty(monkeypatch):
+    """Set-but-empty is a common Docker/CI trap — env_file passes empty
+    string for a var referenced without a default. Old code did
+    `float(os.getenv('SUN_LAT', '') or 0)` which silently mapped empty
+    to zero (Gulf of Guinea equator). Fable's F review pass 2 flagged
+    the trap explicitly; the picker must now WARN + fall back."""
+    monkeypatch.setenv("SUN_LAT", "")
+    monkeypatch.setenv("SUN_LON", "-117.8677")
+    assert preview._detect_sun_polygon_mode() == "night"
+
+    # Also check the other side — SUN_LON empty should not accept
+    # SUN_LAT=33.7 as "half configured, roll with equator lon."
+    monkeypatch.setenv("SUN_LAT", "33.7455")
+    monkeypatch.setenv("SUN_LON", "  ")   # whitespace also empty
     assert preview._detect_sun_polygon_mode() == "night"
 
 
 def test_returns_night_when_coords_are_zero_zero(monkeypatch):
     monkeypatch.setenv("SUN_LAT", "0")
     monkeypatch.setenv("SUN_LON", "0")
-    monkeypatch.setenv("SUN_TZ", "America/Los_Angeles")
     assert preview._detect_sun_polygon_mode() == "night"
 
 
 def test_returns_night_on_unparseable_coords(monkeypatch):
     monkeypatch.setenv("SUN_LAT", "not a number")
     monkeypatch.setenv("SUN_LON", "-117.8677")
-    monkeypatch.setenv("SUN_TZ", "America/Los_Angeles")
     assert preview._detect_sun_polygon_mode() == "night"
 
 
-def test_returns_night_on_tz_mismatch(monkeypatch):
-    """SUN_TZ=UTC with LA coords is the trap Fable's A flagged — sun
-    calculation would place sunset before sunrise for the same UTC day
-    and every hour maps to 'night' silently. The fix explicitly
-    detects the mismatch and logs it."""
-    monkeypatch.setenv("SUN_LAT", "33.7455")
-    monkeypatch.setenv("SUN_LON", "-117.8677")
-    monkeypatch.setenv("SUN_TZ", "UTC")
-    assert preview._detect_sun_polygon_mode() == "night"
-
-
-def test_returns_night_when_sun_tz_unset_and_tz_unset(monkeypatch):
-    monkeypatch.setenv("SUN_LAT", "33.7455")
-    monkeypatch.setenv("SUN_LON", "-117.8677")
-    monkeypatch.delenv("SUN_TZ", raising=False)
-    monkeypatch.delenv("TZ", raising=False)
-    assert preview._detect_sun_polygon_mode() == "night"
-
-
-def test_polar_latitude_does_not_raise(monkeypatch):
-    """North Pole in December — sun never rises. `astral.sun.sun()`
-    would raise ValueError here; `elevation()` (the new implementation)
-    correctly returns a negative altitude → 'night'."""
+def test_polar_latitude_returns_night_without_raising(monkeypatch):
+    """North Pole in December — sun is well below the horizon all day.
+    `astral.sun.sun()` would raise ValueError here; `elevation()`
+    correctly returns a negative altitude → 'night' with no exception."""
     monkeypatch.setenv("SUN_LAT", "90")
     monkeypatch.setenv("SUN_LON", "0")
-    monkeypatch.setenv("SUN_TZ", "UTC")   # UTC ok at the pole
-    # UTC-with-pole is legit — the tz-mismatch fallback fires anyway
-    # because SUN_TZ==UTC. Prove the fallback path returns "night"
-    # without crashing on the polar computation.
+
+    # Freeze to Dec 21 UTC noon — polar night at the North Pole.
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = datetime(2026, 12, 21, 12, 0, 0, tzinfo=timezone.utc)
+            return base.astimezone(tz) if tz else base
+    import datetime as _dt_mod
+    monkeypatch.setattr(_dt_mod, "datetime", FrozenDatetime)
+
     assert preview._detect_sun_polygon_mode() == "night"
+
+
+def test_polar_latitude_summer_returns_day_without_raising(monkeypatch):
+    """North Pole in June — midnight sun. `elevation()` returns
+    positive altitude → 'day' without raising."""
+    monkeypatch.setenv("SUN_LAT", "90")
+    monkeypatch.setenv("SUN_LON", "0")
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = datetime(2026, 6, 21, 12, 0, 0, tzinfo=timezone.utc)
+            return base.astimezone(tz) if tz else base
+    import datetime as _dt_mod
+    monkeypatch.setattr(_dt_mod, "datetime", FrozenDatetime)
+
+    assert preview._detect_sun_polygon_mode() == "day"
 
 
 def test_warn_once_flag_suppresses_repeat_fallback_logs(monkeypatch, caplog):
@@ -92,7 +110,6 @@ def test_warn_once_flag_suppresses_repeat_fallback_logs(monkeypatch, caplog):
     import logging
     monkeypatch.delenv("SUN_LAT", raising=False)
     monkeypatch.delenv("SUN_LON", raising=False)
-    monkeypatch.setenv("SUN_TZ", "America/Los_Angeles")
 
     with caplog.at_level(logging.WARNING, logger="src.web.preview"):
         preview._detect_sun_polygon_mode()  # should WARN
@@ -106,20 +123,20 @@ def test_warn_once_flag_suppresses_repeat_fallback_logs(monkeypatch, caplog):
     )
 
 
-# ── Happy paths (LA coords, known times) ─────────────────────────────
+# ── Happy paths (LA coords, timezone-independent) ───────────────────
 
 
-def _freeze_now(monkeypatch, when: datetime) -> None:
-    """Patch datetime inside src.web.preview so _detect_sun_polygon_mode
-    sees a fixed clock. astral itself only reads the dateandtime we
-    pass explicitly, so this reliably drives the branch."""
+def _freeze_now(monkeypatch, when_utc: datetime) -> None:
+    """Patch `datetime.datetime` so `datetime.now(tz)` returns `when_utc`
+    projected into the requested tz. Sun elevation is a function of the
+    UTC instant, so we always drive with a UTC anchor."""
+    assert when_utc.tzinfo is not None, "test bug: pass a tz-aware datetime"
+
     class FrozenDatetime(datetime):
         @classmethod
         def now(cls, tz=None):
-            return when.astimezone(tz) if tz else when
-    # _detect_sun_polygon_mode uses `from datetime import datetime`
-    # inside the function body — that re-resolves against sys.modules
-    # each call, so we patch the module-level class there.
+            return when_utc.astimezone(tz) if tz else when_utc.replace(tzinfo=None)
+
     import datetime as _dt_mod
     monkeypatch.setattr(_dt_mod, "datetime", FrozenDatetime)
 
@@ -127,34 +144,79 @@ def _freeze_now(monkeypatch, when: datetime) -> None:
 def test_la_noon_summer_returns_day(monkeypatch):
     monkeypatch.setenv("SUN_LAT", "33.7455")
     monkeypatch.setenv("SUN_LON", "-117.8677")
-    monkeypatch.setenv("SUN_TZ", "America/Los_Angeles")
-    _freeze_now(monkeypatch, datetime(2026, 9, 10, 12, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles")))
+    # 12:00 PDT = 19:00 UTC. Timezone-independent computation.
+    _freeze_now(monkeypatch, datetime(2026, 9, 10, 19, 0, 0, tzinfo=timezone.utc))
     assert preview._detect_sun_polygon_mode() == "day"
 
 
 def test_la_midnight_summer_returns_night(monkeypatch):
     monkeypatch.setenv("SUN_LAT", "33.7455")
     monkeypatch.setenv("SUN_LON", "-117.8677")
-    monkeypatch.setenv("SUN_TZ", "America/Los_Angeles")
-    _freeze_now(monkeypatch, datetime(2026, 9, 10, 0, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles")))
+    # 00:00 PDT = 07:00 UTC.
+    _freeze_now(monkeypatch, datetime(2026, 9, 10, 7, 0, 0, tzinfo=timezone.utc))
     assert preview._detect_sun_polygon_mode() == "night"
 
 
 def test_la_just_before_sunrise_returns_night(monkeypatch):
-    """Sanity check the -0.833° civil-horizon threshold — 05:30 PDT
-    on Sep 10 in Orange County is comfortably before civil dawn."""
+    """05:30 PDT on Sep 10 in Orange County — before sunrise."""
     monkeypatch.setenv("SUN_LAT", "33.7455")
     monkeypatch.setenv("SUN_LON", "-117.8677")
-    monkeypatch.setenv("SUN_TZ", "America/Los_Angeles")
-    _freeze_now(monkeypatch, datetime(2026, 9, 10, 5, 30, 0, tzinfo=ZoneInfo("America/Los_Angeles")))
+    _freeze_now(monkeypatch, datetime(2026, 9, 10, 12, 30, 0, tzinfo=timezone.utc))
     assert preview._detect_sun_polygon_mode() == "night"
 
 
 def test_la_just_after_sunrise_returns_day(monkeypatch):
-    """08:00 PDT on Sep 10 in Orange County is comfortably after
-    civil dawn (sunrise ~06:35)."""
+    """08:00 PDT on Sep 10 in Orange County — after sunrise."""
     monkeypatch.setenv("SUN_LAT", "33.7455")
     monkeypatch.setenv("SUN_LON", "-117.8677")
-    monkeypatch.setenv("SUN_TZ", "America/Los_Angeles")
-    _freeze_now(monkeypatch, datetime(2026, 9, 10, 8, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles")))
+    _freeze_now(monkeypatch, datetime(2026, 9, 10, 15, 0, 0, tzinfo=timezone.utc))
     assert preview._detect_sun_polygon_mode() == "day"
+
+
+def test_utc_configured_container_still_computes_sun(monkeypatch):
+    """No SUN_TZ / TZ=UTC on the container must not force silent
+    'night' fallback. Sun elevation is timezone-independent; the
+    previous SUN_TZ guard was dead logic that Fable pass 2 caught."""
+    monkeypatch.setenv("SUN_LAT", "33.7455")
+    monkeypatch.setenv("SUN_LON", "-117.8677")
+    monkeypatch.delenv("SUN_TZ", raising=False)
+    monkeypatch.setenv("TZ", "UTC")
+    _freeze_now(monkeypatch, datetime(2026, 9, 10, 19, 0, 0, tzinfo=timezone.utc))
+    # LA noon PDT ⇒ sun clearly up ⇒ "day" regardless of container TZ.
+    assert preview._detect_sun_polygon_mode() == "day"
+
+
+# ── Split invariant: baseline stays brightness, polygon follows sun ──
+
+
+def test_split_baseline_brightness_and_polygon_sun_are_independent(monkeypatch):
+    """Pins the load-bearing invariant from Fable's F review: for a
+    crawlspace-shaped config (DAY_NIGHT_BRIGHTNESS_THRESHOLD=255 forces
+    baseline to always be 'night'), sun-mode polygon picking can still
+    return 'day' during daylight — and the two decisions are made by
+    independent code paths."""
+    # Force baseline threshold unreachable.
+    monkeypatch.setenv("DAY_NIGHT_BRIGHTNESS_THRESHOLD", "255")
+    # Need to reload the module so _DAY_NIGHT_THRESHOLD picks it up
+    # (that one IS module-scope by design — read once at startup).
+    import importlib
+    importlib.reload(preview)
+    # Restore autouse fixture — reload wiped it out.
+    monkeypatch.setattr(preview, "_sun_fallback_warned", False, raising=False)
+
+    # Even an "obviously bright" JPEG can't cross threshold=255.
+    import numpy as np
+    import cv2
+    bright = np.full((100, 100), 254, dtype=np.uint8)
+    _, jpeg_buf = cv2.imencode(".jpg", bright)
+    bright_jpeg = jpeg_buf.tobytes()
+    assert preview._detect_brightness_mode(bright_jpeg) == "night"
+
+    # And at LA noon, sun path returns day for the polygon.
+    monkeypatch.setenv("SUN_LAT", "33.7455")
+    monkeypatch.setenv("SUN_LON", "-117.8677")
+    _freeze_now(monkeypatch, datetime(2026, 9, 10, 19, 0, 0, tzinfo=timezone.utc))
+    assert preview._detect_sun_polygon_mode() == "day"
+
+    # The two functions do not share state — different discriminators
+    # for different concerns.

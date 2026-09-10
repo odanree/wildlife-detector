@@ -139,7 +139,7 @@ class Baseline:
         on the current frame's brightness; otherwise use the explicit
         slot. Baseline picking is ALWAYS brightness-based — sun-based
         picking only affects zone-polygon selection (see
-        `_detect_zone_polygon_mode` below) because the baseline mode
+        `_detect_sun_polygon_mode` below) because the baseline mode
         also drives VLM prompt, eyeshine gate, and baseline-diff
         sensitivity, all of which reason about 'day' as a sunlit color
         scene rather than 'sun is up on an IR camera.'"""
@@ -219,21 +219,33 @@ _sun_fallback_warned = False
 
 def _detect_sun_polygon_mode() -> str:
     """Return 'day' or 'night' from the sun's altitude at (SUN_LAT,
-    SUN_LON) in SUN_TZ. USED ONLY for zone-polygon selection —
-    baseline slot picking stays brightness-based (see
-    `_detect_brightness_mode` and Fable's F review of #187 for why
-    reusing the same discriminator for both was an architectural
-    landmine: `_is_daytime` drives VLM prompt content, eyeshine
-    hard-rail, and baseline-diff sensitivity, all of which reason
-    about 'day' as sunlit color rather than 'sun happens to be up.'
+    SUN_LON). USED ONLY for zone-polygon selection — baseline slot
+    picking stays brightness-based (see `_detect_brightness_mode` and
+    Fable's F review of #187 for why reusing the same discriminator
+    for both was an architectural landmine: `_is_daytime` drives VLM
+    prompt content, eyeshine hard-rail, and baseline-diff sensitivity,
+    all of which reason about 'day' as sunlit color rather than 'sun
+    happens to be up.'
 
-    Uses `astral.sun.elevation()` (never raises — tz/polar-safe)
-    with the standard -0.833° civil-horizon threshold. Any failure
-    path returns 'night' with a one-shot WARN log so misconfig is
-    visible without spamming the render loop.
+    Uses `astral.sun.elevation()` — never raises, works at any latitude
+    including polar summer/winter. Timezone-independent: solar altitude
+    at (lat, lon) is a pure function of the UTC instant, so `now`
+    is captured with `tz=UTC` and no SUN_TZ env is required. Fable's
+    pass 2 review of #187 caught the earlier SUN_TZ='UTC' guard as
+    dead logic that permanently broke UTC-configured containers.
 
-    Env reads are call-time (not module-scope) so tests can vary
-    them without an import reload.
+    Threshold: uses `with_refraction=False` and matches astral's
+    sunrise/sunset by flipping at solar altitude 0° (the geometric
+    horizon net of refraction, which astral already accounts for in
+    the without-refraction elevation curve). This aligns the polygon
+    swap to within seconds of astral's own sunrise() and sunset()
+    boundaries — the earlier -0.833° with-refraction predicate
+    double-counted refraction and flipped ~1.5 minutes early at dawn.
+
+    Any failure path returns 'night' with a one-shot WARN log so
+    misconfig is visible without spamming the render loop. Env reads
+    are call-time (not module-scope) so tests can vary them without
+    an import reload.
     """
     global _sun_fallback_warned
 
@@ -242,44 +254,42 @@ def _detect_sun_polygon_mode() -> str:
         if not _sun_fallback_warned:
             logger.warning(
                 "sun-mode polygon picker falling back to 'night': %s. "
-                "Further fallbacks won't be logged. Verify SUN_LAT, "
-                "SUN_LON, SUN_TZ envs on the detector container.",
+                "Further fallbacks won't be logged. Verify SUN_LAT and "
+                "SUN_LON envs on the detector container.",
                 reason,
             )
             _sun_fallback_warned = True
         return "night"
 
+    # Read each var independently and check for the set-but-empty
+    # trap (`SUN_LAT=""` with SUN_LON=-117 → `or 0` would silently
+    # yield equator). Missing = None; empty string = misconfig, not
+    # "default to zero."
+    lat_raw = os.getenv("SUN_LAT")
+    lon_raw = os.getenv("SUN_LON")
+    if lat_raw is None or lat_raw.strip() == "":
+        return _fall_back("SUN_LAT not set")
+    if lon_raw is None or lon_raw.strip() == "":
+        return _fall_back("SUN_LON not set")
     try:
-        lat = float(os.getenv("SUN_LAT", "") or 0)
-        lon = float(os.getenv("SUN_LON", "") or 0)
+        lat = float(lat_raw)
+        lon = float(lon_raw)
     except ValueError as e:
         return _fall_back(f"SUN_LAT/SUN_LON parse error: {e}")
     if lat == 0.0 and lon == 0.0:
-        return _fall_back("SUN_LAT and SUN_LON both zero/unset")
-    tz_name = os.getenv("SUN_TZ") or os.getenv("TZ") or ""
-    if not tz_name or tz_name.upper() == "UTC":
-        # UTC + non-UTC coords is the tz-mismatch trap Fable's A
-        # flagged: sun() would return "sunset before sunrise" and
-        # every hour would fall in the empty window → permanent
-        # night. Force operator to pick a real zone.
-        return _fall_back(
-            f"SUN_TZ not set (SUN_TZ={tz_name!r}, TZ={os.getenv('TZ')!r}). "
-            f"Sun computation is meaningless in UTC for non-UTC coords."
-        )
+        return _fall_back("SUN_LAT and SUN_LON both zero (Gulf of Guinea)")
+
     try:
         from astral import Observer
         from astral.sun import elevation
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        tz = ZoneInfo(tz_name)
-        now = datetime.now(tz=tz)
-        # elevation() returns the solar altitude in degrees at `now`.
-        # -0.833° is the standard civil-horizon threshold — matches the
-        # "official" sunrise/sunset definition US Naval Observatory uses
-        # (accounts for atmospheric refraction + solar disc angular
-        # radius). Above → sun is functionally up → "day".
-        alt = elevation(Observer(latitude=lat, longitude=lon), dateandtime=now)
-        return "day" if alt > -0.833 else "night"
+        from datetime import datetime, timezone as _tz
+        now = datetime.now(tz=_tz.utc)
+        alt = elevation(
+            Observer(latitude=lat, longitude=lon),
+            dateandtime=now,
+            with_refraction=False,
+        )
+        return "day" if alt > 0.0 else "night"
     except Exception as e:
         return _fall_back(f"astral raised: {type(e).__name__}: {e}")
 
