@@ -282,7 +282,6 @@ def _detect_sun_polygon_mode() -> str:
     # for out-of-range coords (verified pass 3: latitude=95 produces
     # a plausible-looking 4.65° altitude). Fable pass 3 flagged as
     # the same shape as the empty-string trap — validate explicitly.
-    import math
     if not (math.isfinite(lat) and math.isfinite(lon)):
         return _fall_back(f"SUN_LAT/SUN_LON not finite: lat={lat} lon={lon}")
     if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
