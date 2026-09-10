@@ -135,10 +135,11 @@ class Baseline:
 
     def snapshot_bytes(self, mode: str = "auto",
                        current_frame_jpeg: bytes | None = None) -> tuple[bytes, int, str]:
-        """Return (jpeg, version, mode_used). If mode='auto', pick based on
-        the current frame's brightness; otherwise use the explicit slot."""
+        """Return (jpeg, version, mode_used). If mode='auto', dispatch to
+        the configured mode source (brightness or sun); otherwise use the
+        explicit slot."""
         if mode == "auto":
-            mode = _detect_brightness_mode(current_frame_jpeg) if current_frame_jpeg else "day"
+            mode = _detect_mode(current_frame_jpeg)
         with self._lock:
             return self._jpegs.get(mode, b""), self._version, mode
 
@@ -155,7 +156,7 @@ class Baseline:
         if not jpeg:
             raise ValueError("empty JPEG — no live frame available yet")
         if mode not in ("day", "night"):
-            mode = _detect_brightness_mode(jpeg)
+            mode = _detect_mode(jpeg)
         with self._lock:
             self._paths[mode].parent.mkdir(parents=True, exist_ok=True)
             self._paths[mode].write_bytes(jpeg)
@@ -187,6 +188,14 @@ class Baseline:
 # night mode looks brighter than typical (60-90 range is common).
 _DAY_NIGHT_THRESHOLD = int(os.getenv("DAY_NIGHT_BRIGHTNESS_THRESHOLD", "100"))
 
+# Mode-picker source. Default preserves the historical brightness-based
+# behavior for every camera that doesn't opt in. Set to "sun" to derive
+# day/night from local sunrise/sunset at (SUN_LAT, SUN_LON, SUN_TZ) —
+# useful when the scene brightness doesn't change with ambient light
+# (indoor cameras like crawlspace) but you still want the day polygon
+# to fire during human-active hours.
+_BASELINE_MODE_SOURCE = os.getenv("BASELINE_MODE_SOURCE", "brightness").lower()
+
 
 def _detect_brightness_mode(jpeg: bytes) -> str:
     """Return 'day' or 'night' from a JPEG's mean grayscale brightness."""
@@ -201,6 +210,51 @@ def _detect_brightness_mode(jpeg: bytes) -> str:
         return "day" if img.mean() >= _DAY_NIGHT_THRESHOLD else "night"
     except Exception:
         return "day"
+
+
+def _detect_sun_mode() -> str:
+    """Return 'day' or 'night' from local sunrise/sunset at (SUN_LAT,
+    SUN_LON) in SUN_TZ.
+
+    Pure-Python astronomy via `astral` — no network call, no rate
+    limit, no startup delay. Computed fresh each frame; the astral
+    calculation is ~microseconds.
+
+    Fallback contract: if coords are unconfigured, astral is missing,
+    or anything raises, return 'night' — the safe default that
+    matches the existing crawlspace force-night behavior. Callers
+    that opted into sun mode with garbage coords get their old
+    behavior back rather than an exception in the render loop.
+    """
+    try:
+        lat = float(os.getenv("SUN_LAT", "") or 0)
+        lon = float(os.getenv("SUN_LON", "") or 0)
+    except ValueError:
+        return "night"
+    if lat == 0.0 and lon == 0.0:
+        return "night"
+    tz_name = os.getenv("SUN_TZ") or os.getenv("TZ") or "UTC"
+    try:
+        from astral import LocationInfo
+        from astral.sun import sun as astral_sun
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name)
+        loc = LocationInfo(latitude=lat, longitude=lon, timezone=tz_name)
+        now = datetime.now(tz=tz)
+        s = astral_sun(loc.observer, date=now.date(), tzinfo=tz)
+        return "day" if s["sunrise"] <= now <= s["sunset"] else "night"
+    except Exception:
+        return "night"
+
+
+def _detect_mode(jpeg: bytes | None) -> str:
+    """Dispatch to the configured mode source. Frames pass in the raw
+    JPEG so the brightness path still works — the sun path ignores it.
+    """
+    if _BASELINE_MODE_SOURCE == "sun":
+        return _detect_sun_mode()
+    return _detect_brightness_mode(jpeg or b"")
 
 
 

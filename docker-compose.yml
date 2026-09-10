@@ -707,10 +707,22 @@ services:
       RTSP_URL: rtsp://admin:123456@192.168.1.229:554/stream1
       BASELINE_PATH: data/baseline_crawlspace.jpg
       # Indoor crawlspace has no sun cycle — permanent IR-lit night scene.
-      # Force the day/night picker to always return "night" by setting an
-      # unreachable brightness threshold. Keeps day-gated logic (daytime
-      # skepticism gate, day polygon, day-only classifier config) inert.
-      DAY_NIGHT_BRIGHTNESS_THRESHOLD: "255"
+      # Crawlspace is IR-lit 24/7 with essentially zero brightness delta
+      # between day and night (measured 130 mean at both 03:14 AM and
+      # 15:41 PM, September 2026). Brightness-based day/night picking
+      # therefore has no signal to gate on. Switch to sun-based picking
+      # so `polygon_day` fires between local sunrise and sunset (proxy
+      # for "human-active hours") and `polygon` fires overnight.
+      # DAY_NIGHT_BRIGHTNESS_THRESHOLD unset — the brightness path is
+      # skipped entirely when BASELINE_MODE_SOURCE=sun.
+      BASELINE_MODE_SOURCE: sun
+      # Astronomy source is the astral pure-Python package (no network
+      # dependency; see requirements.txt). Coords default to Orange
+      # County, CA — override in .env with SUN_LAT / SUN_LON for other
+      # locations. SUN_TZ defaults to the TZ env var when unset.
+      SUN_LAT: "${SUN_LAT:-33.7455}"
+      SUN_LON: "${SUN_LON:--117.8677}"
+      SUN_TZ: "${SUN_TZ:-America/Los_Angeles}"
       # Never skip — indoor, no ambient light window to protect against.
       SKIP_DAYTIME_DETECTION: "0"
       TZ: America/Los_Angeles

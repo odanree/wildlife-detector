@@ -26,3 +26,8 @@ psycopg[binary,pool]>=3.2
 # surface than a ~50MB image cost is worth.
 lightgbm>=4.3.0
 pandas>=2.2.0
+# Sunrise/sunset astronomy for BASELINE_MODE_SOURCE=sun (per-camera opt-in).
+# Used only by the sun-based baseline mode picker in src/web/preview.py.
+# Pure-Python, no network dependency, no rate limits — computed locally
+# from (SUN_LAT, SUN_LON, SUN_TZ) each frame. ~150KB install, negligible.
+astral>=3.2
