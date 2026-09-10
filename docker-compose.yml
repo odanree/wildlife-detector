@@ -798,6 +798,14 @@ services:
       NVR_CHANNEL_YARD: "5"
       NVR_CHANNEL_ROOFTOP: "6"
       NVR_CHANNEL_BACKYARD: "8"
+      # Crawlspace is NOT on the Amcrest NVR. AGENTDVR_DIR_CRAWLSPACE is
+      # mirrored from the archiver's env block (presence-only signal —
+      # web never reads the actual directory, only checks that this
+      # camera is AgentDVR-sourced so /api/alerts/<id>/playback-url can
+      # skip the misleading NVR channel=1 fallback). Value doesn't
+      # matter; set to the same path the archiver uses so the two
+      # blocks read symmetrically.
+      AGENTDVR_DIR_CRAWLSPACE: /agentdvr/crawlspace
     volumes:
       - ./data:/app/data
       - ./snapshots:/app/snapshots:ro
