@@ -229,23 +229,25 @@ def _detect_sun_polygon_mode() -> str:
 
     Uses `astral.sun.elevation()` — never raises, works at any latitude
     including polar summer/winter. Timezone-independent: solar altitude
-    at (lat, lon) is a pure function of the UTC instant, so `now`
-    is captured with `tz=UTC` and no SUN_TZ env is required. Fable's
-    pass 2 review of #187 caught the earlier SUN_TZ='UTC' guard as
-    dead logic that permanently broke UTC-configured containers.
+    at (lat, lon) is a pure function of the UTC instant, so `now` is
+    captured with `tz=UTC` and no SUN_TZ env is required (Fable's pass
+    2 caught the earlier SUN_TZ='UTC' guard as dead logic breaking
+    UTC-configured containers).
 
-    Threshold: uses `with_refraction=False` and matches astral's
-    sunrise/sunset by flipping at solar altitude 0° (the geometric
-    horizon net of refraction, which astral already accounts for in
-    the without-refraction elevation curve). This aligns the polygon
-    swap to within seconds of astral's own sunrise() and sunset()
-    boundaries — the earlier -0.833° with-refraction predicate
-    double-counted refraction and flipped ~1.5 minutes early at dawn.
+    Threshold: `with_refraction=False` (geometric altitude) plus
+    `alt > -0.833°` — matches astral's own `sunrise()`/`sunset()`
+    within seconds (measured in pass-3 review). The -0.833° figure
+    breaks down as 0.567° for atmospheric refraction at the horizon +
+    0.267° for solar semi-diameter (the sun visibly rises when the top
+    of its disc crosses, not the center). Getting either factor wrong
+    shifts the polygon-swap boundary by ~4 minutes; this pair matches
+    astral exactly.
 
-    Any failure path returns 'night' with a one-shot WARN log so
-    misconfig is visible without spamming the render loop. Env reads
-    are call-time (not module-scope) so tests can vary them without
-    an import reload.
+    Coord validation: rejects None, empty string, whitespace, unparseable
+    floats, NaN, Inf, and out-of-range latitudes/longitudes. All route
+    through the same one-shot WARN fallback so misconfig is visible
+    without spamming the render loop. Env reads are call-time (not
+    module-scope) so tests can vary them without an import reload.
     """
     global _sun_fallback_warned
 
@@ -276,6 +278,18 @@ def _detect_sun_polygon_mode() -> str:
         lon = float(lon_raw)
     except ValueError as e:
         return _fall_back(f"SUN_LAT/SUN_LON parse error: {e}")
+    # `float()` accepts NaN/Inf, and astral silently returns garbage
+    # for out-of-range coords (verified pass 3: latitude=95 produces
+    # a plausible-looking 4.65° altitude). Fable pass 3 flagged as
+    # the same shape as the empty-string trap — validate explicitly.
+    import math
+    if not (math.isfinite(lat) and math.isfinite(lon)):
+        return _fall_back(f"SUN_LAT/SUN_LON not finite: lat={lat} lon={lon}")
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        return _fall_back(
+            f"SUN_LAT/SUN_LON out of range: lat={lat} (need -90..90), "
+            f"lon={lon} (need -180..180)"
+        )
     if lat == 0.0 and lon == 0.0:
         return _fall_back("SUN_LAT and SUN_LON both zero (Gulf of Guinea)")
 
@@ -289,7 +303,9 @@ def _detect_sun_polygon_mode() -> str:
             dateandtime=now,
             with_refraction=False,
         )
-        return "day" if alt > 0.0 else "night"
+        # -0.833° = 0.567° refraction + 0.267° semi-diameter; matches
+        # astral's sunrise()/sunset() geometric definition.
+        return "day" if alt > -0.833 else "night"
     except Exception as e:
         return _fall_back(f"astral raised: {type(e).__name__}: {e}")
 

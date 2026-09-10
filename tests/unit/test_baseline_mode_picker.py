@@ -194,15 +194,13 @@ def test_split_baseline_brightness_and_polygon_sun_are_independent(monkeypatch):
     crawlspace-shaped config (DAY_NIGHT_BRIGHTNESS_THRESHOLD=255 forces
     baseline to always be 'night'), sun-mode polygon picking can still
     return 'day' during daylight — and the two decisions are made by
-    independent code paths."""
-    # Force baseline threshold unreachable.
-    monkeypatch.setenv("DAY_NIGHT_BRIGHTNESS_THRESHOLD", "255")
-    # Need to reload the module so _DAY_NIGHT_THRESHOLD picks it up
-    # (that one IS module-scope by design — read once at startup).
-    import importlib
-    importlib.reload(preview)
-    # Restore autouse fixture — reload wiped it out.
-    monkeypatch.setattr(preview, "_sun_fallback_warned", False, raising=False)
+    independent code paths.
+
+    Setattr on the module global directly (rather than importlib.reload)
+    per Fable pass 3 — the brightness function reads the module-level
+    threshold at each call, so monkeypatch.setattr auto-restores after
+    the test and doesn't leak state to the rest of the session."""
+    monkeypatch.setattr(preview, "_DAY_NIGHT_THRESHOLD", 255)
 
     # Even an "obviously bright" JPEG can't cross threshold=255.
     import numpy as np
@@ -220,3 +218,44 @@ def test_split_baseline_brightness_and_polygon_sun_are_independent(monkeypatch):
 
     # The two functions do not share state — different discriminators
     # for different concerns.
+
+
+def test_returns_night_on_nan_inf_and_out_of_range_coords(monkeypatch):
+    """`float()` happily parses NaN/Inf/1e400, and astral silently
+    returns plausible-looking garbage for latitude=95. Fable pass 3
+    flagged as the same shape as the empty-string trap — the guard
+    must reject these explicitly."""
+    for lat_raw in ("nan", "inf", "1e400", "-inf"):
+        monkeypatch.setenv("SUN_LAT", lat_raw)
+        monkeypatch.setenv("SUN_LON", "-117.8677")
+        monkeypatch.setattr(preview, "_sun_fallback_warned", False)
+        assert preview._detect_sun_polygon_mode() == "night", f"lat_raw={lat_raw}"
+
+    # Out-of-range latitude (astral just returns garbage).
+    monkeypatch.setenv("SUN_LAT", "95.0")
+    monkeypatch.setenv("SUN_LON", "-117.8677")
+    monkeypatch.setattr(preview, "_sun_fallback_warned", False)
+    assert preview._detect_sun_polygon_mode() == "night"
+
+    # Out-of-range longitude.
+    monkeypatch.setenv("SUN_LAT", "33.7455")
+    monkeypatch.setenv("SUN_LON", "200.0")
+    monkeypatch.setattr(preview, "_sun_fallback_warned", False)
+    assert preview._detect_sun_polygon_mode() == "night"
+
+
+# NOTE on the -0.833° threshold: the code uses
+# `elevation(..., with_refraction=False)` with `alt > -0.833`. The -0.833°
+# figure = 0.567° atmospheric refraction correction + 0.267° solar
+# semi-diameter, and matches astral's own sunrise()/sunset() to within
+# ~seconds (measured Sep 10, LA coords: sunrise flip at astral_sunrise
+# − 7s). A tight boundary test isn't feasible here — monkey-patching
+# `datetime.datetime` to freeze `now()` pollutes astral's internal
+# datetime usage and corrupts the elevation computation itself
+# (verified: at -30s from astral's sunrise, direct-call astral returns
+# geom=-0.895° (night), but the same call under a monkey-patched clock
+# returns geom=-0.816° (day) because astral's internal `datetime.combine`
+# resolves against the patched class). The right fix would be
+# freezegun or a `now` parameter on the picker — deferred as a
+# nice-to-have; existing pre-sunrise/post-sunrise tests cover the
+# ±30-min accuracy needed for polygon selection.
