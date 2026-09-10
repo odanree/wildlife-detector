@@ -26,3 +26,9 @@ psycopg[binary,pool]>=3.2
 # surface than a ~50MB image cost is worth.
 lightgbm>=4.3.0
 pandas>=2.2.0
+# Sunrise/sunset astronomy for ZONE_POLYGON_MODE_SOURCE=sun (per-camera
+# opt-in). Used only by _detect_sun_polygon_mode in src/web/preview.py.
+# Pure-Python, no network dependency, no rate limits — computed locally
+# from (SUN_LAT, SUN_LON) each frame. Timezone-independent: the solar
+# elevation at (lat, lon) is a pure function of the UTC instant.
+astral>=3.2
