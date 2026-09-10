@@ -1213,10 +1213,23 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             # from _baseline_cache (one detection stale = single-frame lag
             # on dawn/dusk, acceptable). Zones without a day polygon see
             # the same base polygon in both modes so the check is a no-op.
+            #
+            # ZONE_POLYGON_MODE_SOURCE=sun overrides the brightness-derived
+            # mode with an astronomical one — for indoor cameras where the
+            # scene doesn't change with sun position but the polygon
+            # SHOULD (e.g. crawlspace: IR-lit 24/7 but human activity
+            # correlates with daylight hours). Baseline slot selection
+            # stays brightness — those two concerns were originally one
+            # overloaded discriminator (see #187 Fable review).
             if zone_holder is not None:
-                _mode_now = _baseline_cache[0][1] or "night"
-                if _mode_now not in ("day", "night"):
-                    _mode_now = "night"
+                _brightness_mode = _baseline_cache[0][1] or "night"
+                if _brightness_mode not in ("day", "night"):
+                    _brightness_mode = "night"
+                if os.getenv("ZONE_POLYGON_MODE_SOURCE", "brightness").lower() == "sun":
+                    from src.web.preview import _detect_sun_polygon_mode
+                    _mode_now = _detect_sun_polygon_mode()
+                else:
+                    _mode_now = _brightness_mode
                 _new_poly, _new_ver = zone_holder.snapshot(mode=_mode_now)
                 _needs_reload = (
                     (_new_ver != _zone_version or _mode_now != _zone_mode)

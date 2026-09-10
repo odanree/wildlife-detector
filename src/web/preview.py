@@ -135,11 +135,16 @@ class Baseline:
 
     def snapshot_bytes(self, mode: str = "auto",
                        current_frame_jpeg: bytes | None = None) -> tuple[bytes, int, str]:
-        """Return (jpeg, version, mode_used). If mode='auto', dispatch to
-        the configured mode source (brightness or sun); otherwise use the
-        explicit slot."""
+        """Return (jpeg, version, mode_used). If mode='auto', pick based
+        on the current frame's brightness; otherwise use the explicit
+        slot. Baseline picking is ALWAYS brightness-based — sun-based
+        picking only affects zone-polygon selection (see
+        `_detect_zone_polygon_mode` below) because the baseline mode
+        also drives VLM prompt, eyeshine gate, and baseline-diff
+        sensitivity, all of which reason about 'day' as a sunlit color
+        scene rather than 'sun is up on an IR camera.'"""
         if mode == "auto":
-            mode = _detect_mode(current_frame_jpeg)
+            mode = _detect_brightness_mode(current_frame_jpeg) if current_frame_jpeg else "day"
         with self._lock:
             return self._jpegs.get(mode, b""), self._version, mode
 
@@ -156,7 +161,7 @@ class Baseline:
         if not jpeg:
             raise ValueError("empty JPEG — no live frame available yet")
         if mode not in ("day", "night"):
-            mode = _detect_mode(jpeg)
+            mode = _detect_brightness_mode(jpeg)
         with self._lock:
             self._paths[mode].parent.mkdir(parents=True, exist_ok=True)
             self._paths[mode].write_bytes(jpeg)
@@ -188,14 +193,6 @@ class Baseline:
 # night mode looks brighter than typical (60-90 range is common).
 _DAY_NIGHT_THRESHOLD = int(os.getenv("DAY_NIGHT_BRIGHTNESS_THRESHOLD", "100"))
 
-# Mode-picker source. Default preserves the historical brightness-based
-# behavior for every camera that doesn't opt in. Set to "sun" to derive
-# day/night from local sunrise/sunset at (SUN_LAT, SUN_LON, SUN_TZ) —
-# useful when the scene brightness doesn't change with ambient light
-# (indoor cameras like crawlspace) but you still want the day polygon
-# to fire during human-active hours.
-_BASELINE_MODE_SOURCE = os.getenv("BASELINE_MODE_SOURCE", "brightness").lower()
-
 
 def _detect_brightness_mode(jpeg: bytes) -> str:
     """Return 'day' or 'night' from a JPEG's mean grayscale brightness."""
@@ -212,49 +209,79 @@ def _detect_brightness_mode(jpeg: bytes) -> str:
         return "day"
 
 
-def _detect_sun_mode() -> str:
-    """Return 'day' or 'night' from local sunrise/sunset at (SUN_LAT,
-    SUN_LON) in SUN_TZ.
+# Warn-once flag for sun-mode fallback — surfacing silent config
+# failures per the "surface silent fails" phase of the prototype-to-
+# production blueprint. First fallback in the process lifetime logs
+# a WARN with a specific reason; subsequent fallbacks stay quiet so
+# the render-loop log doesn't spam.
+_sun_fallback_warned = False
 
-    Pure-Python astronomy via `astral` — no network call, no rate
-    limit, no startup delay. Computed fresh each frame; the astral
-    calculation is ~microseconds.
 
-    Fallback contract: if coords are unconfigured, astral is missing,
-    or anything raises, return 'night' — the safe default that
-    matches the existing crawlspace force-night behavior. Callers
-    that opted into sun mode with garbage coords get their old
-    behavior back rather than an exception in the render loop.
+def _detect_sun_polygon_mode() -> str:
+    """Return 'day' or 'night' from the sun's altitude at (SUN_LAT,
+    SUN_LON) in SUN_TZ. USED ONLY for zone-polygon selection —
+    baseline slot picking stays brightness-based (see
+    `_detect_brightness_mode` and Fable's F review of #187 for why
+    reusing the same discriminator for both was an architectural
+    landmine: `_is_daytime` drives VLM prompt content, eyeshine
+    hard-rail, and baseline-diff sensitivity, all of which reason
+    about 'day' as sunlit color rather than 'sun happens to be up.'
+
+    Uses `astral.sun.elevation()` (never raises — tz/polar-safe)
+    with the standard -0.833° civil-horizon threshold. Any failure
+    path returns 'night' with a one-shot WARN log so misconfig is
+    visible without spamming the render loop.
+
+    Env reads are call-time (not module-scope) so tests can vary
+    them without an import reload.
     """
+    global _sun_fallback_warned
+
+    def _fall_back(reason: str) -> str:
+        global _sun_fallback_warned
+        if not _sun_fallback_warned:
+            logger.warning(
+                "sun-mode polygon picker falling back to 'night': %s. "
+                "Further fallbacks won't be logged. Verify SUN_LAT, "
+                "SUN_LON, SUN_TZ envs on the detector container.",
+                reason,
+            )
+            _sun_fallback_warned = True
+        return "night"
+
     try:
         lat = float(os.getenv("SUN_LAT", "") or 0)
         lon = float(os.getenv("SUN_LON", "") or 0)
-    except ValueError:
-        return "night"
+    except ValueError as e:
+        return _fall_back(f"SUN_LAT/SUN_LON parse error: {e}")
     if lat == 0.0 and lon == 0.0:
-        return "night"
-    tz_name = os.getenv("SUN_TZ") or os.getenv("TZ") or "UTC"
+        return _fall_back("SUN_LAT and SUN_LON both zero/unset")
+    tz_name = os.getenv("SUN_TZ") or os.getenv("TZ") or ""
+    if not tz_name or tz_name.upper() == "UTC":
+        # UTC + non-UTC coords is the tz-mismatch trap Fable's A
+        # flagged: sun() would return "sunset before sunrise" and
+        # every hour would fall in the empty window → permanent
+        # night. Force operator to pick a real zone.
+        return _fall_back(
+            f"SUN_TZ not set (SUN_TZ={tz_name!r}, TZ={os.getenv('TZ')!r}). "
+            f"Sun computation is meaningless in UTC for non-UTC coords."
+        )
     try:
-        from astral import LocationInfo
-        from astral.sun import sun as astral_sun
+        from astral import Observer
+        from astral.sun import elevation
         from datetime import datetime
         from zoneinfo import ZoneInfo
         tz = ZoneInfo(tz_name)
-        loc = LocationInfo(latitude=lat, longitude=lon, timezone=tz_name)
         now = datetime.now(tz=tz)
-        s = astral_sun(loc.observer, date=now.date(), tzinfo=tz)
-        return "day" if s["sunrise"] <= now <= s["sunset"] else "night"
-    except Exception:
-        return "night"
-
-
-def _detect_mode(jpeg: bytes | None) -> str:
-    """Dispatch to the configured mode source. Frames pass in the raw
-    JPEG so the brightness path still works — the sun path ignores it.
-    """
-    if _BASELINE_MODE_SOURCE == "sun":
-        return _detect_sun_mode()
-    return _detect_brightness_mode(jpeg or b"")
+        # elevation() returns the solar altitude in degrees at `now`.
+        # -0.833° is the standard civil-horizon threshold — matches the
+        # "official" sunrise/sunset definition US Naval Observatory uses
+        # (accounts for atmospheric refraction + solar disc angular
+        # radius). Above → sun is functionally up → "day".
+        alt = elevation(Observer(latitude=lat, longitude=lon), dateandtime=now)
+        return "day" if alt > -0.833 else "night"
+    except Exception as e:
+        return _fall_back(f"astral raised: {type(e).__name__}: {e}")
 
 
 
