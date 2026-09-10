@@ -833,6 +833,8 @@ services:
         condition: service_healthy
       detector-backyard:
         condition: service_healthy
+      detector-crawlspace:
+        condition: service_healthy
       postgres:
         condition: service_healthy
     healthcheck:
