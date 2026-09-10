@@ -878,11 +878,14 @@ services:
     volumes:
       - ./clips:/app/clips
       - ./logs:/app/logs
-      # AgentDVR's local continuous recording directory. The trailing
-      # slash + quotes matter — the host path contains a space, and
-      # unquoted YAML breaks on it. Read-only: archiver never writes
-      # back to AgentDVR's storage.
-      - "C:/Program Files/Agent/Media/WebServerRoot/Media/video/UQCRY:/agentdvr/crawlspace:ro"
+      # AgentDVR's local continuous recording directory. Relocated
+      # 2026-09-10 from C:\Program Files\Agent\Media\... to I:\ to
+      # escape the C:\ Program Files anti-pattern (UAC-protected, no
+      # room to grow retention). AgentDVR preserved the UQCRY camera
+      # hash on relocation, so the archiver bind mount just re-points
+      # at the same subtree on a different drive. Read-only: archiver
+      # never writes back to AgentDVR's storage.
+      - "I:/agentDVR/video/UQCRY:/agentdvr/crawlspace:ro"
     depends_on:
       postgres:
         condition: service_healthy
