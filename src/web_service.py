@@ -1259,8 +1259,15 @@ def create_app(registry: DetectorRegistry) -> Flask:
             pre_roll = 15
         pre_roll = max(0, min(600, pre_roll))
 
-        # Per-camera NVR channel via env: NVR_CHANNEL_YARD=6, NVR_CHANNEL_ROOFTOP=8
-        # Falls back to URL-embedded channel then to '1'.
+        # Source dispatch — mirrors clip_archiver._pull:
+        #   AGENTDVR_DIR_<CAM>  → local-only source; NO NVR fallback,
+        #                        no channel=1 misdirection. Archiver
+        #                        will materialize the clip once the
+        #                        AgentDVR chunk closes.
+        #   NVR_CHANNEL_<CAM>   → legacy NVR path; RTSP URL against
+        #                        Amcrest at that channel is meaningful.
+        #   neither             → warn; no way to serve playback.
+        agentdvr_camera = bool(os.environ.get(f"AGENTDVR_DIR_{camera_id.upper()}"))
         env_channel = os.environ.get(f"NVR_CHANNEL_{camera_id.upper()}")
         try:
             channel_override = int(request.args.get("channel") or env_channel or 0)
@@ -1275,7 +1282,7 @@ def create_app(registry: DetectorRegistry) -> Flask:
         base_url = ""
 
         note = None
-        if not env_channel and channel_override == 0:
+        if not agentdvr_camera and not env_channel and channel_override == 0:
             note = (f"NVR_CHANNEL_{camera_id.upper()} not set — playback URL may hit "
                     f"the wrong channel or return no data. Set the env var to the "
                     f"NVR channel this camera records to.")
@@ -1299,6 +1306,28 @@ def create_app(registry: DetectorRegistry) -> Flask:
                     "source":           "local",
                     "note":             note,
                 })
+
+        # AgentDVR-sourced camera + no local clip yet = archiver hasn't
+        # materialized this alert's chunk yet (open-chunk race, or the
+        # archive_queue notify hasn't fired). Do NOT fall through to
+        # build_nvr_playback_url — for this camera there is no NVR to
+        # hit, and returning a channel=1 URL would silently point the
+        # operator at unrelated footage.
+        if agentdvr_camera:
+            return jsonify({
+                "url":              None,
+                "camera_id":        camera_id,
+                "ts":               ts,
+                "channel":          None,
+                "pre_roll_seconds": pre_roll,
+                "source":           "agentdvr-pending",
+                "note":             (
+                    f"No local clip yet for alert={alert_id}. AgentDVR chunk "
+                    f"may still be open (retry after the current 15-min chunk "
+                    f"closes) or archive_queue may not have fired — "
+                    f"scripts/backfill_tp_clips.py will pull it on next run."
+                ),
+            })
 
         from src.stream.rtsp_handler import build_nvr_playback_url
         try:
