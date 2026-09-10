@@ -12,6 +12,11 @@ osd_masks:
   - [0.3516, 0.0075, 0.7349, 0.0787]
   backyard:
   - [0.0239, 0.0302, 0.3809, 0.0787]
+  crawlspace:
+  # Top-left AgentDVR/camera timestamp OSD.
+  - [0.0103, 0.0113, 0.3096, 0.0764]
+  # Bottom-right "5MP" resolution stamp burned in by the camera.
+  - [0.9023, 0.9141, 0.9805, 0.9705]
 zones:
   yard_zone:
     polygon:
@@ -35,6 +40,22 @@ zones:
     - [0.7222, 0.3901]
     - [0.6587, 0.3319]
     - [0.394, 0.8308]
+  crawlspace_zone:
+    # Traces the walkable floor perimeter around the ladder and Enphase
+    # gateway box, excluding the ceiling/wall regions where IR shimmer
+    # and cobwebs generate the dominant FP class. Drawn 2026-09-10 via
+    # the zone editor UI after the detector went live. Refine by
+    # re-drawing in the UI, then mirror back here for a fresh clone.
+    polygon:
+    - [0.0122, 0.4774]
+    - [0.2524, 0.5113]
+    - [0.2944, 0.6814]
+    - [0.4609, 0.8854]
+    - [0.8657, 0.8056]
+    - [0.8813, 0.6389]
+    - [0.9917, 0.6632]
+    - [0.9995, 0.987]
+    - [0.001, 0.987]
   backyard_zone:
     polygon:
     - [0.041, 0.0571]
