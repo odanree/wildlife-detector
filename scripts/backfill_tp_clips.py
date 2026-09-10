@@ -53,15 +53,18 @@ def _clip_exists(clips_dir: Path, alert_id: int, alert_ts: float) -> bool:
     return p.exists() and p.stat().st_size > 0
 
 
-def _is_permanent_failure(clips_dir: Path, alert_id: int, alert_ts: float) -> bool:
-    """Mirror of ClipArchiver.failure_path — kept in sync manually.
+def _failure_path(clips_dir: Path, alert_id: int, alert_ts: float) -> Path:
+    """Mirror of ClipArchiver.failure_path — kept in sync manually."""
+    day = datetime.fromtimestamp(alert_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+    return clips_dir / day / f"{alert_id}.failed"
 
-    A `.failed` tombstone means a prior pull attempt determined the
+
+def _is_permanent_failure(clips_dir: Path, alert_id: int, alert_ts: float) -> bool:
+    """A `.failed` tombstone means a prior pull attempt determined the
     alert's source footage was unrecoverable (AgentDVR outage gap, NVR
     retention rotation, etc.). Re-enqueuing burns cycles for no gain.
     """
-    day = datetime.fromtimestamp(alert_ts, tz=timezone.utc).strftime("%Y-%m-%d")
-    return (clips_dir / day / f"{alert_id}.failed").exists()
+    return _failure_path(clips_dir, alert_id, alert_ts).exists()
 
 
 def main() -> int:
@@ -119,16 +122,33 @@ def main() -> int:
         total = len(rows)
         already = 0
         permanent_failures = 0
+        cleared_failures = 0
         enqueued = 0
         for alert_id, alert_ts, camera_id in rows:
             if _clip_exists(clips_dir, alert_id, float(alert_ts)):
                 already += 1
                 continue
-            if not args.retry_failed and _is_permanent_failure(
-                clips_dir, alert_id, float(alert_ts),
-            ):
-                permanent_failures += 1
-                continue
+            if _is_permanent_failure(clips_dir, alert_id, float(alert_ts)):
+                if not args.retry_failed:
+                    permanent_failures += 1
+                    continue
+                # --retry-failed: the archiver's submit() gates on the
+                # tombstone before it reaches the worker pool, so a
+                # bare NOTIFY here would be a no-op. Clear the
+                # tombstone first so the archiver actually re-attempts.
+                # Idempotent — a missing file is fine at this stage.
+                if not args.dry_run:
+                    try:
+                        _failure_path(clips_dir, alert_id, float(alert_ts)).unlink()
+                        cleared_failures += 1
+                    except OSError as e:
+                        print(
+                            f"  WARN: failed to clear tombstone for "
+                            f"alert={alert_id}: {e} (skipping)",
+                            file=sys.stderr,
+                        )
+                        permanent_failures += 1
+                        continue
             if args.dry_run:
                 enqueued += 1
                 print(f"  [would enqueue] alert={alert_id} camera={camera_id} ts={alert_ts}")
@@ -149,6 +169,8 @@ def main() -> int:
     if permanent_failures:
         retry_hint = " (use --retry-failed to re-enqueue)" if not args.retry_failed else ""
         print(f"  permanent-failure tombstones (skipped): {permanent_failures}{retry_hint}")
+    if cleared_failures:
+        print(f"  tombstones cleared for retry: {cleared_failures}")
     print(f"  {'would enqueue' if args.dry_run else 'enqueued'}: {enqueued}")
     print()
     print("The archiver container will drain these in the background. Watch:")
