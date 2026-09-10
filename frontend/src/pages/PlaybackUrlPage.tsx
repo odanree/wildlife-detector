@@ -18,7 +18,7 @@ import styles from "./PlaybackUrlPage.module.css";
  * common "same channel, another moment" flow doesn't re-input every time.
  */
 
-const CHANNELS: readonly number[] = [1, 3, 4, 5, 6, 7, 8, 9];
+const CHANNELS: readonly number[] = [1, 3, 4, 5, 6, 7, 8, 9, 10];
 
 // Known channel → camera-name mapping (from NVR_CHANNEL_* env on the
 // web container). Only three channels are mapped today; the rest show
