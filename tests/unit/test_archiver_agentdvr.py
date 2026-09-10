@@ -100,3 +100,128 @@ def test_alert_ts_utc_maps_to_pacific(archiver: ClipArchiver, monkeypatch) -> No
 
     assert got.year == 2026 and got.month == 9 and got.day == 9
     assert got.hour == 22 and got.minute == 31 and got.second == 58
+
+
+# ── Gap vs open-chunk discrimination (issue #183) ──────────────────────
+
+
+def test_stale_chunk_with_alert_past_close_marks_permanent_failure(
+    archiver: ClipArchiver, tmp_path: Path, monkeypatch,
+) -> None:
+    """AgentDVR was down at the alert's timestamp — the covering chunk
+    was closed hours ago and mtime freezes at close time. The alert's
+    desired end lies past that close time, meaning no footage exists.
+    Verdict: permanent failure, tombstone written, no future retry."""
+    monkeypatch.setenv("NVR_TZ", "America/Los_Angeles")
+    d = tmp_path / "agentdvr"
+    d.mkdir()
+
+    # Chunk started 8 hours ago local time and closed 15 min after.
+    chunk = _touch_chunk(d, "4_2026-09-09_14-00-00_000.mkv")
+    close_local = datetime(2026, 9, 9, 14, 14, 35, tzinfo=LA)
+    close_mtime = close_local.timestamp()
+    os.utime(chunk, (close_mtime, close_mtime))
+
+    # Alert 3 minutes AFTER close — falls in the gap between this chunk
+    # and whatever came next (nothing, in this test's setup).
+    alert_local = datetime(2026, 9, 9, 14, 17, 0, tzinfo=LA)
+    alert_ts = alert_local.timestamp()
+
+    out_path = archiver.clip_path(1234, alert_ts)
+    result = archiver._pull_from_agentdvr(
+        alert_id=1234,
+        alert_ts=alert_ts,
+        camera_id="crawlspace",
+        agentdvr_dir=str(d),
+        out_path=out_path,
+    )
+
+    assert result is None
+    # Tombstone written — future backfill runs will skip.
+    tomb = archiver.failure_path(1234, alert_ts)
+    assert tomb.exists()
+    assert "agentdvr_gap" in tomb.read_text()
+    assert archiver.is_permanent_failure(1234, alert_ts)
+
+
+def test_fresh_chunk_still_open_does_not_tombstone(
+    archiver: ClipArchiver, tmp_path: Path, monkeypatch,
+) -> None:
+    """AgentDVR is currently writing the covering chunk. Desired end
+    is past current mtime because content hasn't been flushed yet.
+    Verdict: retry-later — NO tombstone, backfill will pick it up
+    once the chunk closes."""
+    monkeypatch.setenv("NVR_TZ", "America/Los_Angeles")
+    d = tmp_path / "agentdvr"
+    d.mkdir()
+
+    # Chunk started 5 min ago and is still being written — mtime is now.
+    now = time.time()
+    chunk_start_local = datetime.fromtimestamp(now - 300, tz=LA).replace(microsecond=0)
+    chunk_name = f"4_{chunk_start_local.strftime('%Y-%m-%d_%H-%M-%S')}_000.mkv"
+    chunk = _touch_chunk(d, chunk_name)
+    os.utime(chunk, (now, now))   # freshly-written
+
+    # Alert 10 seconds ago — desired end (alert_ts+45) is slightly ahead
+    # of what's on disk. Classic open-chunk race.
+    alert_ts = now - 10.0
+
+    out_path = archiver.clip_path(5678, alert_ts)
+    result = archiver._pull_from_agentdvr(
+        alert_id=5678,
+        alert_ts=alert_ts,
+        camera_id="crawlspace",
+        agentdvr_dir=str(d),
+        out_path=out_path,
+    )
+
+    assert result is None
+    # No tombstone — backfill should retry after chunk closes.
+    assert not archiver.failure_path(5678, alert_ts).exists()
+    assert not archiver.is_permanent_failure(5678, alert_ts)
+
+
+def test_no_covering_chunk_marks_permanent_failure(
+    archiver: ClipArchiver, tmp_path: Path, monkeypatch,
+) -> None:
+    """Picker returns no chunk (alert predates AgentDVR history or the
+    covering file rotated off). Permanent failure — no future run will
+    invent footage. Tombstone written."""
+    monkeypatch.setenv("NVR_TZ", "America/Los_Angeles")
+    d = tmp_path / "agentdvr"
+    d.mkdir()
+    _touch_chunk(d, "4_2026-09-09_22-00-00_000.mkv")  # only chunk
+
+    # Alert timestamp is well before any chunk.
+    alert_ts = datetime(2026, 9, 9, 18, 0, 0, tzinfo=LA).timestamp()
+    out_path = archiver.clip_path(9999, alert_ts)
+    result = archiver._pull_from_agentdvr(
+        alert_id=9999,
+        alert_ts=alert_ts,
+        camera_id="crawlspace",
+        agentdvr_dir=str(d),
+        out_path=out_path,
+    )
+
+    assert result is None
+    tomb = archiver.failure_path(9999, alert_ts)
+    assert tomb.exists()
+    assert "no_agentdvr_chunk" in tomb.read_text()
+
+
+def test_submit_skips_permanent_failure(
+    archiver: ClipArchiver, tmp_path: Path,
+) -> None:
+    """A tombstoned alert should never enter the pool — even a fresh
+    submit() call is a fast no-op, not another pull attempt."""
+    alert_id = 4242
+    alert_ts = time.time() - 3600  # arbitrary past alert
+    archiver._mark_permanent_failure(alert_id, alert_ts, reason="test_gap")
+
+    calls: list[tuple[int, object]] = []
+    archiver.submit(alert_id, alert_ts, camera_id="crawlspace",
+                    on_done=lambda aid, path: calls.append((aid, path)))
+
+    # on_done should fire immediately with path=None; pool should never
+    # have been asked to do work.
+    assert calls == [(alert_id, None)]

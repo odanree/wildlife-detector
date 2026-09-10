@@ -47,6 +47,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -55,6 +56,15 @@ from typing import Callable, Optional
 from src.stream.playback_url import build_nvr_playback_url
 
 logger = logging.getLogger(__name__)
+
+# Age at which we call an AgentDVR chunk "stale" — i.e. AgentDVR has moved
+# on and this file is a closed record, not the currently-being-written
+# chunk. During normal recording, mtime updates at least every few seconds
+# as ffmpeg flushes the encoder buffer; 30s of mtime silence is a strong
+# signal that AgentDVR closed the chunk and started (or failed to start)
+# a new one. Used to distinguish "open chunk race, retry later" from
+# "alert falls in AgentDVR outage gap, permanent failure."
+_AGENTDVR_CHUNK_STALE_SECONDS = 30.0
 
 # AgentDVR continuous-chunk filename shape:
 #   <cam_index>_<YYYY-MM-DD>_<HH-MM-SS>_<msec>.mkv
@@ -101,9 +111,45 @@ class ClipArchiver:
         day = datetime.fromtimestamp(alert_ts, tz=timezone.utc).strftime("%Y-%m-%d")
         return self.clips_dir / day / f"{alert_id}.mp4"
 
+    def failure_path(self, alert_id: int, alert_ts: float) -> Path:
+        """Permanent-failure sentinel path.
+
+        Lives beside `clip_path` with a `.failed` suffix so day-directory
+        listings show clips and failures side-by-side, and both share the
+        same rotation/backup rules. Presence means: this alert was
+        determined to be unrecoverable (AgentDVR outage gap, source
+        rotated off the NVR, etc.) and further archiver runs should not
+        attempt it. Semantically the "tombstone" pattern — a permanent
+        marker distinct from "haven't tried yet."
+        """
+        day = datetime.fromtimestamp(alert_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        return self.clips_dir / day / f"{alert_id}.failed"
+
     def has_clip(self, alert_id: int, alert_ts: float) -> bool:
         p = self.clip_path(alert_id, alert_ts)
         return p.exists() and p.stat().st_size > 0
+
+    def is_permanent_failure(self, alert_id: int, alert_ts: float) -> bool:
+        """True if a prior pull attempt marked this alert unrecoverable."""
+        return self.failure_path(alert_id, alert_ts).exists()
+
+    def _mark_permanent_failure(
+        self, alert_id: int, alert_ts: float, reason: str,
+    ) -> None:
+        """Drop the tombstone. Idempotent; a `.failed` file may already
+        exist from a prior attempt. Body carries the reason for later
+        forensics (why did we give up on this alert?)."""
+        p = self.failure_path(alert_id, alert_ts)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with p.open("w", encoding="utf-8") as f:
+                f.write(f"{reason}\n")
+        except OSError as e:
+            logger.warning(
+                "Archiver: failed to write tombstone for alert=%d: %s "
+                "(continuing — alert will be re-attempted on next backfill).",
+                alert_id, e,
+            )
 
     def submit(
         self,
@@ -122,6 +168,14 @@ class ClipArchiver:
             logger.debug("Archiver: clip exists for alert=%d, skipping", alert_id)
             if on_done:
                 on_done(alert_id, self.clip_path(alert_id, alert_ts))
+            return
+        if self.is_permanent_failure(alert_id, alert_ts):
+            logger.debug(
+                "Archiver: alert=%d already marked permanent failure, skipping",
+                alert_id,
+            )
+            if on_done:
+                on_done(alert_id, None)
             return
         with self._inflight_lock:
             if alert_id in self._inflight:
@@ -245,11 +299,22 @@ class ClipArchiver:
 
         chunk = self._pick_agentdvr_chunk(source_dir, window_start_local)
         if chunk is None:
-            logger.info(
-                "Archiver: no AgentDVR chunk covers alert=%d (target=%s) in %s. "
-                "Camera may have been offline or retention rotated the file.",
-                alert_id, window_start_local.isoformat(), source_dir,
+            # No chunk with start ≤ target means one of: (a) alert
+            # predates AgentDVR's recording history, (b) retention
+            # rotated the covering chunk off, (c) real gap in coverage.
+            # All three are permanent failures — no future backfill run
+            # will find footage that doesn't exist. Tombstone so the
+            # archive_queue stops re-triggering us.
+            reason = (
+                f"no_agentdvr_chunk: no file with start <= "
+                f"{window_start_local.isoformat()} in {source_dir}. "
+                f"Predates history, was rotated off, or coverage gap."
             )
+            logger.warning(
+                "Archiver: alert=%d permanent failure — %s",
+                alert_id, reason,
+            )
+            self._mark_permanent_failure(alert_id, alert_ts, reason)
             return None
 
         chunk_path, chunk_start_local = chunk
@@ -259,22 +324,60 @@ class ClipArchiver:
             # guard anyway — negative -ss is a silent misread in ffmpeg.
             offset_seconds = 0.0
 
-        # Open-chunk race: if the picked file is being written now and the
-        # tail of our desired window (alert_ts + duration) hasn't been
-        # flushed to disk, ffmpeg -ss will return a truncated or empty
-        # clip. Use mtime as a proxy for "how much has been written" —
-        # if our desired end is beyond it, back off. Backfill script or a
-        # retry-later mechanism handles late materialization.
+        # Two failure modes look the same at first glance but need
+        # opposite recovery semantics:
+        #
+        #   OPEN CHUNK RACE — picked file is currently being written by
+        #     AgentDVR. Tail of our desired window hasn't been flushed
+        #     yet; ffmpeg -ss would return a truncated/empty clip. Retry
+        #     after the chunk closes is correct; backfill handles it.
+        #
+        #   AGENTDVR GAP — picked file was closed hours ago; AgentDVR
+        #     wasn't recording during the alert's timestamp window
+        #     (RTSP disconnect, service restart, etc.). No footage will
+        #     ever exist. Retry is wrong — it burns backfill cycles
+        #     forever and the operator sees the same misleading log
+        #     line on every attempt.
+        #
+        # Discriminate by chunk age: if mtime is fresh (< 30s ago),
+        # AgentDVR is actively flushing → OPEN. If mtime is stale, the
+        # chunk closed at that time and the alert falls in the gap
+        # between it and whatever came next (if anything). See PR that
+        # closed wildlife-detector#183 for the prod incident that
+        # motivated the split — a 15-min AgentDVR outage at 04:14
+        # produced 3 permanently-unrecoverable alerts that were being
+        # re-enqueued as "open chunk" indefinitely.
         try:
             file_mtime = chunk_path.stat().st_mtime
         except OSError:
             file_mtime = 0.0
         desired_end_unix = alert_ts + self.duration_seconds
         if desired_end_unix > file_mtime + 2.0:  # 2s safety margin for mtime lag
+            now = time.time()
+            chunk_age_s = now - file_mtime
+            if chunk_age_s > _AGENTDVR_CHUNK_STALE_SECONDS:
+                # Stale chunk — AgentDVR isn't writing to this file, and
+                # the desired window is past its close time. Permanent
+                # gap. Tombstone so backfill stops re-enqueueing.
+                reason = (
+                    f"agentdvr_gap: chunk {chunk_path.name} closed "
+                    f"{int(chunk_age_s)}s ago at mtime={file_mtime:.0f}, "
+                    f"alert desired_end={desired_end_unix:.0f} past close. "
+                    f"AgentDVR wasn't recording when the alert fired."
+                )
+                logger.warning(
+                    "Archiver: alert=%d permanent failure — %s",
+                    alert_id, reason,
+                )
+                self._mark_permanent_failure(alert_id, alert_ts, reason)
+                return None
+            # Fresh chunk — AgentDVR still writing. Retry-later is right.
             logger.info(
-                "Archiver: alert=%d falls in open AgentDVR chunk (%s, mtime=%.0f, "
-                "desired_end=%.0f). Skipping — backfill on next run.",
-                alert_id, chunk_path.name, file_mtime, desired_end_unix,
+                "Archiver: alert=%d in currently-open AgentDVR chunk "
+                "(%s, mtime=%.0f age=%.1fs, desired_end=%.0f). "
+                "Skipping — backfill after chunk closes.",
+                alert_id, chunk_path.name, file_mtime, chunk_age_s,
+                desired_end_unix,
             )
             return None
 
