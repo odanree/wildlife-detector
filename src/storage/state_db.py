@@ -208,7 +208,13 @@ class StateDB:
 
     def append_alerts_bulk(self, rows: list[dict]) -> int:
         """Batch insert for backfill. Returns the number of new rows
-        actually inserted (existing rows are silently skipped)."""
+        actually inserted (existing rows are silently skipped).
+
+        Uses a single multi-VALUES INSERT so a 5k-row backfill pays one
+        round-trip to Postgres instead of 5k. Chunks at 500 rows to keep
+        the parameter count comfortably under Postgres's 65535 cap
+        (500 * 10 cols = 5000 params per statement).
+        """
         if not rows:
             return 0
         for r in rows:
@@ -218,23 +224,32 @@ class StateDB:
             # binds them as the BOOLEAN type postgres expects.
             r["is_rodent"] = bool(r.get("is_rodent", False))
             r["historical"] = bool(r.get("historical", False))
+
+        cols = (
+            "ts", "camera_id", "species", "confidence", "description",
+            "snapshot", "track_id", "yolo_conf", "is_rodent", "historical",
+        )
+        row_placeholder = "(" + ", ".join(["%s"] * len(cols)) + ")"
+        chunk_size = 500
+
+        inserted = 0
         with self._pool.connection() as conn, conn.cursor() as cur:
-            inserted = 0
-            for r in rows:
+            for chunk_start in range(0, len(rows), chunk_size):
+                chunk = rows[chunk_start:chunk_start + chunk_size]
+                params: list[Any] = []
+                for r in chunk:
+                    params.extend(r.get(c) for c in cols)
+                values_sql = ", ".join([row_placeholder] * len(chunk))
                 cur.execute(
-                    """INSERT INTO alerts
-                       (ts, camera_id, species, confidence, description, snapshot,
-                        track_id, yolo_conf, is_rodent, historical)
-                       VALUES (%(ts)s, %(camera_id)s, %(species)s, %(confidence)s,
-                               %(description)s, %(snapshot)s, %(track_id)s,
-                               %(yolo_conf)s, %(is_rodent)s, %(historical)s)
-                       ON CONFLICT (ts, species, COALESCE(snapshot, '')) DO NOTHING
-                       RETURNING id""",
-                    r,
+                    f"INSERT INTO alerts "  # noqa: S608 -- cols are compile-time constants
+                    f"({', '.join(cols)}) "
+                    f"VALUES {values_sql} "
+                    f"ON CONFLICT (ts, species, COALESCE(snapshot, '')) DO NOTHING "
+                    f"RETURNING id",
+                    params,
                 )
-                if cur.fetchone():
-                    inserted += 1
-            return inserted
+                inserted += len(cur.fetchall())
+        return inserted
 
     # ── Reads ───────────────────────────────────────────────────────────────
 
