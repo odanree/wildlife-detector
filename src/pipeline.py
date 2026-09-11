@@ -1028,6 +1028,27 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     PREVIEW_EVERY_N = max(1, int(os.getenv("PREVIEW_EVERY_N", "2")))
     _frame_count = 0
 
+    def _publish_paused_frame(
+        _frame: "np.ndarray", banner: str,
+        font_scale: float = 0.6, color: tuple = (0, 200, 255),
+    ) -> None:
+        """Publish raw + annotated preview when the detector is intentionally
+        paused (operator flag, daytime skip, chaos cooldown). Freezing the
+        preview reads as a crash to the operator — always emit a banner so
+        the pause state is visible."""
+        ok_raw, buf_raw = cv2.imencode(".jpg", _frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if ok_raw:
+            _publish_raw_frame(buf_raw.tobytes())
+        _annotated = _frame.copy()
+        cv2.putText(
+            _annotated, banner,
+            (12, 28), cv2.FONT_HERSHEY_SIMPLEX, font_scale,
+            color, 2, cv2.LINE_AA,
+        )
+        ok, buf = cv2.imencode(".jpg", _annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        if ok:
+            _publish_preview_frame(buf.tobytes())
+
     stream.start()
     # Start ONVIF PTZ position monitor (no-op if not configured for this
     # camera). Detects camera-side auto-tracking pans that would move
@@ -1079,19 +1100,10 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             if os.path.exists(_PAUSE_FLAG_PATH):
                 _frame_count += 1
                 if _frame_count % PREVIEW_EVERY_N == 0:
-                    ok_raw, buf_raw = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    if ok_raw:
-                        _publish_raw_frame(buf_raw.tobytes())
-                    _paused_annotated = frame.copy()
-                    cv2.putText(
-                        _paused_annotated,
-                        "detection paused (operator)",
-                        (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                        (0, 165, 255), 2, cv2.LINE_AA,
+                    _publish_paused_frame(
+                        frame, "detection paused (operator)",
+                        font_scale=0.7, color=(0, 165, 255),
                     )
-                    ok, buf = cv2.imencode(".jpg", _paused_annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
-                    if ok:
-                        _publish_preview_frame(buf.tobytes())
                 continue
 
             # Daytime detection skip — some cameras (yard, backyard) have
@@ -1130,19 +1142,11 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     )
                     _frame_count += 1
                     if _frame_count % PREVIEW_EVERY_N == 0:
-                        ok_raw, buf_raw = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                        if ok_raw:
-                            _publish_raw_frame(buf_raw.tobytes())
-                        _daytime_annotated = frame.copy()
-                        cv2.putText(
-                            _daytime_annotated,
+                        _publish_paused_frame(
+                            frame,
                             f"detection paused (daytime, {_trigger}: b={_mean_brightness:.0f}/{_DAYTIME_SKIP_BRIGHTNESS_THRESHOLD} h={_hour}/{_DAYTIME_SKIP_START_HOUR}-{_DAYTIME_SKIP_END_HOUR})",
-                            (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
-                            (0, 200, 255), 2, cv2.LINE_AA,
+                            font_scale=0.55,
                         )
-                        ok, buf = cv2.imencode(".jpg", _daytime_annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
-                        if ok:
-                            _publish_preview_frame(buf.tobytes())
                     continue
 
             # Chaos-cooldown decay: after any chaos-gate fire (scene-
@@ -1159,19 +1163,10 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 _chaos_cooldown_remaining -= 1
                 _frame_count += 1
                 if _frame_count % PREVIEW_EVERY_N == 0:
-                    ok_raw, buf_raw = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    if ok_raw:
-                        _publish_raw_frame(buf_raw.tobytes())
-                    _cooldown_annotated = frame.copy()
-                    cv2.putText(
-                        _cooldown_annotated,
+                    _publish_paused_frame(
+                        frame,
                         f"detection paused (chaos gate, {_chaos_cooldown_remaining} frames left)",
-                        (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                        (0, 200, 255), 2, cv2.LINE_AA,
                     )
-                    ok, buf = cv2.imencode(".jpg", _cooldown_annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
-                    if ok:
-                        _publish_preview_frame(buf.tobytes())
                 continue
 
             # Scene-change bulkhead — catches whole-scene shifts the

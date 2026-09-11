@@ -549,27 +549,37 @@ class ClipArchiver:
         """Latest chunk whose start ≤ target_local. Returns (path, start).
 
         Filename regex is anchored so garbage files (thumbnails, xml
-        sidecars) are silently ignored.
+        sidecars) are silently ignored. Returns None on OSError anywhere
+        in the enumeration (bind mount vanished mid-run, EIO/ESTALE on
+        `is_file()`) — caller sees "no candidate" and skips instead of
+        tombstoning.
         """
         best: Optional[tuple[Path, datetime]] = None
-        for entry in source_dir.iterdir():
-            if not entry.is_file():
-                continue
-            m = _AGENTDVR_FILENAME_RE.match(entry.name)
-            if not m:
-                continue
-            try:
-                start = datetime(
-                    int(m.group(1)), int(m.group(2)), int(m.group(3)),
-                    int(m.group(4)), int(m.group(5)), int(m.group(6)),
-                    tzinfo=target_local.tzinfo,
-                )
-            except ValueError:
-                continue
-            if start > target_local:
-                continue
-            if best is None or start > best[1]:
-                best = (entry, start)
+        try:
+            for entry in source_dir.iterdir():
+                if not entry.is_file():
+                    continue
+                m = _AGENTDVR_FILENAME_RE.match(entry.name)
+                if not m:
+                    continue
+                try:
+                    start = datetime(
+                        int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                        int(m.group(4)), int(m.group(5)), int(m.group(6)),
+                        tzinfo=target_local.tzinfo,
+                    )
+                except ValueError:
+                    continue
+                if start > target_local:
+                    continue
+                if best is None or start > best[1]:
+                    best = (entry, start)
+        except OSError as e:
+            logger.warning(
+                "Archiver: enumeration failed on %s: %s. No candidate chunk.",
+                source_dir, e,
+            )
+            return None
         return best
 
     def _list_agentdvr_chunks(
@@ -582,34 +592,34 @@ class ClipArchiver:
         know about neighbors (seam detection, "is the directory empty
         vs. all-future" disambiguation for the tombstone logic).
 
-        Returns an empty list on OSError (bind mount vanished mid-run,
-        permission denied, etc.). Caller sees "empty listing" and
-        routes to the retry-safe branch instead of tombstoning.
+        Returns an empty list on OSError anywhere in the enumeration
+        (bind mount vanished mid-run, permission denied, EIO/ESTALE on
+        `is_file()`). Caller sees "empty listing" and routes to the
+        retry-safe branch instead of tombstoning.
         """
         chunks: list[tuple[Path, datetime]] = []
         try:
-            entries = list(source_dir.iterdir())
+            for entry in source_dir.iterdir():
+                if not entry.is_file():
+                    continue
+                m = _AGENTDVR_FILENAME_RE.match(entry.name)
+                if not m:
+                    continue
+                try:
+                    start = datetime(
+                        int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                        int(m.group(4)), int(m.group(5)), int(m.group(6)),
+                        tzinfo=tz,
+                    )
+                except ValueError:
+                    continue
+                chunks.append((entry, start))
         except OSError as e:
             logger.warning(
-                "Archiver: iterdir failed on %s: %s. Treating as empty listing.",
+                "Archiver: enumeration failed on %s: %s. Treating as empty listing.",
                 source_dir, e,
             )
             return []
-        for entry in entries:
-            if not entry.is_file():
-                continue
-            m = _AGENTDVR_FILENAME_RE.match(entry.name)
-            if not m:
-                continue
-            try:
-                start = datetime(
-                    int(m.group(1)), int(m.group(2)), int(m.group(3)),
-                    int(m.group(4)), int(m.group(5)), int(m.group(6)),
-                    tzinfo=tz,
-                )
-            except ValueError:
-                continue
-            chunks.append((entry, start))
         chunks.sort(key=lambda x: x[1])
         return chunks
 
