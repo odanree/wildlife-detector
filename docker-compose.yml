@@ -792,6 +792,75 @@ services:
       retries: 3
       start_period: 30s
 
+  # Fifth camera (2026-09-11). Second interior view — the .86 Hiseeu freed
+  # up when yard cut over to the Reolink at .100. Sibling to
+  # detector-crawlspace (.229) but framed on a different part of the
+  # crawlspace interior; same indoor IR-only permanent-night regime, so
+  # the DAY_NIGHT / baseline / classifier posture is cloned from that
+  # detector wholesale. Two RTSP consumers on .86 (this + whatever ends
+  # up on the NVR if we ever record channel 10) — main stream can only
+  # host 2 concurrent sessions, so live-peek via /stream2 is the safe
+  # ad-hoc-viewer path.
+  detector-crawlspace-inside:
+    <<: *detector-common
+    container_name: wildlife-detector-crawlspace-inside
+    environment:
+      CAMERA_ID: crawlspace_inside
+      ZONE_KEY: crawlspace_inside_zone
+      # 2304x1296 HEVC main stream on /stream1 — same firmware family
+      # as .229, ffprobe 2026-09-11 confirmed identical response.
+      RTSP_URL: rtsp://admin:123456@192.168.1.86:554/stream1
+      BASELINE_PATH: data/baseline_crawlspace_inside.jpg
+      # Indoor — IR-lit 24/7. Force baseline slot to night via the
+      # unreachable brightness threshold, exactly like the sibling
+      # detector-crawlspace. See its rationale block for the full story.
+      DAY_NIGHT_BRIGHTNESS_THRESHOLD: "255"
+      # Zone polygon still correlates with sun (proxy for human-active
+      # hours) even though the scene is dark 24/7.
+      ZONE_POLYGON_MODE_SOURCE: sun
+      SUN_LAT: "${SUN_LAT:-33.7455}"
+      SUN_LON: "${SUN_LON:--117.8677}"
+      SKIP_DAYTIME_DETECTION: "0"
+      TZ: America/Los_Angeles
+      INPUT_WIDTH: "2048"
+      INPUT_HEIGHT: "1152"
+      MIN_MOTION_BBOX_PX: "30"
+      VLM_INTERVAL_S: "3"
+      # Post-VLM classifier: shadow mode. No labeled data for this
+      # framing yet — mirror the sibling's rooftop-style hold pattern.
+      CLASSIFIER_MODE: shadow
+      NIGHT_INSECT_BRIGHTNESS_MIN: "130"
+      INSECT_MEAN_UNCAP_SIZE: "1"
+      MOTION_MERGE_DIST_PX: "40"
+      MOTION_MERGE_MAX_CLUSTER: "5"
+      ALERT_ANNOTATE_HISTORY_FRAMES: "15"
+      MOTION_BACKEND: mog2
+      MOTION_HISTORY: "400"
+      MOTION_VAR_THRESHOLD: "18"
+      MOTION_MIN_AREA: "80"
+      MOTION_DETECT_SHADOWS: "0"
+      BASELINE_DIFF_THRESHOLD: "0.06"
+      DAY_BASELINE_DIFF_THRESHOLD: "0.18"
+      DAYTIME_RODENT_MIN_CONF: "0.55"
+      EXCLUSION_MIN_CONF: "0.90"
+      VLM_BACKEND: ollama
+      OLLAMA_MODEL: qwen2.5vl:7b
+      CLAUDE_MODEL: claude-sonnet-5
+      CASCADE_CONFIRM_MODEL: claude-sonnet-5
+      OLLAMA_URL: http://host.docker.internal:11434
+      DETECTOR_INTERNAL_HOST: 0.0.0.0
+      # Fifth detector port — yard=8101, rooftop=8102, backyard=8103,
+      # crawlspace=8104, crawlspace-inside=8105.
+      DETECTOR_INTERNAL_PORT: 8105
+    expose:
+      - "8105"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8105/internal/health', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
   web:
     build:
       context: .
@@ -803,7 +872,7 @@ services:
     environment:
       # Comma-separated so the sidecar can fan-out /status + fan-in /api/alerts.
       # Order defines display order in the UI.
-      DETECTOR_URLS: http://detector-yard:8101,http://detector-rooftop:8102,http://detector-backyard:8103,http://detector-crawlspace:8104
+      DETECTOR_URLS: http://detector-yard:8101,http://detector-rooftop:8102,http://detector-backyard:8103,http://detector-crawlspace:8104,http://detector-crawlspace-inside:8105
       # Back-compat: legacy single-detector consumers read this one.
       DETECTOR_INTERNAL_URL: http://detector-yard:8101
       PREVIEW_HOST: 0.0.0.0
@@ -908,9 +977,16 @@ services:
       # `python scripts/backfill_tp_clips.py --retry-failed` — NVR
       # likely has footage for windows AgentDVR missed.
       NVR_CHANNEL_CRAWLSPACE: "1"
+      # 2026-09-11: crawlspace_inside camera (.86) is NOT on the NVR —
+      # standalone Hiseeu with no recording path via Amcrest. Route clip
+      # pulls through AgentDVR local chunks instead, same pattern the
+      # original crawlspace used before its 2026-09-10 NVR cutover.
+      # AgentDVR internal camera id `DNAKT` (assigned 2026-09-11).
+      AGENTDVR_DIR_CRAWLSPACE_INSIDE: /agentdvr/crawlspace_inside
     volumes:
       - ./clips:/app/clips
       - ./logs:/app/logs
+      - I:/agentDVR/video/DNAKT:/agentdvr/crawlspace_inside:ro
     depends_on:
       postgres:
         condition: service_healthy
