@@ -896,6 +896,13 @@ services:
       # consumers on the cam now (detector-crawlspace + NVR) instead
       # of three.
       NVR_CHANNEL_CRAWLSPACE: "1"
+      # AgentDVR-only cameras (no NVR channel). Value only has to be
+      # truthy — the web-side check at src/web_service.py:1270 uses
+      # `bool(env.get(...))` to decide whether to route playback-url
+      # requests through the AgentDVR flow instead of warning about a
+      # missing NVR_CHANNEL_*. The actual chunk directory lives on the
+      # archiver container, which owns the bind mount.
+      AGENTDVR_DIR_CRAWLSPACE_INSIDE: /agentdvr/crawlspace_inside
     volumes:
       - ./data:/app/data
       - ./snapshots:/app/snapshots:ro
