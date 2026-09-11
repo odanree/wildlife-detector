@@ -649,18 +649,32 @@ class VLMAnalyzer:
             )
             # Feed the aggregate cost tracker on Stats. Lazy import to avoid
             # a circular dependency (preview → pipeline → vlm → preview).
-            # Missing/broken preview shouldn't crash a VLM call — swallow.
+            # Split the guard so an actual bug in record_vlm_tokens (bad
+            # dashboard shape, division-by-zero on empty history, etc.)
+            # doesn't hide behind the "missing preview" fallback.
             try:
                 from src.web.preview import stats as _preview_stats
-                _preview_stats.record_vlm_tokens(
-                    model=self._claude_model,
-                    input_tok=_tin,
-                    cache_read=_tcr,
-                    cache_create=_tcc,
-                    output_tok=_tout,
+            except ImportError:
+                _preview_stats = None
+                logger.debug(
+                    "VLM: preview stats module unavailable; skipping token "
+                    "cost tracking for this call."
                 )
-            except Exception:
-                pass
+            if _preview_stats is not None:
+                try:
+                    _preview_stats.record_vlm_tokens(
+                        model=self._claude_model,
+                        input_tok=_tin,
+                        cache_read=_tcr,
+                        cache_create=_tcc,
+                        output_tok=_tout,
+                    )
+                except Exception:
+                    logger.exception(
+                        "VLM: record_vlm_tokens failed for model=%s — "
+                        "cost dashboards will be stale for this call.",
+                        self._claude_model,
+                    )
         # Sonnet-5+ / Opus with extended thinking may return ThinkingBlock
         # entries before the TextBlock — filter to text blocks only so we
         # don't AttributeError on the thinking preamble.
