@@ -277,7 +277,7 @@ def test_alert_inside_stale_chunk_near_seam_slices_A_not_B(
     # ffmpeg installed. Assert on -i <chunk>: chunk A is the correct
     # source; chunk B would be the wrong-chunk bug from the 2nd review.
     captured: dict = {}
-    def fake_run(cmd, alert_id, camera_id, out_path_, source):
+    def fake_run(cmd, alert_id, alert_ts, camera_id, out_path_, source, channel=None):
         captured["cmd"] = cmd
         return out_path_
 
@@ -459,3 +459,168 @@ def test_submit_skips_permanent_failure(
     # on_done should fire immediately with path=None; pool should never
     # have been asked to do work.
     assert calls == [(alert_id, None)]
+
+
+def test_degenerate_mini_chunk_b_tombstones_instead_of_retrying_forever(
+    archiver: ClipArchiver, tmp_path: Path, monkeypatch,
+) -> None:
+    """Regression for #185. AgentDVR writes a brief chunk B after A,
+    dies, and an alert lands past B's own close:
+      A closes at T
+      B starts at T+1s (normal seam)
+      AgentDVR dies at T+3s → B.mtime = T+3s (stale but very short)
+      alert at T+4s (past B's close AND B is stale)
+
+    Old behavior: seam_gap ≤ 5s → seam-redirect → slice B → ffmpeg -ss
+    lands past B's EOF → zero-byte output → return None → no tombstone
+    → next backfill re-enqueues → retry forever.
+
+    New behavior: alert_ts > B.mtime AND B is stale → tombstone as
+    `agentdvr_gap_in_successor` and stop retrying.
+    """
+    monkeypatch.setenv("NVR_TZ", "America/Los_Angeles")
+    d = tmp_path / "agentdvr"
+    d.mkdir()
+
+    now = time.time()
+    # A: closed 10 minutes ago (well past stale threshold).
+    close_a_mtime = now - 600.0
+    a_start = datetime.fromtimestamp(close_a_mtime - 600.0, tz=LA).replace(microsecond=0)
+    chunk_a = _touch_chunk(d, f"4_{a_start.strftime('%Y-%m-%d_%H-%M-%S')}_000.mkv")
+    os.utime(chunk_a, (close_a_mtime, close_a_mtime))
+
+    # B: normal 1s seam after A, but only lived 2s before AgentDVR died.
+    # B.mtime = close_a + 3s, way past _AGENTDVR_CHUNK_STALE_SECONDS ago.
+    b_start_ts = close_a_mtime + 1.0
+    close_b_mtime = close_a_mtime + 3.0
+    b_start = datetime.fromtimestamp(b_start_ts, tz=LA).replace(microsecond=0)
+    chunk_b = _touch_chunk(d, f"4_{b_start.strftime('%Y-%m-%d_%H-%M-%S')}_000.mkv")
+    os.utime(chunk_b, (close_b_mtime, close_b_mtime))
+
+    # Alert 4s after A closed — past B's own close.
+    alert_ts = close_a_mtime + 4.0
+    assert alert_ts > close_b_mtime, "test premise: alert past B's own close"
+    out_path = archiver.clip_path(7777, alert_ts)
+
+    # ffmpeg must NOT be called — the guard should tombstone first.
+    def fake_run(*args, **kwargs):  # noqa: ARG001
+        raise AssertionError(
+            "ffmpeg was invoked — the degenerate-mini-chunk-B guard "
+            "should have tombstoned before reaching _run_ffmpeg."
+        )
+    monkeypatch.setattr(archiver, "_run_ffmpeg", fake_run)
+
+    result = archiver._pull_from_agentdvr(
+        alert_id=7777,
+        alert_ts=alert_ts,
+        camera_id="crawlspace",
+        agentdvr_dir=str(d),
+        out_path=out_path,
+    )
+
+    assert result is None
+    tomb = archiver.failure_path(7777, alert_ts)
+    assert tomb.exists(), "expected tombstone to prevent retry-forever"
+    body = tomb.read_text()
+    assert "agentdvr_gap_in_successor" in body
+    assert chunk_a.name in body
+    assert chunk_b.name in body
+
+
+def test_nvr_describe_404_tombstones(archiver: ClipArchiver) -> None:
+    """Regression for #190. Amcrest NVR responds with
+    `DESCRIBE failed: 404 Not Found` when the requested time window
+    has been FIFO'd off disk. Before this fix, `_run_ffmpeg` logged
+    the stderr at INFO and returned None with no tombstone — every
+    subsequent backfill re-notified and re-issued the same 404.
+
+    New behavior: source=='nvr' and stderr matches the 404 signature →
+    write `nvr_rotation` tombstone so submit() short-circuits future
+    retries. Deliberately does NOT tombstone on 5xx / timeout / etc.
+    """
+    import subprocess as _sp
+    class _FakeResult:
+        def __init__(self, rc, stderr):
+            self.returncode = rc
+            self.stderr = stderr
+
+    alert_id = 8888
+    alert_ts = time.time() - 30 * 86400  # 30d-old alert — outside retention
+    out_path = archiver.clip_path(alert_id, alert_ts)
+    # ffmpeg wouldn't write anything on a 404, so leave out_path missing —
+    # matches the real-world "rc != 0 and out_path.stat().st_size == 0" branch.
+
+    def fake_subprocess_run(*args, **kwargs):  # noqa: ARG001
+        return _FakeResult(
+            rc=8,
+            stderr=(
+                "[rtsp @ 000001b7] method DESCRIBE failed: "
+                "404 Not Found\n[in#0 @ 000002] Error opening input file\n"
+            ),
+        )
+
+    # Monkeypatch subprocess.run at the archiver module scope so the guard
+    # exercises the exact code path production hits.
+    import src.archiver.clip_archiver as ca
+    _orig = ca.subprocess.run
+    ca.subprocess.run = fake_subprocess_run
+    try:
+        result = archiver._run_ffmpeg(
+            cmd=["ffmpeg", "-i", "rtsp://example/cam/playback"],
+            alert_id=alert_id,
+            alert_ts=alert_ts,
+            camera_id="yard",
+            out_path=out_path,
+            source="nvr",
+            channel=5,
+        )
+    finally:
+        ca.subprocess.run = _orig
+
+    assert result is None
+    tomb = archiver.failure_path(alert_id, alert_ts)
+    assert tomb.exists(), "expected 404 tombstone to short-circuit future retries"
+    body = tomb.read_text()
+    assert "nvr_rotation" in body
+    assert "channel=5" in body
+
+
+def test_nvr_5xx_does_not_tombstone(archiver: ClipArchiver) -> None:
+    """Sibling to test_nvr_describe_404_tombstones. A 5xx / connection-
+    refused / timeout is TRANSIENT — must NOT tombstone, so the alert
+    stays retry-able once the NVR recovers."""
+    class _FakeResult:
+        def __init__(self, rc, stderr):
+            self.returncode = rc
+            self.stderr = stderr
+
+    alert_id = 8889
+    alert_ts = time.time() - 60
+    out_path = archiver.clip_path(alert_id, alert_ts)
+
+    def fake_subprocess_run(*args, **kwargs):  # noqa: ARG001
+        return _FakeResult(
+            rc=1,
+            stderr="[rtsp @ 000001b7] method DESCRIBE failed: 503 Service Unavailable\n",
+        )
+
+    import src.archiver.clip_archiver as ca
+    _orig = ca.subprocess.run
+    ca.subprocess.run = fake_subprocess_run
+    try:
+        result = archiver._run_ffmpeg(
+            cmd=["ffmpeg", "-i", "rtsp://example/cam/playback"],
+            alert_id=alert_id,
+            alert_ts=alert_ts,
+            camera_id="yard",
+            out_path=out_path,
+            source="nvr",
+            channel=5,
+        )
+    finally:
+        ca.subprocess.run = _orig
+
+    assert result is None
+    assert not archiver.failure_path(alert_id, alert_ts).exists(), (
+        "5xx must remain retry-able — only 404 DESCRIBE is permanent."
+    )
