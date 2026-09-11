@@ -819,14 +819,14 @@ services:
       NVR_CHANNEL_YARD: "5"
       NVR_CHANNEL_ROOFTOP: "6"
       NVR_CHANNEL_BACKYARD: "8"
-      # Crawlspace is NOT on the Amcrest NVR. AGENTDVR_DIR_CRAWLSPACE is
-      # mirrored from the archiver's env block (presence-only signal —
-      # web never reads the actual directory, only checks that this
-      # camera is AgentDVR-sourced so /api/alerts/<id>/playback-url can
-      # skip the misleading NVR channel=1 fallback). Value doesn't
-      # matter; set to the same path the archiver uses so the two
-      # blocks read symmetrically.
-      AGENTDVR_DIR_CRAWLSPACE: /agentdvr/crawlspace
+      # 2026-09-10: connected 192.168.1.229 to Amcrest NVR channel 1 as
+      # a proper recording source. Archiver switched from the AgentDVR
+      # local-chunk path back to the standard NVR RTSP path to match
+      # the yard/rooftop/backyard shape (single dispatch surface,
+      # matches the archiver's original design pattern). Two RTSP
+      # consumers on the cam now (detector-crawlspace + NVR) instead
+      # of three.
+      NVR_CHANNEL_CRAWLSPACE: "1"
     volumes:
       - ./data:/app/data
       - ./snapshots:/app/snapshots:ro
@@ -899,24 +899,18 @@ services:
       NVR_CHANNEL_YARD: "5"
       NVR_CHANNEL_ROOFTOP: "6"
       NVR_CHANNEL_BACKYARD: "8"
-      # Crawlspace is NOT on the NVR — AgentDVR on the host continuously
-      # chunks the RTSP to local MKV (~15-min per file). Archiver reads
-      # from that local mirror instead of NVR RTSP for this camera. See
-      # `_pull_from_agentdvr` in src/archiver/clip_archiver.py. The bind
-      # mount below is read-only; nothing in the pipeline modifies
-      # AgentDVR's storage.
-      AGENTDVR_DIR_CRAWLSPACE: /agentdvr/crawlspace
+      # 2026-09-10: connected 192.168.1.229 to Amcrest NVR channel 1.
+      # Retired the AgentDVR bind mount + AGENTDVR_DIR_CRAWLSPACE env —
+      # archiver now dispatches to the standard NVR RTSP playback URL
+      # for crawlspace, matching yard/rooftop/backyard. See the web
+      # env block for the migration note. Existing .failed tombstones
+      # from the earlier AgentDVR-only window can be cleared with
+      # `python scripts/backfill_tp_clips.py --retry-failed` — NVR
+      # likely has footage for windows AgentDVR missed.
+      NVR_CHANNEL_CRAWLSPACE: "1"
     volumes:
       - ./clips:/app/clips
       - ./logs:/app/logs
-      # AgentDVR's local continuous recording directory. Relocated
-      # 2026-09-10 from C:\Program Files\Agent\Media\... to I:\ to
-      # escape the C:\ Program Files anti-pattern (UAC-protected, no
-      # room to grow retention). AgentDVR preserved the UQCRY camera
-      # hash on relocation, so the archiver bind mount just re-points
-      # at the same subtree on a different drive. Read-only: archiver
-      # never writes back to AgentDVR's storage.
-      - "I:/agentDVR/video/UQCRY:/agentdvr/crawlspace:ro"
     depends_on:
       postgres:
         condition: service_healthy
