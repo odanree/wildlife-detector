@@ -537,8 +537,22 @@ class Stats:
                 cpu_pct = _raw
                 rss_mb = self._proc.memory_info().rss / (1024 * 1024)
                 threads = self._proc.num_threads()
-            except Exception:
+            except (
+                self._psutil.NoSuchProcess,
+                self._psutil.AccessDenied,
+                self._psutil.Error,
+            ):
+                # Process gone or permission-denied — stats degrade to zeros
+                # for this snapshot. Expected during shutdown / restart.
                 pass
+            except Exception:
+                # Anything else (attribute error from a psutil version bump,
+                # OSError probing /proc) is a real signal — log it once so a
+                # regression doesn't silently freeze the resource panel.
+                logger.exception(
+                    "Preview: resource-stat probe raised unexpected error; "
+                    "cpu/rss/threads will read 0 for this snapshot."
+                )
         with self._lock:
             fps = 0.0
             if len(self._frame_ts) >= 2:
