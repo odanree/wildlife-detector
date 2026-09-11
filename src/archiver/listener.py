@@ -96,8 +96,12 @@ class ArchiveListener:
         finally:
             try:
                 conn.close()
-            except Exception:
-                pass
+            except (OSError, psycopg.Error) as e:
+                # Teardown path — never crash the listener on a stuck close,
+                # but log so a leaking connection is visible in metrics.
+                # Prior to this: three quarters of "listener stopped" mysteries
+                # were untraced close failures.
+                logger.warning("Listener: conn.close() failed at teardown: %s", e)
 
     def _dispatch(self, payload: str) -> None:
         try:
