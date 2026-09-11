@@ -24,10 +24,25 @@ class ZoneFilter:
             logger.debug("Zone '%s' loaded (%d vertices)", name, len(pts))
 
     def filter(self, detections: list[Detection], zone_name: str) -> list[Detection]:
-        """Return only the detections whose center is inside `zone_name`."""
+        """Return only the detections whose center is inside `zone_name`.
+
+        Degenerate polygons (missing, empty, or fewer than 3 vertices) fall
+        back to full-frame — cv2.pointPolygonTest raises on 0/1/2-vertex
+        arrays, and the pipeline's own comment at src/pipeline.py:625
+        already promises "full-frame detection until UI zone save" for the
+        missing-zone case. This branch keeps that promise for new-camera
+        bringups where the zone hasn't been drawn yet.
+        """
         poly = self._polygons.get(zone_name)
         if poly is None:
             logger.warning("Unknown zone '%s' — returning all detections", zone_name)
+            return detections
+        if len(poly) < 3:
+            logger.warning(
+                "Zone '%s' has %d vertices (need ≥3 for pointPolygonTest); "
+                "running full-frame detection until a real polygon is saved.",
+                zone_name, len(poly),
+            )
             return detections
 
         return [d for d in detections if self._inside(d.center, poly)]
