@@ -102,6 +102,27 @@ def main() -> int:
     clips_dir = Path(args.clips_dir)
     clips_dir.mkdir(parents=True, exist_ok=True)
 
+    # --retry-failed requires write access to unlink `.failed` tombstones
+    # under clips_dir. Fail fast at the trust boundary — otherwise each
+    # tombstone unlink fires a per-row WARN and the notify still enqueues,
+    # so the operator watches a "success" log while the archiver silently
+    # re-skips every alert because the tombstone was never cleared.
+    # Probe with a real tempfile rather than os.access: bind-mounted R/O
+    # filesystems and ACL edge cases can lie in either direction.
+    if args.retry_failed and not args.dry_run:
+        probe = clips_dir / f".backfill_write_probe_{os.getpid()}"
+        try:
+            probe.touch()
+            probe.unlink()
+        except OSError as e:
+            print(
+                f"ERROR: --retry-failed needs write access to {clips_dir} "
+                f"to clear `.failed` tombstones, but probe write failed: {e}. "
+                f"Aborting to avoid a silent no-op run.",
+                file=sys.stderr,
+            )
+            return 3
+
     with psycopg.connect(args.database_url, autocommit=True) as conn:
         with conn.cursor() as cur:
             # TPs with species that we ostensibly want archived, newest
