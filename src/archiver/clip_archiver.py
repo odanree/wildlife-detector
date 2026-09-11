@@ -83,6 +83,16 @@ _AGENTDVR_FILENAME_RE = re.compile(
     r"^\d+_(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})_\d+\.mkv$"
 )
 
+# Amcrest NVR RTSP: "no recording exists for this time window" surfaces
+# as `DESCRIBE failed: 404 Not Found` on the /cam/playback URL. Permanent,
+# not transient — NVR has FIFO'd the source footage. Tombstone so the
+# archiver stops re-notifying every backfill run. 5xx / connection-refused
+# / timeouts are DELIBERATELY excluded from this match: those are
+# transient (NVR restart, network hiccup) and should retry.
+_NVR_PERMANENT_404_RE = re.compile(
+    r"DESCRIBE failed: 404 Not Found", re.IGNORECASE
+)
+
 
 class ClipArchiver:
     """Bounded-pool archiver. Instantiate once at app startup, share
@@ -273,7 +283,10 @@ class ClipArchiver:
             "-movflags", "+faststart",
             str(out_path),
         ]
-        return self._run_ffmpeg(cmd, alert_id, camera_id, out_path, source="nvr")
+        return self._run_ffmpeg(
+            cmd, alert_id, alert_ts, camera_id, out_path,
+            source="nvr", channel=channel,
+        )
 
     def _pull_from_agentdvr(
         self,
@@ -460,6 +473,31 @@ class ClipArchiver:
                             next_mtime, next_age_s, desired_end_unix,
                         )
                         return None
+                    # Degenerate mini-chunk B: B is stale AND alert_ts is
+                    # past B's own close. AgentDVR wrote a brief chunk B
+                    # after A, then died. Without this gate we'd fall into
+                    # _slice_agentdvr_chunk(B), ffmpeg -ss lands past B's
+                    # EOF, and we retry forever with zero-byte output. Same
+                    # alert_ts-vs-mtime discrimination as A's own stale
+                    # branch above — just applied to the successor.
+                    if (next_age_s > _AGENTDVR_CHUNK_STALE_SECONDS
+                            and alert_ts > next_mtime):
+                        reason = (
+                            f"agentdvr_gap_in_successor: chunk "
+                            f"{chunk_path.name} closed at "
+                            f"{file_mtime:.0f}, successor {next_path.name} "
+                            f"is stale (mtime={next_mtime:.0f}, "
+                            f"age={next_age_s:.0f}s > "
+                            f"{_AGENTDVR_CHUNK_STALE_SECONDS:.0f}s) and "
+                            f"alert_ts={alert_ts:.0f} is past its close. "
+                            f"AgentDVR appears to have died mid-successor."
+                        )
+                        logger.warning(
+                            "Archiver: alert=%d permanent failure — %s",
+                            alert_id, reason,
+                        )
+                        self._mark_permanent_failure(alert_id, alert_ts, reason)
+                        return None
                     return self._slice_agentdvr_chunk(
                         alert_id, alert_ts, camera_id,
                         chunk_path=next_path,
@@ -541,7 +579,9 @@ class ClipArchiver:
             "-movflags", "+faststart",
             str(out_path),
         ]
-        return self._run_ffmpeg(cmd, alert_id, camera_id, out_path, source="agentdvr")
+        return self._run_ffmpeg(
+            cmd, alert_id, alert_ts, camera_id, out_path, source="agentdvr",
+        )
 
     def _pick_agentdvr_chunk(
         self, source_dir: Path, target_local: datetime,
@@ -637,12 +677,15 @@ class ClipArchiver:
         self,
         cmd: list[str],
         alert_id: int,
+        alert_ts: float,
         camera_id: str,
         out_path: Path,
         source: str,
+        channel: Optional[int] = None,
     ) -> Optional[Path]:
         """Shared ffmpeg invocation + result handling for both NVR and
-        AgentDVR pulls."""
+        AgentDVR pulls. alert_ts + channel are threaded through so the
+        NVR-404 tombstone path can attribute its reason accurately."""
         # Hard subprocess timeout at duration * 3 — gives ffmpeg headroom
         # to negotiate + flush but kills a pull that stalls indefinitely.
         timeout = self.duration_seconds * 3
@@ -668,12 +711,26 @@ class ClipArchiver:
             return None
 
         if result.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
+            stderr = result.stderr or ""
             logger.info(
                 "Archiver: no clip for alert=%d source=%s (rc=%d, stderr=%s)",
                 alert_id, source, result.returncode,
-                (result.stderr or "").strip()[:200],
+                stderr.strip()[:200],
             )
             self._cleanup_partial(out_path)
+            # NVR-side permanent-failure detection: DESCRIBE 404 means the
+            # NVR has FIFO'd the source footage for this alert's window.
+            # Tombstone so the archiver stops re-notifying every backfill
+            # run. Same tombstone contract PR #184 built for AgentDVR —
+            # just extending to the second source. Deliberately excludes
+            # 5xx / connection-refused / timeouts (those are transient).
+            if source == "nvr" and _NVR_PERMANENT_404_RE.search(stderr):
+                reason = (
+                    f"nvr_rotation: NVR FIFO'd the recording for the "
+                    f"alert's timestamp window (channel={channel}). "
+                    f"Ffmpeg reported 404 on DESCRIBE."
+                )
+                self._mark_permanent_failure(alert_id, alert_ts, reason)
             return None
 
         size_kb = out_path.stat().st_size // 1024
