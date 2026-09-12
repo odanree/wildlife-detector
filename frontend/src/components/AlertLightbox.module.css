@@ -105,11 +105,13 @@
   font-family: var(--font-mono, monospace);
 }
 
-/* Prev/next preview strip — 3 thumbnails each side + current position
+/* Prev/next preview strip — 2 thumbnails each side + current position
    counter in the middle. Purpose is rapid-vote pacing: operator sees
    when a camera transition is coming up and slows down before the
-   muscle-memory vote lands on the wrong mental model. 3-slot window
-   gives ~3-alert look-ahead lead time. */
+   muscle-memory vote lands on the wrong mental model. Was 3-slot (~3-
+   alert lead time); reduced to 2-slot 2026-09-12 for bigger thumbs —
+   at 2/side the impending camera change is still visible one alert
+   before it lands. */
 .previewStrip {
   display: flex;
   align-items: center;
