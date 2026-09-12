@@ -226,6 +226,11 @@ services:
       # scenes while still catching quick-passing rats (typical rat
       # transit ≥ 5s, so one VLM call within that window still fires).
       VLM_INTERVAL_S: "3"
+      # Priority-aware alert debounce (see src/alerts/debounce.py). 10s
+      # ceiling ~360 alerts/hr in the pathological case, plenty of
+      # granularity for a rat that transits ≥ 5s. Rodent-positive alerts
+      # still upgrade past a standing `other` inside the window.
+      ALERT_DEBOUNCE_S: "10"
       # Insect brightness pre-filter — bbox mean grayscale above this
       # threshold classified as insect (moth wings reflect IR/light),
       # skip VLM entirely. Was 110 pre-tuning; lowered to 100 08/11 after
