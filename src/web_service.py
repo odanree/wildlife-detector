@@ -1338,6 +1338,7 @@ def create_app(registry: DetectorRegistry) -> Flask:
                 base_rtsp_url=base_url,
                 pre_roll_seconds=pre_roll,
                 nvr_channel=channel,
+                camera_id=camera_id,
             )
         except Exception as exc:
             return jsonify({"error": f"failed to build playback url: {exc}"}), 500

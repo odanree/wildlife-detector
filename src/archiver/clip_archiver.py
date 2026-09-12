@@ -262,6 +262,7 @@ class ClipArchiver:
             pre_roll_seconds=self.pre_roll_seconds,
             speed=1,
             nvr_channel=channel,
+            camera_id=camera_id,
         )
 
         # -y: overwrite (should never fire, since we checked exists first

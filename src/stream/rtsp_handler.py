@@ -48,8 +48,13 @@ class RTSPHandler:
 
     def seek_to_datetime(self, dt: datetime, pre_roll_seconds: int = 30, nvr_channel: int | None = None) -> None:
         """Reconnect to NVR playback at dt. Delegates URL building to build_nvr_playback_url()."""
+        # Each detector container has CAMERA_ID in env; used for the
+        # per-camera NVR host/creds/family lookup so a detector on the
+        # Annke picks up the right shape without touching the base URL.
+        import os as _os
         playback_url = build_nvr_playback_url(
-            dt.timestamp(), self._base_url, pre_roll_seconds, nvr_channel
+            dt.timestamp(), self._base_url, pre_roll_seconds, nvr_channel,
+            camera_id=_os.getenv("CAMERA_ID", ""),
         )
         with self._url_lock:
             self._pending_url = playback_url
