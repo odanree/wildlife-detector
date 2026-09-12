@@ -789,7 +789,10 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     # 0 = disabled (preserves existing behavior for yard/rooftop/backyard
     # /crawlspace). Applied to rodent-positive alerts only — human
     # heartbeat and insect classification have their own interval knobs.
-    _ALERT_DEBOUNCE_S = float(os.getenv("ALERT_DEBOUNCE_S", "0"))
+    # `... or "0"` guards against the set-but-empty trap: env_file /
+    # docker-compose passes an empty string when the value is blank,
+    # and float("") raises ValueError at startup.
+    _ALERT_DEBOUNCE_S = float(os.getenv("ALERT_DEBOUNCE_S") or "0")
     _last_rodent_alert_ts = 0.0
     # Night insect brightness threshold — bbox mean grayscale above this
     # value is classified as insect (moth wings reflect IR) rather than
@@ -1732,20 +1735,23 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 # the notifier's outbound-webhook cooldown. Manual dets
                 # bypass — same rationale as the notifier bypass above:
                 # operator-clicked events are per-click, not throttled.
+                # monotonic (not wall time) matches the notifier's own
+                # cooldown clock and stays consistent across NTP steps.
+                _alert_now = time.monotonic()
                 if (
                     _ALERT_DEBOUNCE_S > 0
                     and tid < MANUAL_TRACK_ID_BASE
-                    and (time.time() - _last_rodent_alert_ts) < _ALERT_DEBOUNCE_S
+                    and (_alert_now - _last_rodent_alert_ts) < _ALERT_DEBOUNCE_S
                 ):
                     logger.info(
                         "Rodent alert debounced camera=%s track=%d "
                         "(%.1fs < %.1fs) — species=%s conf=%.2f",
                         _camera_id_env, tid,
-                        time.time() - _last_rodent_alert_ts, _ALERT_DEBOUNCE_S,
+                        _alert_now - _last_rodent_alert_ts, _ALERT_DEBOUNCE_S,
                         result.get("species", "?"), float(result.get("confidence", 0.0)),
                     )
                     continue
-                _last_rodent_alert_ts = time.time()
+                _last_rodent_alert_ts = _alert_now
                 snap_path = notifier.send("rodent", result, snap_fr, bbox, yolo_conf=yolo_conf)
                 sh, sw = snap_fr.shape[:2]
                 maybe_slew(bbox=bbox, event_key=("rodent", tid),
