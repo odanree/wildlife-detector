@@ -19,11 +19,14 @@ logger = logging.getLogger(__name__)
 def _nvr_env(camera_id: str, suffix: str, fallback_key: str = "") -> str:
     """Per-camera NVR env lookup with fallback to the fleet-wide AMCREST_* value.
 
-    Two-NVR shape: a `crawlspace_inside` camera can live on an Annke NVR
-    at 192.168.1.130 while yard/rooftop/backyard stay on the Amcrest at
-    .148. NVR_HOST_<CAM> / NVR_USER_<CAM> / NVR_PASS_<CAM> / NVR_PORT_<CAM> /
-    NVR_FAMILY_<CAM> override per camera; missing keys fall through to
-    the AMCREST_* fleet defaults so existing deployments don't move.
+    Two-NVR shape: a camera on a second NVR (different vendor / firmware
+    family / host) can point its playback at that NVR without moving the
+    fleet default. NVR_HOST_<CAM> / NVR_USER_<CAM> / NVR_PASS_<CAM> /
+    NVR_PORT_<CAM> / NVR_FAMILY_<CAM> override per camera; missing keys
+    fall through to the AMCREST_* fleet defaults so existing deployments
+    don't move. Framework currently unused (crawlspace_inside moved back
+    to the Amcrest at .148 ch 3 per PR #202) but wired for any future
+    second-NVR case.
     """
     if camera_id:
         v = os.getenv(f"NVR_{suffix}_{camera_id.upper()}")
