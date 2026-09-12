@@ -26,6 +26,11 @@ export function GateFunnelChip({ camera }: GateFunnelChipProps) {
   const perRej = g.motion_persistence_rejected ?? 0;
   const kinRej = velRej + perRej;
   const insects = g.vlm_insect ?? 0;
+  // Kinematic rejects (kin -Xv/-Yp) were hidden from the visible chip
+  // on 2026-09-11 — the raw counts got large enough on crawlspace
+  // (-56543v/-96291p) to wrap the whole row onto a second line. Moved
+  // into the tooltip so operators debugging a detection miss can still
+  // read them, but the compact display fits one row.
   return (
     <Chip
       label="gate"
@@ -39,14 +44,6 @@ export function GateFunnelChip({ camera }: GateFunnelChipProps) {
           : ""
       }`}
     >
-      {kinRej > 0 && (
-        <>
-          <span className={styles.kin}>
-            kin −{velRej}v/−{perRej}p
-          </span>
-          <span className={styles.arrow}>→</span>
-        </>
-      )}
       motion <b className={styles.b}>{g.motion_events}</b>
       <span className={styles.arrow}>→</span>
       zone <b className={styles.b}>{g.zone_events}</b>
