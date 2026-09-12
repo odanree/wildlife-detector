@@ -193,6 +193,30 @@ export function CameraPane({
     }
   }, [status?.last_alert?.ts]);
 
+  // Toolbar controls (baseline capture/clear, view mode, zoom) collapsed
+  // by default — the stats bar + pause button belong on a compact single
+  // line, and these three groups only get used occasionally (baseline is
+  // an admin task, view mode is debug, zoom has a wheel-scroll shortcut).
+  // Persisted per-camera in localStorage so an operator who prefers them
+  // expanded on one pane doesn't have to re-open every pane load.
+  const [showControls, setShowControls] = useState(() => {
+    try {
+      return localStorage.getItem(`camPaneControls:${camera}`) === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        `camPaneControls:${camera}`,
+        showControls ? "1" : "0",
+      );
+    } catch {
+      // ignore storage errors (private mode, quota, etc.)
+    }
+  }, [camera, showControls]);
+
   const [streamError, setStreamError] = useState(false);
   // streamKey exists only for the user-triggered Retry button (same URL,
   // want a fresh fetch). On camera change the URL already differs — the
@@ -298,25 +322,42 @@ export function CameraPane({
             {paused ? "▶ resume" : "⏸ pause"}
           </button>
         )}
-        <BaselineControls camera={camera} />
-        <ViewModeButtons
-          viewMode={viewMode}
-          onSet={onViewModeChange}
-          dayExists={!!baselineMeta?.day.exists}
-          nightExists={!!baselineMeta?.night.exists}
-        />
-        <div className={styles.zoomBtns}>
-          <button type="button" onClick={() => adjustBy(-0.1)} title="Zoom out">
-            −
-          </button>
-          <span className={styles.zoomVal}>{zoom.toFixed(2)}×</span>
-          <button type="button" onClick={() => adjustBy(0.1)} title="Zoom in">
-            +
-          </button>
-          <button type="button" onClick={() => setZoomTo(1.0)} title="Reset zoom to 1×">
-            1×
-          </button>
-        </div>
+        <button
+          type="button"
+          className={styles.linkBtn}
+          onClick={() => setShowControls((v) => !v)}
+          title={
+            showControls
+              ? "Hide baseline + view + zoom controls"
+              : "Show baseline + view + zoom controls (baseline capture, day/night preview, zoom)"
+          }
+          aria-expanded={showControls}
+        >
+          {showControls ? "▾ controls" : "▸ controls"}
+        </button>
+        {showControls && (
+          <>
+            <BaselineControls camera={camera} />
+            <ViewModeButtons
+              viewMode={viewMode}
+              onSet={onViewModeChange}
+              dayExists={!!baselineMeta?.day.exists}
+              nightExists={!!baselineMeta?.night.exists}
+            />
+            <div className={styles.zoomBtns}>
+              <button type="button" onClick={() => adjustBy(-0.1)} title="Zoom out">
+                −
+              </button>
+              <span className={styles.zoomVal}>{zoom.toFixed(2)}×</span>
+              <button type="button" onClick={() => adjustBy(0.1)} title="Zoom in">
+                +
+              </button>
+              <button type="button" onClick={() => setZoomTo(1.0)} title="Reset zoom to 1×">
+                1×
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       <div className={styles.scrollHost} ref={scrollHostRef}>
