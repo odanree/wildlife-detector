@@ -578,6 +578,14 @@ services:
       # = ~900 px² = usually not-a-real-target).
       MIN_MOTION_BBOX_PX: "30"
       VLM_INTERVAL_S: "3"
+      # Priority-aware alert debounce (see src/alerts/debounce.py). 10s
+      # matches yard. The VLM-reject-override path fires 75+ 'other'
+      # alerts per 6h from static-noise hotspots on the fence line —
+      # this coalesces the bursts. Real rodents still upgrade over
+      # 'other' inside the window (#204). Size-based gating rejected
+      # because backyard rats are actually SMALLER than the FP overrides
+      # (median 1845 vs 2982 px) — priority upgrade is the safe knob.
+      ALERT_DEBOUNCE_S: "10"
       # Post-VLM classifier: backyard active mode (Phase 3 rollout,
       # camera 2/3). Per-camera override of the .env-wide shadow
       # defaults. Agreement analysis 2026-09-06 (n=3424 labeled
