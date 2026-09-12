@@ -93,6 +93,8 @@
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  flex: 0 0 auto;
+  padding: 0 var(--sp-2, 8px);
 }
 
 .hintLine {
@@ -111,11 +113,12 @@
 .previewStrip {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: stretch;
   gap: var(--sp-1, 4px);
   margin-bottom: var(--sp-2, 8px);
   flex-wrap: nowrap;
   overflow-x: auto;
+  width: 100%;
 }
 
 .previewSlot {
@@ -131,7 +134,8 @@
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  min-width: 104px;
+  flex: 1 1 0;
+  min-width: 0;
   transition: border-color 0.1s;
 }
 
@@ -182,8 +186,8 @@
 }
 
 .previewThumb {
-  height: 55px;
-  width: auto;
+  width: 100%;
+  height: auto;
   aspect-ratio: 16 / 9;
   object-fit: cover;
   border-radius: 2px;
