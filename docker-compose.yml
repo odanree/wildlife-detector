@@ -753,12 +753,12 @@ services:
       # no fence reflections, but plenty of IR speckle on textured walls).
       MIN_MOTION_BBOX_PX: "30"
       VLM_INTERVAL_S: "3"
-      # Priority-aware alert debounce (see src/alerts/debounce.py). 5s
-      # is loose — crawlspace entrance sees passing rats every 20-60s so
-      # 5s dedupes multi-shot bursts on the same visit without collapsing
-      # actual sequential visits. Rodent-positive still upgrades over a
-      # standing 'other' inside the window (#204).
-      ALERT_DEBOUNCE_S: "5"
+      # Priority-aware alert debounce (see src/alerts/debounce.py). 3s
+      # is a light dedup for the fastest bursts on this camera — passing
+      # rats dwell 20-60s per visit, so 3s coalesces the initial
+      # multi-track flurry but keeps a very high per-event granularity.
+      # Rodent-positive still upgrades over 'other' inside the window (#204).
+      ALERT_DEBOUNCE_S: "3"
       # Post-VLM classifier: shadow mode (default). No labeled crawlspace
       # data yet — collect ≥ 500 labeled rows before evaluating agreement
       # and flipping to active. Mirrors the rooftop hold pattern.
