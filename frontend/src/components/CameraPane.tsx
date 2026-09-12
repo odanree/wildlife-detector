@@ -342,6 +342,23 @@ export function CameraPane({
             {paused ? "▶ resume" : "⏸ pause"}
           </button>
         )}
+        {/*
+          Persistent zoom-reset shortcut. Wheel-zoom is the primary
+          interaction (see onWheel), so when the operator has zoomed
+          via wheel we surface a compact one-click "back to 1×" button
+          even while the full controls stay collapsed. Hidden at
+          zoom≈1.0 so it never pollutes the toolbar on idle panes.
+        */}
+        {Math.abs(zoom - 1.0) > 0.001 && !showControls && (
+          <button
+            type="button"
+            className={styles.linkBtn}
+            onClick={() => setZoomTo(1.0)}
+            title={`Zoom is ${zoom.toFixed(2)}× — click to reset to 1×`}
+          >
+            {zoom.toFixed(2)}× → 1×
+          </button>
+        )}
         <button
           type="button"
           className={styles.linkBtn}
