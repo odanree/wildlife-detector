@@ -131,6 +131,19 @@ class Notifier:
             day_dir.mkdir(parents=True, exist_ok=True)
             path = day_dir / f"{event_type}_{ts}.jpg"
             cv2.imwrite(str(path), out, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            # Sibling thumbnail-annotated variant: same image but the
+            # bbox is a solid red block. Operator's rapid-labeling flow
+            # reads the thumbnail strip to pre-position attention on
+            # where the next detection is; a 2px outline on a 1280→200
+            # downscale renders sub-pixel and vanishes. A solid fill
+            # survives the downscale as a red patch. Main lightbox still
+            # loads the outline version. Same base name plus `.thumb.jpg`
+            # so the frontend can infer the URL by string replace.
+            if bbox is not None:
+                thumb_path = day_dir / f"{event_type}_{ts}.thumb.jpg"
+                thumb_out = frame.copy()
+                cv2.rectangle(thumb_out, (x1, y1), (x2, y2), (0, 0, 255), -1)
+                cv2.imwrite(str(thumb_path), thumb_out, [cv2.IMWRITE_JPEG_QUALITY, 75])
             return path
         except Exception:
             logger.exception("Failed to save snapshot for %s", event_type)

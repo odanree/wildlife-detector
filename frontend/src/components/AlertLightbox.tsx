@@ -509,6 +509,7 @@ function PreviewThumb({
         snapshot={alert.snapshot}
         alt={`${label} snapshot`}
         loading="lazy"
+        preferThumb
       />
     </button>
   );
