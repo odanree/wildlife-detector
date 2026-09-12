@@ -829,10 +829,11 @@ services:
       # Per-camera rodent-alert debounce (wall clock). Observed 1485
       # alerts in 3h during initial deployment; notifier's 120s cooldown
       # only gates the webhook, so the DB and alerts page still flooded.
-      # 10s = ~360 alerts/hr ceiling in the pathological case (still a
-      # big cut from ~495/hr observed), but keeps enough per-event
-      # granularity to see distinct rat visits.
-      ALERT_DEBOUNCE_S: "10"
+      # 20s = 180 alerts/hr ceiling (big cut from ~495/hr observed).
+      # Tuned up from 10s → 15s → 20s after operator judgement — a rat
+      # in the crawlspace typically dwells 20-60s, so one alert per
+      # visit is roughly the sweet spot.
+      ALERT_DEBOUNCE_S: "20"
       # Post-VLM classifier: shadow mode. No labeled data for this
       # framing yet — mirror the sibling's rooftop-style hold pattern.
       CLASSIFIER_MODE: shadow
@@ -903,20 +904,10 @@ services:
       # consumers on the cam now (detector-crawlspace + NVR) instead
       # of three.
       NVR_CHANNEL_CRAWLSPACE: "1"
-      # 2026-09-11: per-camera NVR overrides framework added. Annke at
-      # 192.168.1.130 ch 1 wired up but currently unused — this Annke
-      # rejects /Streaming/tracks/<ch>?starttime=... with 400 Bad Request.
-      # AgentDVR stays primary (see AGENTDVR_DIR_CRAWLSPACE_INSIDE env).
-      # Kept the block so activation is a one-liner once the right
-      # Annke playback URL shape is identified. Web-side dispatch at
-      # src/web_service.py:1270 also picks AgentDVR-first when both are
-      # set.
-      NVR_CHANNEL_CRAWLSPACE_INSIDE: "1"
-      NVR_HOST_CRAWLSPACE_INSIDE: "192.168.1.130"
-      NVR_USER_CRAWLSPACE_INSIDE: "admin"
-      NVR_PASS_CRAWLSPACE_INSIDE: "Windows98"
-      NVR_FAMILY_CRAWLSPACE_INSIDE: "hikvision"
-      AGENTDVR_DIR_CRAWLSPACE_INSIDE: /agentdvr/crawlspace_inside
+      # 2026-09-11: .86 moved to the Amcrest at .148 channel 3 (simpler
+      # than the earlier Annke/AgentDVR arrangement). No per-camera NVR
+      # overrides needed — inherits fleet-wide AMCREST_HOST/USER/PASS.
+      NVR_CHANNEL_CRAWLSPACE_INSIDE: "3"
     volumes:
       - ./data:/app/data
       - ./snapshots:/app/snapshots:ro
@@ -998,27 +989,13 @@ services:
       # `python scripts/backfill_tp_clips.py --retry-failed` — NVR
       # likely has footage for windows AgentDVR missed.
       NVR_CHANNEL_CRAWLSPACE: "1"
-      # 2026-09-11 (later same day): per-camera NVR overrides added
-      # against Annke at 192.168.1.130 ch 1. Framework wired but NOT
-      # activated as the primary source — the Annke's playback URL
-      # shape (/Streaming/tracks/<ch>?starttime=...&endtime=...) is
-      # rejected by this firmware with 400 Bad Request on DESCRIBE.
-      # AgentDVR stays the primary archive path via
-      # AGENTDVR_DIR_CRAWLSPACE_INSIDE below — dispatch order at
-      # src/archiver/clip_archiver.py:232 prefers AgentDVR when both
-      # are set. Kept the NVR block so the correct URL shape can be
-      # activated by just deleting the AgentDVR env once we identify
-      # the right playback endpoint for this Annke.
-      NVR_CHANNEL_CRAWLSPACE_INSIDE: "1"
-      NVR_HOST_CRAWLSPACE_INSIDE: "192.168.1.130"
-      NVR_USER_CRAWLSPACE_INSIDE: "admin"
-      NVR_PASS_CRAWLSPACE_INSIDE: "Windows98"
-      NVR_FAMILY_CRAWLSPACE_INSIDE: "hikvision"
-      AGENTDVR_DIR_CRAWLSPACE_INSIDE: /agentdvr/crawlspace_inside
+      # 2026-09-11: .86 moved to the Amcrest at .148 channel 3 — see
+      # matching note in the web env block above. Standard NVR dispatch,
+      # no AgentDVR bind mount, no per-camera host overrides.
+      NVR_CHANNEL_CRAWLSPACE_INSIDE: "3"
     volumes:
       - ./clips:/app/clips
       - ./logs:/app/logs
-      - I:/agentDVR/video/DNAKT:/agentdvr/crawlspace_inside:ro
     depends_on:
       postgres:
         condition: service_healthy
