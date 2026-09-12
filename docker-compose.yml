@@ -826,6 +826,13 @@ services:
       INPUT_HEIGHT: "1152"
       MIN_MOTION_BBOX_PX: "30"
       VLM_INTERVAL_S: "3"
+      # Per-camera rodent-alert debounce (wall clock). Observed 1485
+      # alerts in 3h during initial deployment; notifier's 120s cooldown
+      # only gates the webhook, so the DB and alerts page still flooded.
+      # 10s = ~360 alerts/hr ceiling in the pathological case (still a
+      # big cut from ~495/hr observed), but keeps enough per-event
+      # granularity to see distinct rat visits.
+      ALERT_DEBOUNCE_S: "10"
       # Post-VLM classifier: shadow mode. No labeled data for this
       # framing yet — mirror the sibling's rooftop-style hold pattern.
       CLASSIFIER_MODE: shadow

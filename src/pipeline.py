@@ -779,6 +779,18 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     # was here" without spamming (one per interval, not per frame).
     _HUMAN_ALERT_INTERVAL_S = float(os.getenv("HUMAN_ALERT_INTERVAL_S", "300"))
     _last_human_alert_ts = 0.0
+    # Rodent-alert debounce (per-camera, wall-clock). The notifier has its
+    # own 120s cooldown but that only gates the outbound webhook — every
+    # positive VLM verdict still lands in the DB and preview stats. On a
+    # busy camera (crawlspace_inside, 1485 alerts / 3h during initial
+    # deployment) that floods the alerts page. Set this env >0 to also
+    # suppress the DB + preview + slew side of firing when the last
+    # rodent alert on THIS camera was more recent than N seconds. Default
+    # 0 = disabled (preserves existing behavior for yard/rooftop/backyard
+    # /crawlspace). Applied to rodent-positive alerts only — human
+    # heartbeat and insect classification have their own interval knobs.
+    _ALERT_DEBOUNCE_S = float(os.getenv("ALERT_DEBOUNCE_S", "0"))
+    _last_rodent_alert_ts = 0.0
     # Night insect brightness threshold — bbox mean grayscale above this
     # value is classified as insect (moth wings reflect IR) rather than
     # sent to VLM. 130/255 catches obvious wing-reflect FPs without
@@ -1715,6 +1727,25 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                             f"{result['description']} "
                             f"[clf prob={_clf_prob:.2f} → {_clf_verdict}]"
                         )
+                # Per-camera wall-clock debounce (ALERT_DEBOUNCE_S). Gates
+                # the DB + preview + slew side of firing, distinct from
+                # the notifier's outbound-webhook cooldown. Manual dets
+                # bypass — same rationale as the notifier bypass above:
+                # operator-clicked events are per-click, not throttled.
+                if (
+                    _ALERT_DEBOUNCE_S > 0
+                    and tid < MANUAL_TRACK_ID_BASE
+                    and (time.time() - _last_rodent_alert_ts) < _ALERT_DEBOUNCE_S
+                ):
+                    logger.info(
+                        "Rodent alert debounced camera=%s track=%d "
+                        "(%.1fs < %.1fs) — species=%s conf=%.2f",
+                        _camera_id_env, tid,
+                        time.time() - _last_rodent_alert_ts, _ALERT_DEBOUNCE_S,
+                        result.get("species", "?"), float(result.get("confidence", 0.0)),
+                    )
+                    continue
+                _last_rodent_alert_ts = time.time()
                 snap_path = notifier.send("rodent", result, snap_fr, bbox, yolo_conf=yolo_conf)
                 sh, sw = snap_fr.shape[:2]
                 maybe_slew(bbox=bbox, event_key=("rodent", tid),
