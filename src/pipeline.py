@@ -45,6 +45,11 @@ ensure_detection_config()
 
 load_dotenv()
 
+from src.alerts.debounce import (
+    ALERT_PRIORITY_OTHER as _ALERT_PRIORITY_OTHER,
+    ALERT_PRIORITY_RODENT as _ALERT_PRIORITY_RODENT,
+    should_fire as _should_fire_alert,
+)
 from src.alerts.notifier import Notifier
 from src.detection.motion_detector import MotionDetector
 from src.detection.object_detector import Detection, ObjectDetector
@@ -779,21 +784,29 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     # was here" without spamming (one per interval, not per frame).
     _HUMAN_ALERT_INTERVAL_S = float(os.getenv("HUMAN_ALERT_INTERVAL_S", "300"))
     _last_human_alert_ts = 0.0
-    # Rodent-alert debounce (per-camera, wall-clock). The notifier has its
-    # own 120s cooldown but that only gates the outbound webhook — every
+    # Alert debounce (per-camera, wall-clock). The notifier has its own
+    # 120s cooldown but that only gates the outbound webhook — every
     # positive VLM verdict still lands in the DB and preview stats. On a
     # busy camera (crawlspace_inside, 1485 alerts / 3h during initial
     # deployment) that floods the alerts page. Set this env >0 to also
-    # suppress the DB + preview + slew side of firing when the last
-    # rodent alert on THIS camera was more recent than N seconds. Default
-    # 0 = disabled (preserves existing behavior for yard/rooftop/backyard
-    # /crawlspace). Applied to rodent-positive alerts only — human
-    # heartbeat and insect classification have their own interval knobs.
-    # `... or "0"` guards against the set-but-empty trap: env_file /
-    # docker-compose passes an empty string when the value is blank,
-    # and float("") raises ValueError at startup.
+    # suppress the DB + preview + slew side of firing when the last alert
+    # on THIS camera was more recent than N seconds. Default 0 = disabled
+    # (preserves existing behavior for yard/rooftop/backyard/crawlspace).
+    #
+    # Applied to both firing branches (rodent-positive + VLM-reject-
+    # override), sharing a single per-camera clock. The clock is
+    # priority-aware — a rodent-positive alert can upgrade through the
+    # window when the last winner was a lower-priority `other` alert,
+    # so a noisy reject-override stream can't silently shadow a confirmed
+    # rodent. See src/alerts/debounce.py for the rules. Manual detections
+    # bypass unconditionally (operator-clicked events are per-click).
+    #
+    # `... or "0"` guards the set-but-empty env-var trap: env_file /
+    # docker-compose passes "" when a value is blank, and float("")
+    # raises ValueError at startup.
     _ALERT_DEBOUNCE_S = float(os.getenv("ALERT_DEBOUNCE_S") or "0")
-    _last_rodent_alert_ts = 0.0
+    _last_alert_ts = 0.0
+    _last_alert_priority = 0
     # Night insect brightness threshold — bbox mean grayscale above this
     # value is classified as insect (moth wings reflect IR) rather than
     # sent to VLM. 130/255 catches obvious wing-reflect FPs without
@@ -1576,28 +1589,33 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         _rejected_species != "insect"
                         and _bbox_area >= _reject_alert_min_area
                     ):
-                        # ALERT_DEBOUNCE_S also gates the VLM-reject-override
-                        # path — on a busy camera (crawlspace_inside) 91% of
-                        # alert volume flowed through this branch, not the
-                        # rodent-positive one, so debouncing rodent only was
-                        # a paper win. Shares _last_rodent_alert_ts so any
-                        # alert type on this camera resets the clock.
-                        # Manual bypass mirrors the rodent-positive branch.
+                        # Debounce gate — same window as the rodent-positive
+                        # branch, but VLM-reject-override alerts fire at
+                        # ALERT_PRIORITY_OTHER (never upgrade through the
+                        # window). Rodent-positive alerts fire at
+                        # ALERT_PRIORITY_RODENT and CAN upgrade past a
+                        # standing `other` (see debounce.should_fire). This
+                        # is the fix for #203 — before the priority ladder,
+                        # a noisy `other` could shadow a real rodent for
+                        # the full window on crawlspace_inside.
                         _alert_now = time.monotonic()
-                        if (
-                            _ALERT_DEBOUNCE_S > 0
-                            and tid < MANUAL_TRACK_ID_BASE
-                            and (_alert_now - _last_rodent_alert_ts) < _ALERT_DEBOUNCE_S
+                        if not _should_fire_alert(
+                            now=_alert_now, last_ts=_last_alert_ts,
+                            last_priority=_last_alert_priority,
+                            this_priority=_ALERT_PRIORITY_OTHER,
+                            window_seconds=_ALERT_DEBOUNCE_S,
+                            is_manual=(tid >= MANUAL_TRACK_ID_BASE),
                         ):
                             logger.info(
                                 "VLM-reject override debounced camera=%s track=%d "
-                                "(%.1fs < %.1fs) — bbox=%dx%d area=%d",
-                                _camera_id_env, tid,
-                                _alert_now - _last_rodent_alert_ts, _ALERT_DEBOUNCE_S,
+                                "vlm_species=%s (%.1fs < %.1fs) bbox=%dx%d area=%d",
+                                _camera_id_env, tid, _rejected_species,
+                                _alert_now - _last_alert_ts, _ALERT_DEBOUNCE_S,
                                 _bw, _bh, _bbox_area,
                             )
                             continue
-                        _last_rodent_alert_ts = _alert_now
+                        _last_alert_ts = _alert_now
+                        _last_alert_priority = _ALERT_PRIORITY_OTHER
                         logger.info(
                             "VLM-reject override: track=%d bbox=%dx%d area=%d — firing 'other' for human review",
                             tid, _bw, _bh, _bbox_area,
@@ -1752,28 +1770,31 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                             f"{result['description']} "
                             f"[clf prob={_clf_prob:.2f} → {_clf_verdict}]"
                         )
-                # Per-camera wall-clock debounce (ALERT_DEBOUNCE_S). Gates
-                # the DB + preview + slew side of firing, distinct from
-                # the notifier's outbound-webhook cooldown. Manual dets
-                # bypass — same rationale as the notifier bypass above:
-                # operator-clicked events are per-click, not throttled.
-                # monotonic (not wall time) matches the notifier's own
-                # cooldown clock and stays consistent across NTP steps.
+                # Debounce gate — rodent-positive alerts fire at
+                # ALERT_PRIORITY_RODENT, so they can upgrade past a
+                # standing `other` alert holding the window (see #203).
+                # Same-priority repeat suppression is unchanged. Manual
+                # dets bypass — same rationale as the notifier bypass
+                # above. monotonic clock matches the notifier's cooldown
+                # and survives NTP steps.
                 _alert_now = time.monotonic()
-                if (
-                    _ALERT_DEBOUNCE_S > 0
-                    and tid < MANUAL_TRACK_ID_BASE
-                    and (_alert_now - _last_rodent_alert_ts) < _ALERT_DEBOUNCE_S
+                if not _should_fire_alert(
+                    now=_alert_now, last_ts=_last_alert_ts,
+                    last_priority=_last_alert_priority,
+                    this_priority=_ALERT_PRIORITY_RODENT,
+                    window_seconds=_ALERT_DEBOUNCE_S,
+                    is_manual=(tid >= MANUAL_TRACK_ID_BASE),
                 ):
                     logger.info(
                         "Rodent alert debounced camera=%s track=%d "
-                        "(%.1fs < %.1fs) — species=%s conf=%.2f",
-                        _camera_id_env, tid,
-                        _alert_now - _last_rodent_alert_ts, _ALERT_DEBOUNCE_S,
-                        result.get("species", "?"), float(result.get("confidence", 0.0)),
+                        "vlm_species=%s (%.1fs < %.1fs) conf=%.2f",
+                        _camera_id_env, tid, result.get("species", "?"),
+                        _alert_now - _last_alert_ts, _ALERT_DEBOUNCE_S,
+                        float(result.get("confidence", 0.0)),
                     )
                     continue
-                _last_rodent_alert_ts = _alert_now
+                _last_alert_ts = _alert_now
+                _last_alert_priority = _ALERT_PRIORITY_RODENT
                 snap_path = notifier.send("rodent", result, snap_fr, bbox, yolo_conf=yolo_conf)
                 sh, sw = snap_fr.shape[:2]
                 maybe_slew(bbox=bbox, event_key=("rodent", tid),
