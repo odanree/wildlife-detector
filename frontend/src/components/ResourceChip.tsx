@@ -38,16 +38,18 @@ export function ResourceChip({ camera }: ResourceChipProps) {
   // its own reader. Amber tint gives peripheral-vision warning without
   // being alarmist.
   const fpsClass = fps < 8 ? styles.warn : styles.b;
+  // Peak cpu/mem removed from the visible chip on 2026-09-11 — after a
+  // few minutes of uptime peak is nearly always ≈ current, and the extra
+  // "/ peak X" text was contributing to row-wrap on the compact stats
+  // bar. Moved into the tooltip so a spike history is still visible.
   return (
     <Chip
       label="proc"
-      title={`Detector process on ${data.camera_id}. CPU is multi-core (0..${cores * 100}%), same as \`docker stats\`. FPS is the pipeline detect-loop rate (post motion + YOLO), not the raw RTSP read rate — a lower pipeline fps than the camera's native rate means detect is CPU-bound (higher-res frames or heavier motion), which is fine as long as it stays above ~8 fps for the persistence gate to see multi-frame tracks.`}
+      title={`Detector process on ${data.camera_id}. CPU is multi-core (0..${cores * 100}%), same as \`docker stats\`. Peak cpu ${fmtPct(cpuPeak)}, peak mem ${fmtMB(rssPeak)}. FPS is the pipeline detect-loop rate (post motion + YOLO), not the raw RTSP read rate — a lower pipeline fps than the camera's native rate means detect is CPU-bound (higher-res frames or heavier motion), which is fine as long as it stays above ~8 fps for the persistence gate to see multi-frame tracks.`}
     >
       cpu <b className={styles.b}>{fmtPct(cpu)}</b>
-      <span className={styles.dim}> / peak {fmtPct(cpuPeak)}</span>
       <span className={styles.sep}>·</span>
       mem <b className={styles.b}>{fmtMB(rss)}</b>
-      <span className={styles.dim}> / peak {fmtMB(rssPeak)}</span>
       <span className={styles.sep}>·</span>
       up <b className={styles.b}>{fmtDuration(data.uptime_seconds)}</b>
       <span className={styles.sep}>·</span>

@@ -15,12 +15,6 @@
   margin: 0 var(--sp-1);
 }
 
-.kin {
-  color: var(--accent-warn, #d0aa5a);
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-
 /* Insect counter is a side-channel signal, not part of the main funnel
    flow — dim it so it doesn't visually compete with the rat/mouse hit
    count. Only rendered when count > 0. */
