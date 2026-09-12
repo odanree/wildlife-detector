@@ -1324,8 +1324,10 @@ def create_app(registry: DetectorRegistry) -> Flask:
                 "note":             (
                     f"No local clip yet for alert={alert_id}. AgentDVR chunk "
                     f"may still be open (retry after the current 15-min chunk "
-                    f"closes) or archive_queue may not have fired — "
-                    f"scripts/backfill_tp_clips.py will pull it on next run."
+                    f"closes) or archive_queue may not have fired. To force a "
+                    f"pull once the chunk closes: `docker compose exec web "
+                    f"python scripts/backfill_tp_clips.py` (scripts/ is only "
+                    f"bind-mounted on the web container, not the archiver)."
                 ),
             })
 
