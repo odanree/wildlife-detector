@@ -896,12 +896,19 @@ services:
       # consumers on the cam now (detector-crawlspace + NVR) instead
       # of three.
       NVR_CHANNEL_CRAWLSPACE: "1"
-      # AgentDVR-only cameras (no NVR channel). Value only has to be
-      # truthy — the web-side check at src/web_service.py:1270 uses
-      # `bool(env.get(...))` to decide whether to route playback-url
-      # requests through the AgentDVR flow instead of warning about a
-      # missing NVR_CHANNEL_*. The actual chunk directory lives on the
-      # archiver container, which owns the bind mount.
+      # 2026-09-11: per-camera NVR overrides framework added. Annke at
+      # 192.168.1.130 ch 1 wired up but currently unused — this Annke
+      # rejects /Streaming/tracks/<ch>?starttime=... with 400 Bad Request.
+      # AgentDVR stays primary (see AGENTDVR_DIR_CRAWLSPACE_INSIDE env).
+      # Kept the block so activation is a one-liner once the right
+      # Annke playback URL shape is identified. Web-side dispatch at
+      # src/web_service.py:1270 also picks AgentDVR-first when both are
+      # set.
+      NVR_CHANNEL_CRAWLSPACE_INSIDE: "1"
+      NVR_HOST_CRAWLSPACE_INSIDE: "192.168.1.130"
+      NVR_USER_CRAWLSPACE_INSIDE: "admin"
+      NVR_PASS_CRAWLSPACE_INSIDE: "Windows98"
+      NVR_FAMILY_CRAWLSPACE_INSIDE: "hikvision"
       AGENTDVR_DIR_CRAWLSPACE_INSIDE: /agentdvr/crawlspace_inside
     volumes:
       - ./data:/app/data
@@ -984,11 +991,22 @@ services:
       # `python scripts/backfill_tp_clips.py --retry-failed` — NVR
       # likely has footage for windows AgentDVR missed.
       NVR_CHANNEL_CRAWLSPACE: "1"
-      # 2026-09-11: crawlspace_inside camera (.86) is NOT on the NVR —
-      # standalone Hiseeu with no recording path via Amcrest. Route clip
-      # pulls through AgentDVR local chunks instead, same pattern the
-      # original crawlspace used before its 2026-09-10 NVR cutover.
-      # AgentDVR internal camera id `DNAKT` (assigned 2026-09-11).
+      # 2026-09-11 (later same day): per-camera NVR overrides added
+      # against Annke at 192.168.1.130 ch 1. Framework wired but NOT
+      # activated as the primary source — the Annke's playback URL
+      # shape (/Streaming/tracks/<ch>?starttime=...&endtime=...) is
+      # rejected by this firmware with 400 Bad Request on DESCRIBE.
+      # AgentDVR stays the primary archive path via
+      # AGENTDVR_DIR_CRAWLSPACE_INSIDE below — dispatch order at
+      # src/archiver/clip_archiver.py:232 prefers AgentDVR when both
+      # are set. Kept the NVR block so the correct URL shape can be
+      # activated by just deleting the AgentDVR env once we identify
+      # the right playback endpoint for this Annke.
+      NVR_CHANNEL_CRAWLSPACE_INSIDE: "1"
+      NVR_HOST_CRAWLSPACE_INSIDE: "192.168.1.130"
+      NVR_USER_CRAWLSPACE_INSIDE: "admin"
+      NVR_PASS_CRAWLSPACE_INSIDE: "Windows98"
+      NVR_FAMILY_CRAWLSPACE_INSIDE: "hikvision"
       AGENTDVR_DIR_CRAWLSPACE_INSIDE: /agentdvr/crawlspace_inside
     volumes:
       - ./clips:/app/clips
