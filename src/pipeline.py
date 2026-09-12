@@ -1576,6 +1576,28 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         _rejected_species != "insect"
                         and _bbox_area >= _reject_alert_min_area
                     ):
+                        # ALERT_DEBOUNCE_S also gates the VLM-reject-override
+                        # path — on a busy camera (crawlspace_inside) 91% of
+                        # alert volume flowed through this branch, not the
+                        # rodent-positive one, so debouncing rodent only was
+                        # a paper win. Shares _last_rodent_alert_ts so any
+                        # alert type on this camera resets the clock.
+                        # Manual bypass mirrors the rodent-positive branch.
+                        _alert_now = time.monotonic()
+                        if (
+                            _ALERT_DEBOUNCE_S > 0
+                            and tid < MANUAL_TRACK_ID_BASE
+                            and (_alert_now - _last_rodent_alert_ts) < _ALERT_DEBOUNCE_S
+                        ):
+                            logger.info(
+                                "VLM-reject override debounced camera=%s track=%d "
+                                "(%.1fs < %.1fs) — bbox=%dx%d area=%d",
+                                _camera_id_env, tid,
+                                _alert_now - _last_rodent_alert_ts, _ALERT_DEBOUNCE_S,
+                                _bw, _bh, _bbox_area,
+                            )
+                            continue
+                        _last_rodent_alert_ts = _alert_now
                         logger.info(
                             "VLM-reject override: track=%d bbox=%dx%d area=%d — firing 'other' for human review",
                             tid, _bw, _bh, _bbox_area,
