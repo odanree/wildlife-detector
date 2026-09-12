@@ -840,11 +840,10 @@ services:
       # Per-camera rodent-alert debounce (wall clock). Observed 1485
       # alerts in 3h during initial deployment; notifier's 120s cooldown
       # only gates the webhook, so the DB and alerts page still flooded.
-      # 15s = 240 alerts/hr ceiling (big cut from ~495/hr observed).
-      # Tuned 10s → 15s → 20s → 15s after operator judgement —
-      # 20s felt too coarse (missed rapid multi-visit events), 15s
-      # keeps enough granularity while still killing the storm.
-      ALERT_DEBOUNCE_S: "15"
+      # 10s = 360 alerts/hr ceiling; parity with yard. Tuned
+      # 10s → 15s → 20s → 15s → 10s after operator judgement —
+      # keeps enough granularity to separate rapid multi-visit events.
+      ALERT_DEBOUNCE_S: "10"
       # Post-VLM classifier: shadow mode. No labeled data for this
       # framing yet — mirror the sibling's rooftop-style hold pattern.
       CLASSIFIER_MODE: shadow
