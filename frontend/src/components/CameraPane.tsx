@@ -199,23 +199,43 @@ export function CameraPane({
   // an admin task, view mode is debug, zoom has a wheel-scroll shortcut).
   // Persisted per-camera in localStorage so an operator who prefers them
   // expanded on one pane doesn't have to re-open every pane load.
-  const [showControls, setShowControls] = useState(() => {
+  //
+  // Camera-switch shape mirrors useZoom.ts — <CameraPane> is deliberately
+  // NOT keyed by camera in LivePreviewPage (remount would tear down the
+  // MJPEG <img>), so on a camera swap the useState initializer does NOT
+  // re-run. We instead re-read from localStorage in a [camera] effect,
+  // and write on the setter path so nothing writes the previous camera's
+  // value under the new camera's key.
+  const readShowControls = useCallback((cam: string): boolean => {
     try {
-      return localStorage.getItem(`camPaneControls:${camera}`) === "1";
+      return localStorage.getItem(`camPaneControls:${cam}`) === "1";
     } catch {
       return false;
     }
-  });
+  }, []);
+  const [showControls, setShowControlsState] = useState(() => readShowControls(camera));
+  const didMountControlsRef = useRef(false);
   useEffect(() => {
-    try {
-      localStorage.setItem(
-        `camPaneControls:${camera}`,
-        showControls ? "1" : "0",
-      );
-    } catch {
-      // ignore storage errors (private mode, quota, etc.)
+    if (!didMountControlsRef.current) {
+      didMountControlsRef.current = true;
+      return;
     }
-  }, [camera, showControls]);
+    setShowControlsState(readShowControls(camera));
+  }, [camera, readShowControls]);
+  const setShowControls = useCallback(
+    (next: boolean | ((prev: boolean) => boolean)) => {
+      setShowControlsState((prev) => {
+        const value = typeof next === "function" ? next(prev) : next;
+        try {
+          localStorage.setItem(`camPaneControls:${camera}`, value ? "1" : "0");
+        } catch {
+          // ignore storage errors (private mode, quota, etc.)
+        }
+        return value;
+      });
+    },
+    [camera],
+  );
 
   const [streamError, setStreamError] = useState(false);
   // streamKey exists only for the user-triggered Retry button (same URL,
@@ -332,11 +352,12 @@ export function CameraPane({
               : "Show baseline + view + zoom controls (baseline capture, day/night preview, zoom)"
           }
           aria-expanded={showControls}
+          aria-controls={`camPaneControls-${camera}`}
         >
           {showControls ? "▾ controls" : "▸ controls"}
         </button>
         {showControls && (
-          <>
+          <span id={`camPaneControls-${camera}`} style={{ display: "contents" }}>
             <BaselineControls camera={camera} />
             <ViewModeButtons
               viewMode={viewMode}
@@ -356,7 +377,7 @@ export function CameraPane({
                 1×
               </button>
             </div>
-          </>
+          </span>
         )}
       </div>
 
