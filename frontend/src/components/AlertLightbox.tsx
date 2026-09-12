@@ -361,7 +361,7 @@ export function AlertLightbox({
               flashes; [+3] stays calm because it matches its own
               neighbor. Direct answer to "where should I slow down?" */}
           <div className={styles.previewStrip}>
-            {[-3, -2, -1].map((offset) => {
+            {[-2, -1].map((offset) => {
               const i = currentIdx + offset;
               const alert = i >= 0 && i < navList.length ? navList[i] : null;
               const neighbor = i + 1 >= 0 && i + 1 < navList.length ? navList[i + 1] : current;
@@ -385,7 +385,7 @@ export function AlertLightbox({
               {currentIdx + 1} / {navList.length}
               {zoom > 1 && <span className={styles.zoomBadge}> · {zoom.toFixed(2)}×</span>}
             </span>
-            {[1, 2, 3].map((offset) => {
+            {[1, 2].map((offset) => {
               const i = currentIdx + offset;
               const alert = i >= 0 && i < navList.length ? navList[i] : null;
               const neighbor = i - 1 >= 0 && i - 1 < navList.length ? navList[i - 1] : current;
