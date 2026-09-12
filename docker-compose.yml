@@ -896,13 +896,19 @@ services:
       # consumers on the cam now (detector-crawlspace + NVR) instead
       # of three.
       NVR_CHANNEL_CRAWLSPACE: "1"
-      # AgentDVR-only cameras (no NVR channel). Value only has to be
-      # truthy — the web-side check at src/web_service.py:1270 uses
-      # `bool(env.get(...))` to decide whether to route playback-url
-      # requests through the AgentDVR flow instead of warning about a
-      # missing NVR_CHANNEL_*. The actual chunk directory lives on the
-      # archiver container, which owns the bind mount.
-      AGENTDVR_DIR_CRAWLSPACE_INSIDE: /agentdvr/crawlspace_inside
+      # 2026-09-11: crawlspace_inside moved from AgentDVR (see #197 timer
+      # sidecar) to a second NVR (Annke at 192.168.1.130), channel 1.
+      # Per-camera NVR_HOST/USER/PASS/FAMILY overrides (implemented in
+      # src/stream/playback_url.py) route this camera to the Annke while
+      # yard/rooftop/backyard/crawlspace stay on the Amcrest at .148.
+      # Annke uses Hikvision firmware, whose playback URL shape is
+      # /Streaming/tracks/<ch>01/?starttime=<UTC-ISO>&endtime=... instead
+      # of Dahua's /cam/playback.
+      NVR_CHANNEL_CRAWLSPACE_INSIDE: "1"
+      NVR_HOST_CRAWLSPACE_INSIDE: "192.168.1.130"
+      NVR_USER_CRAWLSPACE_INSIDE: "admin"
+      NVR_PASS_CRAWLSPACE_INSIDE: "Windows98"
+      NVR_FAMILY_CRAWLSPACE_INSIDE: "hikvision"
     volumes:
       - ./data:/app/data
       - ./snapshots:/app/snapshots:ro
@@ -984,16 +990,18 @@ services:
       # `python scripts/backfill_tp_clips.py --retry-failed` — NVR
       # likely has footage for windows AgentDVR missed.
       NVR_CHANNEL_CRAWLSPACE: "1"
-      # 2026-09-11: crawlspace_inside camera (.86) is NOT on the NVR —
-      # standalone Hiseeu with no recording path via Amcrest. Route clip
-      # pulls through AgentDVR local chunks instead, same pattern the
-      # original crawlspace used before its 2026-09-10 NVR cutover.
-      # AgentDVR internal camera id `DNAKT` (assigned 2026-09-11).
-      AGENTDVR_DIR_CRAWLSPACE_INSIDE: /agentdvr/crawlspace_inside
+      # 2026-09-11 (later same day): crawlspace_inside cut over from
+      # AgentDVR to a second physical NVR (Annke at 192.168.1.130), ch 1.
+      # AgentDVR bind mount retired. Per-camera NVR overrides match the
+      # web block above; see src/stream/playback_url.py:_nvr_env.
+      NVR_CHANNEL_CRAWLSPACE_INSIDE: "1"
+      NVR_HOST_CRAWLSPACE_INSIDE: "192.168.1.130"
+      NVR_USER_CRAWLSPACE_INSIDE: "admin"
+      NVR_PASS_CRAWLSPACE_INSIDE: "Windows98"
+      NVR_FAMILY_CRAWLSPACE_INSIDE: "hikvision"
     volumes:
       - ./clips:/app/clips
       - ./logs:/app/logs
-      - I:/agentDVR/video/DNAKT:/agentdvr/crawlspace_inside:ro
     depends_on:
       postgres:
         condition: service_healthy
