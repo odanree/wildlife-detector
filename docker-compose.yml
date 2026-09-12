@@ -998,6 +998,46 @@ services:
       postgres:
         condition: service_healthy
 
+  # Backfill timer (issue #197). AgentDVR-sourced alerts whose covering
+  # chunk is still open at initial-notify time skip cleanly (correct
+  # behavior — the archiver would otherwise slice past the flushed
+  # tail). Nothing re-notifies once the chunk closes, so the alert sat
+  # un-archived until an operator ran backfill_tp_clips.py by hand. This
+  # sidecar loops the same script every 20 min (≈ 15-min chunk length
+  # plus slack) so any pending AgentDVR-side pull gets picked up.
+  #
+  # NVR-sourced alerts are already immediate (RTSP DESCRIBE succeeds or
+  # 404-tombstones per the #190 fix), so the timer is a no-op for them.
+  #
+  # Reuses the web image — same Python env, same scripts/, same
+  # DATABASE_URL from .env. No extra volumes; the script only touches
+  # Postgres (pg_notify) and does not need clips/ access itself.
+  archiver-backfill-timer:
+    build:
+      context: .
+      dockerfile: docker/web/Dockerfile
+    container_name: wildlife-archiver-backfill-timer
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./scripts:/app/scripts:ro
+    command:
+      - sh
+      - -c
+      - |
+        # Initial delay so the first tick lands ~20 min after boot rather
+        # than immediately (avoid stampeding a cold archiver).
+        sleep 1200
+        while true; do
+          echo "[backfill-timer] $(date -u +%Y-%m-%dT%H:%M:%SZ) running scripts/backfill_tp_clips.py"
+          python scripts/backfill_tp_clips.py 2>&1 | tail -8 || true
+          sleep 1200
+        done
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # ── Remote-access tunnel (Cloudflare) ───────────────────────────────
   # Outbound-only tunnel from this host to Cloudflare's edge. Public
   # HTTPS URL (e.g. https://wildlife.danhle.net) fronts wildlife-web
