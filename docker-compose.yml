@@ -714,10 +714,10 @@ services:
     environment:
       CAMERA_ID: crawlspace
       ZONE_KEY: crawlspace_zone
-      # 2304x1296 HEVC main stream on /stream1. ffprobe 2026-09-09 confirmed
-      # width=2304 height=1296 codec=hevc r_frame_rate=15/1. Sub-stream at
-      # /stream2 is 640x360 mpeg4cif — too small for rat detection.
-      RTSP_URL: rtsp://admin:[SCRUBBED]@192.168.1.229:554/stream1
+      # 2026-09-12: cutover from .229 to the YHD912-P Hiseeu at .105 (12MP,
+      # 3840x2880 HEVC main on /1/stream0). Also on Amcrest NVR channel 7 —
+      # NVR_CHANNEL_CRAWLSPACE bumped 1 → 7 in the web + archiver env blocks.
+      RTSP_URL: rtsp://admin:[SCRUBBED]@192.168.1.105:554/1/stream0
       BASELINE_PATH: data/baseline_crawlspace.jpg
       # Indoor crawlspace has no sun cycle — permanent IR-lit night scene.
       # Crawlspace is IR-lit 24/7 with essentially zero brightness delta
@@ -760,7 +760,12 @@ services:
       # be the dominant FP source in this scene (no daytime moth stream,
       # no fence reflections, but plenty of IR speckle on textured walls).
       MIN_MOTION_BBOX_PX: "30"
-      VLM_INTERVAL_S: "3"
+      # 2026-09-12: bumped 3 → 8 after cutover to 12MP .105 source
+      # caused 79% VLM stale-drops (98 dropped / 26 fired in 1h). Larger
+      # crops from HEVC 3840x2880 saturated Ollama's queue at 3s cadence.
+      # 8s cuts per-track VLM load 2.7x, matches yard's cadence; a rat
+      # dwelling 20-60s still gets 2-7 VLM calls per visit.
+      VLM_INTERVAL_S: "8"
       # Priority-aware alert debounce (see src/alerts/debounce.py). 3s
       # is a light dedup for the fastest bursts on this camera — passing
       # rats dwell 20-60s per visit, so 3s coalesces the initial
@@ -921,7 +926,9 @@ services:
       # matches the archiver's original design pattern). Two RTSP
       # consumers on the cam now (detector-crawlspace + NVR) instead
       # of three.
-      NVR_CHANNEL_CRAWLSPACE: "1"
+      # 2026-09-12: cutover from .229 (Amcrest ch1) to the YHD912-P at
+      # .105 on Amcrest ch7. RTSP_URL on detector-crawlspace updated too.
+      NVR_CHANNEL_CRAWLSPACE: "7"
       # 2026-09-11: .86 moved to the Amcrest at .148 channel 3 (simpler
       # than the earlier Annke/AgentDVR arrangement). No per-camera NVR
       # overrides needed — inherits fleet-wide AMCREST_HOST/USER/PASS.
@@ -1006,7 +1013,9 @@ services:
       # from the earlier AgentDVR-only window can be cleared with
       # `python scripts/backfill_tp_clips.py --retry-failed` — NVR
       # likely has footage for windows AgentDVR missed.
-      NVR_CHANNEL_CRAWLSPACE: "1"
+      # 2026-09-12: cutover from .229 (Amcrest ch1) to the YHD912-P at
+      # .105 on Amcrest ch7. RTSP_URL on detector-crawlspace updated too.
+      NVR_CHANNEL_CRAWLSPACE: "7"
       # 2026-09-11: .86 moved to the Amcrest at .148 channel 3 — see
       # matching note in the web env block above. Standard NVR dispatch,
       # no AgentDVR bind mount, no per-camera host overrides.
