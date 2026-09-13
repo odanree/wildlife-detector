@@ -777,6 +777,14 @@ services:
       # multi-track flurry but keeps a very high per-event granularity.
       # Rodent-positive still upgrades over 'other' inside the window (#204).
       ALERT_DEBOUNCE_S: "3"
+      # 2026-09-13: initially bumped VLM_WORKERS/MAX_INFLIGHT to 8 to eat
+      # peak rat-run bursts. Reverted to 4 on 2026-09-13 (post-review):
+      # host Ollama's default OLLAMA_NUM_PARALLEL=4 means extra workers
+      # just queue inside Ollama and don't drain faster. VLM_MAX_ALERT_AGE_S
+      # 20 → 40 absorbs the burst instead. If host Ollama is confirmed
+      # running with OLLAMA_NUM_PARALLEL≥8, bump these back to 8.
+      VLM_WORKERS: "4"
+      VLM_MAX_INFLIGHT: "4"
       # Post-VLM classifier: shadow mode (default). No labeled crawlspace
       # data yet — collect ≥ 500 labeled rows before evaluating agreement
       # and flipping to active. Mirrors the rooftop hold pattern.
@@ -809,10 +817,13 @@ services:
       # noise-driven VLM calls ~5x.
       BASELINE_DIFF_THRESHOLD: "0.10"
       DAY_BASELINE_DIFF_THRESHOLD: "0.18"
-      # 2026-09-12: raise the stale-drop ceiling from the default 10s
-      # so real rodent detections at 12-15s queue age don't silently
-      # discard while we're tuning the load down.
-      VLM_MAX_ALERT_AGE_S: "20"
+      # 2026-09-13: raised 20 → 40 after two confirmed mouse detections
+      # (track=1197 at 33.0s, track=1251 at 22.4s) were silently
+      # discarded on a rat-run burst. Even with VLM_WORKERS=8 the queue
+      # backs up beyond 20s during 60+ MOG merges in 25s. 40s absorbs
+      # the burst without losing rodent+ verdicts; downside is worst-
+      # case alert latency now 40s (still tolerable for the labeling flow).
+      VLM_MAX_ALERT_AGE_S: "40"
       # 2026-09-12: gate VLM-REJECT-OVERRIDE on VLM description hedging.
       # Only fire the 'other' alert if the VLM's rejection description
       # sounds uncertain ('might', 'possibly', 'unclear', 'could be',
@@ -820,6 +831,20 @@ services:
       # trusted and don't produce an override alert. Cuts the 12MP
       # noise-driven 'other' flood without touching real-rodent recall.
       VLM_REJECT_OVERRIDE_ONLY_IF_HEDGED: "1"
+      # PTZ command target — camera_id=6 in the slew config maps to
+      # these env vars. YHD912-P Hiseeu (Hikvision-family, ONVIF-only)
+      # doesn't accept Dahua CGI. Amcrest NVR at .148 also refuses to
+      # proxy PTZ commands to this channel (Ptz[6].ProtocolName can't
+      # be changed via CGI). Hitting the camera directly at .105 via
+      # /onvif/ptz SOAP works — same pattern backyard uses for the
+      # Jennov at .118.
+      PTZ_HOST_6: "192.168.1.105"
+      PTZ_USER_6: "admin"
+      PTZ_PASS_6: "Windowsxp20!"
+      PTZ_BACKEND_6: "onvif"
+      # YHD912-P profile discovery: GetProfiles returns 'media_profile1'
+      # as the first (main-stream) token, not the Jennov default 'MainStream'.
+      PTZ_ONVIF_PROFILE_6: "media_profile1"
       # Daytime rodent gate never fires (always-night above), but keep
       # for symmetry with siblings.
       DAYTIME_RODENT_MIN_CONF: "0.55"
@@ -939,6 +964,12 @@ services:
       # DATABASE_URL lives in .env — see the anchor comment on
       # `x-detector-common.env_file` for the YAML-anchor merge rationale.
       SNAPSHOT_DIR: /app/snapshots
+      # Same knob the archiver reads — the "Replay in VLC" endpoint
+      # (/api/alerts/<id>/playback-url) uses this as the default pre-roll
+      # for the RTSP URL it builds, so the VLC window opens on the same
+      # window the archived clip covers. See archiver env below for the
+      # sizing rationale (must exceed the noisiest camera's max VLM lag).
+      ARCHIVE_PRE_ROLL_SECONDS: "45"
       # NVR playback channel per camera — used by /api/alerts/<id>/playback-url
       # to build the rtsp:// URL that opens the alert's timestamp in VLC/mpv.
       # Fleet default (empty NVR_HOST_<CAM>) is the Amcrest NVR at .148
@@ -1041,6 +1072,13 @@ services:
       - .env
     environment:
       CLIPS_DIR: /app/clips
+      # Clip window pre-roll: seconds BEFORE alert_ts the clip starts.
+      # Must be ≥ the fleet-wide max VLM_MAX_ALERT_AGE_S. Crawlspace runs
+      # at 40s stale-drop under burst load (see detector-crawlspace env
+      # above), so a 15s pre-roll would produce clips starting ~25s
+      # after the actual sighting — the labeling flow opens on empty
+      # frames. 45s covers 40 + 5s margin.
+      ARCHIVE_PRE_ROLL_SECONDS: "45"
       # NVR playback channel per camera — mirror the web block's values.
       # Rooftop + backyard route through the Annke NVR at .130 (hikvision
       # family). See web env block above for the two-NVR rationale.
