@@ -593,13 +593,18 @@ services:
       # threshold=0.30. Yard has soaked in active since 2026-09-02
       # (4 days) with no regression, so bulkhead constraint met.
       # Rooftop still needs its own model (F1 0.35, not viable).
-      # Threshold 0.30 (not yard's 0.20) reflects backyard's lower
-      # per-class discrimination — the classifier is barely doing
-      # better than base rate at 0.20, so we tighten the gate.
+      # Threshold 0.30 (not yard's 0.20) reflected backyard's lower
+      # per-class discrimination at initial rollout.
       # See scripts/eval_animal_vs_fp.py + PR #169 for analysis.
+      # 2026-09-13: dropped 0.30 → 0.20 after a confirmed real mouse
+      # (VLM conf=0.85) was suppressed with classifier prob=0.106
+      # < threshold. FP volume was manageable already; loosening to
+      # match yard's threshold restores recall on borderline mice.
+      # Add the suppressed mouse to the training set + retrain to
+      # tighten again later.
       CLASSIFIER_MODE: active
       CLASSIFIER_ACTIVE_CAMERAS: backyard
-      CLASSIFIER_THRESHOLD: "0.30"
+      CLASSIFIER_THRESHOLD: "0.20"
       # Bumped 110 → 160 after Aug 9 21:23 fence-rat miss: the backyard
       # fence slats reflect IR strongly (bbox mean_brightness on fence
       # blobs runs 116-182), so the default 110 threshold classified
@@ -777,21 +782,44 @@ services:
       # and flipping to active. Mirrors the rooftop hold pattern.
       CLASSIFIER_MODE: shadow
       # Insect brightness pre-filter — crawlspace is enclosed, so no moths
-      # or flying insects should reach the frame. Cobwebs and dust motes
-      # are the analog FP class. Start conservative (130 = backyard's
-      # tuned value) and re-tune once labeled FP data accumulates.
-      NIGHT_INSECT_BRIGHTNESS_MIN: "130"
+      # 2026-09-12: raised 130 → 150 after cutover to .105. A real mouse
+      # (track=23257) with mean=137 was misclassified as insect on the
+      # small-bbox initial track (before MOG merge grew it past the
+      # insect-filter cap). 150 keeps moth suppression working while
+      # letting IR-lit mid-brightness rodents through.
+      NIGHT_INSECT_BRIGHTNESS_MIN: "150"
       INSECT_MEAN_UNCAP_SIZE: "1"
       MOTION_MERGE_DIST_PX: "40"
       MOTION_MERGE_MAX_CLUSTER: "5"
       ALERT_ANNOTATE_HISTORY_FRAMES: "15"
       MOTION_BACKEND: mog2
       MOTION_HISTORY: "400"
-      MOTION_VAR_THRESHOLD: "18"
+      # 2026-09-12: 18 → 30 was too aggressive — a real rat at 22:19
+      # produced NO MOG activity at all (missed detection). Dropping to
+      # 22 restores sensitivity while still cutting noise vs default 18.
+      # If FP volume climbs back, layer with tighter baseline diff and
+      # hedge-word override gate instead of tightening MOG further.
+      MOTION_VAR_THRESHOLD: "22"
       MOTION_MIN_AREA: "80"
       MOTION_DETECT_SHADOWS: "0"
-      BASELINE_DIFF_THRESHOLD: "0.06"
+      # 2026-09-12: raised 0.06 → 0.10 after 12MP .105 cutover produced
+      # 853 baseline-diff hits per 5min → saturated VLM queue → 26 stale-
+      # drops. Higher-res source has more per-pixel variance from IR
+      # noise; 0.10 keeps genuine motion above the floor while cutting
+      # noise-driven VLM calls ~5x.
+      BASELINE_DIFF_THRESHOLD: "0.10"
       DAY_BASELINE_DIFF_THRESHOLD: "0.18"
+      # 2026-09-12: raise the stale-drop ceiling from the default 10s
+      # so real rodent detections at 12-15s queue age don't silently
+      # discard while we're tuning the load down.
+      VLM_MAX_ALERT_AGE_S: "20"
+      # 2026-09-12: gate VLM-REJECT-OVERRIDE on VLM description hedging.
+      # Only fire the 'other' alert if the VLM's rejection description
+      # sounds uncertain ('might', 'possibly', 'unclear', 'could be',
+      # etc.). Confident rejections ('no wildlife, clearly debris') are
+      # trusted and don't produce an override alert. Cuts the 12MP
+      # noise-driven 'other' flood without touching real-rodent recall.
+      VLM_REJECT_OVERRIDE_ONLY_IF_HEDGED: "1"
       # Daytime rodent gate never fires (always-night above), but keep
       # for symmetry with siblings.
       DAYTIME_RODENT_MIN_CONF: "0.55"
