@@ -1585,9 +1585,27 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     _reject_alert_min_area = int(os.getenv("VLM_REJECT_ALERT_MIN_AREA_PX", "0"))
                     _rejected_species = str(result.get("species", "")).lower()
                     _bbox_area = _bw * _bh
+                    # VLM-hedged-only gate: when set, only fire the override
+                    # if the VLM's rejection description contains hedge
+                    # words (uncertain rejection). Data from crawlspace
+                    # 2026-09-12 showed VLM ALWAYS returns conf=0.10 for
+                    # negatives regardless of certainty, so confidence-
+                    # based gating is useless. Description-based gating
+                    # separates confident "no wildlife, clearly debris"
+                    # rejections (skip) from uncertain "might be a mouse
+                    # but unclear" rejections (fire for human review).
+                    _hedged_only = os.getenv("VLM_REJECT_OVERRIDE_ONLY_IF_HEDGED", "0") == "1"
+                    _hedge_words = (
+                        "might", "possibly", "unclear", "could be",
+                        "unsure", "maybe", "uncertain", "ambiguous",
+                        "not sure", "hard to tell", "cannot tell",
+                    )
+                    _rejection_desc = str(result.get("description", "")).lower()
+                    _vlm_hedged = any(w in _rejection_desc for w in _hedge_words)
                     if (
                         _rejected_species != "insect"
                         and _bbox_area >= _reject_alert_min_area
+                        and (not _hedged_only or _vlm_hedged)
                     ):
                         # Debounce gate — same window as the rodent-positive
                         # branch, but VLM-reject-override alerts fire at
