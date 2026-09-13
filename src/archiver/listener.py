@@ -137,7 +137,15 @@ def main() -> None:
     from pathlib import Path
 
     clips_dir = Path(os.environ.get("CLIPS_DIR", "/app/clips"))
-    archiver = ClipArchiver(clips_dir=clips_dir)
+    # ARCHIVE_PRE_ROLL_SECONDS: how many seconds BEFORE alert_ts the clip
+    # starts. Must be ≥ VLM_MAX_ALERT_AGE_S on the noisiest detector,
+    # otherwise late alerts (VLM queue backed up) yield clips that start
+    # after the actual sighting — the labeling flow opens on empty frames.
+    # Default 15s matched the pre-2026-09 pipeline where alerts landed
+    # within ~5-10s of the event; VLM_MAX_ALERT_AGE_S=40 on crawlspace
+    # made that assumption stale.
+    pre_roll = int(os.environ.get("ARCHIVE_PRE_ROLL_SECONDS") or "15")
+    archiver = ClipArchiver(clips_dir=clips_dir, pre_roll_seconds=pre_roll)
     logger.info("Archiver service starting: clips_dir=%s", clips_dir)
     ArchiveListener(_dsn_from_env(), archiver).run()
 
