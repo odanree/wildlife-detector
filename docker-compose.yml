@@ -965,11 +965,12 @@ services:
       # `x-detector-common.env_file` for the YAML-anchor merge rationale.
       SNAPSHOT_DIR: /app/snapshots
       # Same knob the archiver reads — the "Replay in VLC" endpoint
-      # (/api/alerts/<id>/playback-url) uses this as the default pre-roll
-      # for the RTSP URL it builds, so the VLC window opens on the same
-      # window the archived clip covers. See archiver env below for the
-      # sizing rationale (must exceed the noisiest camera's max VLM lag).
-      ARCHIVE_PRE_ROLL_SECONDS: "45"
+      # (/api/alerts/<id>/playback-url) uses this as the default pre-roll.
+      # 15s covers the ~5-10s natural gap between capture and notifier
+      # harvest under any VLM queue depth, because pipeline.py:1680/1835
+      # now stamp alert.ts = submit_ts (frame capture time), not the
+      # notifier's datetime.now() at harvest.
+      ARCHIVE_PRE_ROLL_SECONDS: "15"
       # NVR playback channel per camera — used by /api/alerts/<id>/playback-url
       # to build the rtsp:// URL that opens the alert's timestamp in VLC/mpv.
       # Fleet default (empty NVR_HOST_<CAM>) is the Amcrest NVR at .148
@@ -1073,12 +1074,11 @@ services:
     environment:
       CLIPS_DIR: /app/clips
       # Clip window pre-roll: seconds BEFORE alert_ts the clip starts.
-      # Must be ≥ the fleet-wide max VLM_MAX_ALERT_AGE_S. Crawlspace runs
-      # at 40s stale-drop under burst load (see detector-crawlspace env
-      # above), so a 15s pre-roll would produce clips starting ~25s
-      # after the actual sighting — the labeling flow opens on empty
-      # frames. 45s covers 40 + 5s margin.
-      ARCHIVE_PRE_ROLL_SECONDS: "45"
+      # 15s used to be a bug (alert_ts was harvest-time, so late alerts
+      # opened past the event). After pipeline.py:1680/1835 anchor
+      # alert.ts to submit_ts, 15s covers the natural capture→harvest
+      # gap on any camera regardless of VLM queue depth.
+      ARCHIVE_PRE_ROLL_SECONDS: "15"
       # NVR playback channel per camera — mirror the web block's values.
       # Rooftop + backyard route through the Annke NVR at .130 (hikvision
       # family). See web env block above for the two-NVR rationale.

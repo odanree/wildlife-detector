@@ -1684,6 +1684,12 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                             snapshot=_snap_ref,
                             track_id=tid,
                             yolo_conf=yolo_conf,
+                            # Anchor alert row's ts to the frame capture
+                            # time, not the notifier harvest time, so the
+                            # clip archiver's playback URL opens VLC on
+                            # the actual sighting instead of `queue_age`
+                            # seconds past it (up to VLM_MAX_ALERT_AGE_S=40).
+                            ts=submit_ts,
                         )
                         if tid >= MANUAL_TRACK_ID_BASE:
                             _release_manual_submission(tid)
@@ -1839,6 +1845,11 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     snapshot=_snap_ref,
                     track_id=int(tid),
                     yolo_conf=float(yolo_conf) if yolo_conf is not None else None,
+                    # See override branch above — ts anchors to frame
+                    # capture time so late-VLM alerts don't get an
+                    # inflated wallclock stamp and playback URLs land
+                    # on the actual sighting.
+                    ts=submit_ts,
                 )
                 # Manual dets: release submission entry now that the alert
                 # has fired, so the in-flight lookup dict stays bounded.
