@@ -1253,10 +1253,17 @@ def create_app(registry: DetectorRegistry) -> Flask:
         if ts <= 0:
             return jsonify({"error": "alert has no timestamp"}), 400
 
+        # Default pre-roll comes from ARCHIVE_PRE_ROLL_SECONDS — same knob
+        # the clip archiver uses to size its ffmpeg pull window. Keeping
+        # them tied means the VLC URL opens on the same window the local
+        # archived clip covers. Must exceed the noisiest detector's
+        # VLM_MAX_ALERT_AGE_S (currently 40s on crawlspace) or late
+        # alerts open the VLC scrubber past the actual event.
+        _default_pre_roll = int(os.environ.get("ARCHIVE_PRE_ROLL_SECONDS") or "15")
         try:
-            pre_roll = int(request.args.get("pre_roll", "15"))
+            pre_roll = int(request.args.get("pre_roll") or _default_pre_roll)
         except ValueError:
-            pre_roll = 15
+            pre_roll = _default_pre_roll
         pre_roll = max(0, min(600, pre_roll))
 
         # Source dispatch — mirrors clip_archiver._pull:
