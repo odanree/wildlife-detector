@@ -941,12 +941,25 @@ services:
       SNAPSHOT_DIR: /app/snapshots
       # NVR playback channel per camera — used by /api/alerts/<id>/playback-url
       # to build the rtsp:// URL that opens the alert's timestamp in VLC/mpv.
-      # Set to the channel each camera records to on the Amcrest NVR
-      # (192.168.1.148 per .env). Without these, the endpoint returns a
-      # 'note' warning and defaults to channel 1 (likely wrong).
+      # Fleet default (empty NVR_HOST_<CAM>) is the Amcrest NVR at .148
+      # per .env's AMCREST_*. Rooftop + backyard route through the Annke
+      # NVR at .130 (Hikvision family — /Streaming/tracks/<ch>01/?starttime=
+      # &endtime= URL shape, different from Amcrest's /cam/playback).
+      # Two-NVR shape wired via NVR_HOST_/USER_/PASS_/FAMILY_<CAM>. See
+      # src/stream/playback_url.py::_nvr_env for the resolution order.
       NVR_CHANNEL_YARD: "5"
-      NVR_CHANNEL_ROOFTOP: "6"
-      NVR_CHANNEL_BACKYARD: "8"
+      # Rooftop was Amcrest ch6, now Annke ch2 after 2026-09-13 reorg.
+      NVR_CHANNEL_ROOFTOP: "2"
+      NVR_HOST_ROOFTOP: "${ANNKE_HOST:?}"
+      NVR_USER_ROOFTOP: "${ANNKE_USER:?}"
+      NVR_PASS_ROOFTOP: "${ANNKE_PASS:?}"
+      NVR_FAMILY_ROOFTOP: "hikvision"
+      # Backyard was Amcrest ch8, now Annke ch4.
+      NVR_CHANNEL_BACKYARD: "4"
+      NVR_HOST_BACKYARD: "${ANNKE_HOST:?}"
+      NVR_USER_BACKYARD: "${ANNKE_USER:?}"
+      NVR_PASS_BACKYARD: "${ANNKE_PASS:?}"
+      NVR_FAMILY_BACKYARD: "hikvision"
       # 2026-09-10: connected 192.168.1.229 to Amcrest NVR channel 1 as
       # a proper recording source. Archiver switched from the AgentDVR
       # local-chunk path back to the standard NVR RTSP path to match
@@ -1028,11 +1041,20 @@ services:
       - .env
     environment:
       CLIPS_DIR: /app/clips
-      # NVR playback channel per camera — same values as web's block,
-      # required so archiver knows which NVR channel to pull per camera.
+      # NVR playback channel per camera — mirror the web block's values.
+      # Rooftop + backyard route through the Annke NVR at .130 (hikvision
+      # family). See web env block above for the two-NVR rationale.
       NVR_CHANNEL_YARD: "5"
-      NVR_CHANNEL_ROOFTOP: "6"
-      NVR_CHANNEL_BACKYARD: "8"
+      NVR_CHANNEL_ROOFTOP: "2"
+      NVR_HOST_ROOFTOP: "${ANNKE_HOST:?}"
+      NVR_USER_ROOFTOP: "${ANNKE_USER:?}"
+      NVR_PASS_ROOFTOP: "${ANNKE_PASS:?}"
+      NVR_FAMILY_ROOFTOP: "hikvision"
+      NVR_CHANNEL_BACKYARD: "4"
+      NVR_HOST_BACKYARD: "${ANNKE_HOST:?}"
+      NVR_USER_BACKYARD: "${ANNKE_USER:?}"
+      NVR_PASS_BACKYARD: "${ANNKE_PASS:?}"
+      NVR_FAMILY_BACKYARD: "hikvision"
       # 2026-09-10: connected 192.168.1.229 to Amcrest NVR channel 1.
       # Retired the AgentDVR bind mount + AGENTDVR_DIR_CRAWLSPACE env —
       # archiver now dispatches to the standard NVR RTSP playback URL
