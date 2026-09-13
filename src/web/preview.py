@@ -471,7 +471,16 @@ class Stats:
     def record_alert(self, species: str, confidence: float, description: str,
                      snapshot: str | None = None,
                      track_id: int | None = None,
-                     yolo_conf: float | None = None) -> None:
+                     yolo_conf: float | None = None,
+                     ts: float | None = None) -> None:
+        # ts: frame capture wall-clock (submit_ts). Callers that fire after
+        # a VLM harvest should pass the submit_ts they've been carrying so
+        # the alert row's ts anchors to when the event actually happened,
+        # not when the notifier got around to firing. Without this, the
+        # clip archiver's playback URL opens VLC on frames minutes past
+        # the sighting whenever the VLM queue is deep. None → time.time()
+        # (existing behavior for callers that don't have submit_ts).
+        alert_ts = ts if ts is not None else time.time()
         with self._lock:
             self._alerts += 1
             self._vlm_confirmed_session += 1
@@ -479,7 +488,7 @@ class Stats:
                 "species":     species,
                 "confidence":  round(float(confidence), 3),
                 "description": description,
-                "ts":          time.time(),
+                "ts":          alert_ts,
                 "snapshot":    snapshot,
                 "camera_id":   self._camera_id,
             }
@@ -487,7 +496,7 @@ class Stats:
         # Also push into the durable ring buffer for /alerts.
         _alerts.append(species, confidence, description,
                        snapshot=snapshot, track_id=track_id, yolo_conf=yolo_conf,
-                       camera_id=camera_id)
+                       camera_id=camera_id, ts=alert_ts)
 
     def set_backend(self, backend: str) -> None:
         with self._lock:
@@ -652,7 +661,8 @@ class AlertLog:
                snapshot: str | None = None,
                track_id: int | None = None,
                yolo_conf: float | None = None,
-               camera_id: str = "yard") -> None:
+               camera_id: str = "yard",
+               ts: float | None = None) -> None:
         if self._state is None:
             return   # AlertLog wasn't init'd; no-op like before
         self._state.append_alert(
@@ -665,6 +675,7 @@ class AlertLog:
             is_rodent=species in ("rat", "mouse"),
             historical=False,
             camera_id=camera_id,
+            ts=ts,
         )
 
     def list(self, limit: int = 200, species: str | None = None,
