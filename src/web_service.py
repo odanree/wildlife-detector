@@ -718,22 +718,47 @@ def create_app(registry: DetectorRegistry) -> Flask:
             })
 
         # source == "nvr" — the recording relay on the NVR itself.
-        host = os.environ.get("AMCREST_HOST", "")
-        user = os.environ.get("AMCREST_USER", "")
-        pwd = os.environ.get("AMCREST_PASS", "")
-        if not host or not user or not pwd:
-            return jsonify({"error": "AMCREST_HOST/USER/PASS not configured"}), 500
+        # nvr param selects which NVR to hit; different camera fleets live
+        # on different NVRs and each vendor has its own URL shape:
+        #   amcrest (default): Dahua family, /cam/playback + local wall-clock
+        #   annke:             Hikvision family, /Streaming/tracks/<ch>01/
+        #                      + Pacific-as-fake-Z (see PR #222 for the
+        #                      Annke N98PBK firmware quirk)
+        nvr = (request.args.get("nvr") or "amcrest").strip().lower()
+        if nvr not in ("amcrest", "annke"):
+            return jsonify({"error": f"nvr must be amcrest|annke, got {nvr!r}"}), 400
 
-        # NVR wants LOCAL wall-clock in its own zone (Los_Angeles). The
-        # parsed datetime is already in that zone; strftime yields the
-        # local components without offset formatting.
-        s_fmt = start_dt.strftime("%Y_%m_%d_%H_%M_%S")
-        e_fmt = end_dt.strftime("%Y_%m_%d_%H_%M_%S")
-        url = (
-            f"rtsp://{user}:{pwd}@{host}:554"
-            f"/cam/playback?channel={channel}&subtype=0"
-            f"&starttime={s_fmt}&endtime={e_fmt}"
-        )
+        if nvr == "annke":
+            host = os.environ.get("ANNKE_HOST", "")
+            user = os.environ.get("ANNKE_USER", "")
+            pwd = os.environ.get("ANNKE_PASS", "")
+            if not host or not user or not pwd:
+                return jsonify({"error": "ANNKE_HOST/USER/PASS not configured"}), 500
+            # Annke's fake-Z convention: strftime the already-Pacific-adjusted
+            # datetime and slap Z on. Verified end-to-end against N98PBK
+            # firmware V4.75 — see src/stream/playback_url.py.
+            s_fmt = start_dt.strftime("%Y%m%dT%H%M%SZ")
+            e_fmt = end_dt.strftime("%Y%m%dT%H%M%SZ")
+            url = (
+                f"rtsp://{user}:{pwd}@{host}:554"
+                f"/Streaming/tracks/{channel}01/"
+                f"?starttime={s_fmt}&endtime={e_fmt}"
+            )
+        else:
+            host = os.environ.get("AMCREST_HOST", "")
+            user = os.environ.get("AMCREST_USER", "")
+            pwd = os.environ.get("AMCREST_PASS", "")
+            if not host or not user or not pwd:
+                return jsonify({"error": "AMCREST_HOST/USER/PASS not configured"}), 500
+            # Dahua/Amcrest wants LOCAL wall-clock underscore-separated.
+            s_fmt = start_dt.strftime("%Y_%m_%d_%H_%M_%S")
+            e_fmt = end_dt.strftime("%Y_%m_%d_%H_%M_%S")
+            url = (
+                f"rtsp://{user}:{pwd}@{host}:554"
+                f"/cam/playback?channel={channel}&subtype=0"
+                f"&starttime={s_fmt}&endtime={e_fmt}"
+            )
+
         return jsonify({
             "url": url,
             "camera": camera,
@@ -741,6 +766,7 @@ def create_app(registry: DetectorRegistry) -> Flask:
             "start": start_str,
             "end": end_str,
             "source": "nvr",
+            "nvr": nvr,
         })
 
     # ── Per-camera operator pause (file-sentinel) ─────────────────────

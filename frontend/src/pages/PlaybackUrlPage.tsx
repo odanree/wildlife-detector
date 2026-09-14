@@ -18,7 +18,7 @@ import styles from "./PlaybackUrlPage.module.css";
  * common "same channel, another moment" flow doesn't re-input every time.
  */
 
-const CHANNELS: readonly number[] = [1, 3, 4, 5, 6, 7, 8, 9, 10];
+const CHANNELS: readonly number[] = [1, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 
 // Known channel → camera-name mapping (from NVR_CHANNEL_* env on the
 // web container). Only three channels are mapped today; the rest show
@@ -27,6 +27,23 @@ const CHANNEL_LABEL: Record<number, string> = {
   5: "5 (yard)",
   6: "6 (rooftop)",
   8: "8 (backyard)",
+  11: "11 (Annke plant pathway — direct only)",
+};
+
+// Per-NVR channel labels — same channel number can mean different cameras
+// on Amcrest vs Annke, so the label context matters.
+const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "annke", Record<number, string>> = {
+  amcrest: CHANNEL_LABEL,
+  annke: {
+    1: "1 (crawlspace int)",
+    2: "2 (rooftop)",
+    3: "3 (crawlspace ext)",
+    4: "4 (backyard)",
+    5: "5 (frontyard)",
+    6: "6 (front ptz)",
+    7: "7 (driveway ptz)",
+    8: "8 (plant pathway)",
+  },
 };
 
 // Inverse of NVR_CHANNEL_YARD/BACKYARD/ROOFTOP — the alerts page hands
@@ -109,6 +126,19 @@ export function PlaybackUrlPage() {
     localStorage.setItem("playbackUrlSource", s);
   }, []);
 
+  // Which NVR to route source=nvr playback through. Amcrest is the fleet
+  // default; Annke (Hikvision family) holds a separate camera set with a
+  // different URL shape (/Streaming/tracks/… + Pacific-as-fake-Z). See
+  // src/web_service.py::api_playback_url for the vendor branch.
+  const [nvr, setNvrRaw] = useState<"amcrest" | "annke">(() => {
+    const saved = localStorage.getItem("playbackUrlNvr");
+    return saved === "annke" ? "annke" : "amcrest";
+  });
+  const setNvr = useCallback((n: "amcrest" | "annke") => {
+    setNvrRaw(n);
+    localStorage.setItem("playbackUrlNvr", n);
+  }, []);
+
   // Start defaults to "1 minute ago" so the operator can drop in a
   // near-live view without touching the picker. `?start=` from a deep
   // link wins over that default — the alerts-page shortcut hands us
@@ -156,6 +186,7 @@ export function PlaybackUrlPage() {
         if (source === "nvr") {
           params.set("start", startStr);
           params.set("end", endStr);
+          params.set("nvr", nvr);
         }
         const r = await fetch(`/api/playback-url?${params.toString()}`);
         const body = (await r.json()) as PlaybackUrlResponse;
@@ -184,7 +215,7 @@ export function PlaybackUrlPage() {
         targetTab?.close();
       }
     },
-    [channel, source, startStr, endStr],
+    [channel, source, startStr, endStr, nvr],
   );
 
   return (
@@ -211,6 +242,21 @@ export function PlaybackUrlPage() {
             </select>
           </label>
 
+          {source === "nvr" && (
+            <label className={styles.label}>
+              NVR
+              <select
+                className={styles.select}
+                value={nvr}
+                onChange={(e) => setNvr(e.target.value as "amcrest" | "annke")}
+                title="amcrest = Dahua /cam/playback + local wallclock; annke = Hikvision /Streaming/tracks + Pacific-as-fake-Z"
+              >
+                <option value="amcrest">Amcrest (.148)</option>
+                <option value="annke">Annke (.130)</option>
+              </select>
+            </label>
+          )}
+
           <label className={styles.label}>
             channel
             <select
@@ -218,11 +264,14 @@ export function PlaybackUrlPage() {
               value={channel}
               onChange={(e) => setChannel(Number.parseInt(e.target.value, 10))}
             >
-              {CHANNELS.map((c) => (
-                <option key={c} value={c}>
-                  {CHANNEL_LABEL[c] ?? `channel ${c}`}
-                </option>
-              ))}
+              {CHANNELS.map((c) => {
+                const labels = source === "nvr" ? CHANNEL_LABEL_BY_NVR[nvr] : CHANNEL_LABEL;
+                return (
+                  <option key={c} value={c}>
+                    {labels[c] ?? `channel ${c}`}
+                  </option>
+                );
+              })}
             </select>
           </label>
 
