@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import type { AlertRow, LabelVerdict } from "../api/alerts";
 import { AlertLightbox } from "../components/AlertLightbox";
 import { BulkLabelBar } from "../components/BulkLabelBar";
@@ -434,6 +434,13 @@ function renderGroup(
   // wrapper in AlertsPage. The one-time seedAlertReadsOnce on first
   // mount prevents the cold-start flood.
   const isUnread = !readIds.has(g.head.id);
+  // Reduce derived-collection lookups to primitive props so the
+  // memoized Row can bail out on shallow equality when the parent
+  // re-renders (auto-refresh, other rows' selection toggles, label
+  // overlay writes elsewhere). Without this, a 1000-row table
+  // re-renders 1000 Rows on every parent tick — the source of the
+  // "sluggish" symptom at pageSize=500/1000.
+  const labelOverride = labelOverlay.get(g.head.id);
   return [
     <Row
       key={g.head.id}
@@ -443,8 +450,10 @@ function renderGroup(
       onOpen={onOpen}
       isUnread={isUnread}
       isSelected={selectedIds.has(g.head.id)}
-      onToggleSelect={() => toggleOne(g.head.id)}
-      labelOverride={labelOverlay.get(g.head.id)}
+      toggleOne={toggleOne}
+      labelOverrideVerdict={labelOverride ? labelOverride.verdict : null}
+      labelOverrideSpecies={labelOverride ? labelOverride.species : null}
+      hasLabelOverride={labelOverride != null}
       writeLabel={writeLabel}
       busy={busyIds.has(g.head.id)}
       eagerThumb={eagerThumb}
@@ -452,15 +461,17 @@ function renderGroup(
   ];
 }
 
-function Row({
+const Row = memo(function Row({
   alert,
   showCameraBadge,
   groupSize,
   onOpen,
   isUnread,
   isSelected,
-  onToggleSelect,
-  labelOverride,
+  toggleOne,
+  labelOverrideVerdict,
+  labelOverrideSpecies,
+  hasLabelOverride,
   writeLabel,
   busy,
   eagerThumb,
@@ -471,8 +482,10 @@ function Row({
   onOpen: (id: number) => void;
   isUnread: boolean;
   isSelected: boolean;
-  onToggleSelect: () => void;
-  labelOverride?: { verdict: LabelVerdict; species: string | null };
+  toggleOne: (id: number) => void;
+  labelOverrideVerdict: LabelVerdict;
+  labelOverrideSpecies: string | null;
+  hasLabelOverride: boolean;
   writeLabel: (id: number, verdict: LabelVerdict, species: string | null) => Promise<void>;
   busy: boolean;
   eagerThumb: boolean;
@@ -487,10 +500,11 @@ function Row({
   const confPct = alert.confidence != null ? `${Math.round(alert.confidence * 100)}%` : "—";
   // Prefer local overlay (just-written) over the row's server-side value —
   // useAlerts polls every 5s, so the overlay covers the gap.
-  const effVerdict: LabelVerdict = labelOverride
-    ? labelOverride.verdict
+  const effVerdict: LabelVerdict = hasLabelOverride
+    ? labelOverrideVerdict
     : (alert.label_verdict ?? null);
-  const effSpecies = labelOverride ? labelOverride.species : (alert.label_species ?? null);
+  const effSpecies = hasLabelOverride ? labelOverrideSpecies : (alert.label_species ?? null);
+  const onToggleSelect = useCallback(() => toggleOne(alert.id), [toggleOne, alert.id]);
   return (
     <tr
       className={`${styles.row} ${isUnread ? styles.rowUnread : ""} ${isSelected ? styles.rowSelected : ""}`}
@@ -557,7 +571,7 @@ function Row({
       </td>
     </tr>
   );
-}
+});
 
 function groupItems(items: AlertRow[]): GroupedAlerts[] {
   const groups: GroupedAlerts[] = [];
