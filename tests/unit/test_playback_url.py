@@ -47,7 +47,7 @@ class TestDahuaDefault:
 
 
 class TestHikvisionFamily:
-    def test_uses_streaming_tracks_shape_and_utc_iso(self, monkeypatch):
+    def test_uses_streaming_tracks_shape_and_local_time(self, monkeypatch):
         monkeypatch.setenv("AMCREST_HOST", "192.168.1.148")
         monkeypatch.setenv("AMCREST_USER", "admin")
         monkeypatch.setenv("AMCREST_PASS", "windows98")
@@ -64,10 +64,13 @@ class TestHikvisionFamily:
 
         assert "rtsp://admin:Windows98@192.168.1.130:554" in url
         assert "/Streaming/tracks/101/" in url
-        # UTC ISO-8601 without separators: YYYYMMDDTHHMMSSZ
-        assert "starttime=20260911T152945Z" in url
+        # ALERT_TS = 2026-09-11 15:30 UTC = 08:30 Pacific (PDT, UTC-7).
+        # Hikvision's `Z` suffix is a fake UTC marker — the device treats
+        # it as NVR-local wall clock. NVR_TZ=America/Los_Angeles → start
+        # is 08:29:45 Pacific, stringified with the fake-Z convention.
+        assert "starttime=20260911T082945Z" in url
         # endtime is alert + 2 min post-roll (see build_nvr_playback_url).
-        assert "endtime=20260911T153200Z" in url
+        assert "endtime=20260911T083200Z" in url
         assert "/cam/playback" not in url
         assert "subtype=0" not in url
 
