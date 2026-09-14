@@ -32,8 +32,10 @@ const NVR_CHANNELS: Record<"amcrest" | "annke", readonly number[]> = {
 // web container). Only three channels are mapped today; the rest show
 // as "channel N" so the operator can still reach them.
 const CHANNEL_LABEL: Record<number, string> = {
+  3: "3 (crawlspace int)",
   5: "5 (yard)",
   6: "6 (rooftop)",
+  7: "7 (crawlspace ext)",
   8: "8 (backyard)",
   11: "11 (Annke plant pathway — direct only)",
 };
@@ -106,14 +108,24 @@ export function PlaybackUrlPage() {
   })();
   const paramStart = urlParams.get("start");
 
-  const [channel, setChannelRaw] = useState<number>(() => {
-    if (paramCameraChannel != null) return paramCameraChannel;
-    const saved = Number.parseInt(localStorage.getItem("playbackUrlChannel") ?? "", 10);
-    return CHANNELS.includes(saved) ? saved : 5;
+  // Channels: multi-select so operators can fan a single event out to
+  // multiple cameras (same time window, different angles). Stored as
+  // comma-separated list in localStorage; single-int legacy value is
+  // still honored on load so no config reset for existing users.
+  const [channels, setChannelsRaw] = useState<number[]>(() => {
+    if (paramCameraChannel != null) return [paramCameraChannel];
+    const saved = localStorage.getItem("playbackUrlChannels") ?? localStorage.getItem("playbackUrlChannel") ?? "";
+    const parsed = saved
+      .split(",")
+      .map((s) => Number.parseInt(s, 10))
+      .filter((n) => CHANNELS.includes(n));
+    return parsed.length > 0 ? parsed : [5];
   });
-  const setChannel = useCallback((c: number) => {
-    setChannelRaw(c);
-    localStorage.setItem("playbackUrlChannel", String(c));
+  const setChannels = useCallback((cs: number[]) => {
+    // Empty selection would produce zero URLs — force at least one.
+    const next = cs.length > 0 ? cs : [5];
+    setChannelsRaw(next);
+    localStorage.setItem("playbackUrlChannels", next.join(","));
   }, []);
 
   const [durationSec, setDurationSecRaw] = useState<number>(() => {
@@ -154,8 +166,11 @@ export function PlaybackUrlPage() {
   useEffect(() => {
     if (source !== "nvr") return;
     const valid = NVR_CHANNELS[nvr];
-    if (!valid.includes(channel)) setChannel(valid[0]);
-  }, [source, nvr, channel, setChannel]);
+    const filtered = channels.filter((c) => valid.includes(c));
+    if (filtered.length !== channels.length) {
+      setChannels(filtered.length > 0 ? filtered : [valid[0]]);
+    }
+  }, [source, nvr, channels, setChannels]);
 
   // Start defaults to "1 minute ago" so the operator can drop in a
   // near-live view without touching the picker. `?start=` from a deep
@@ -166,7 +181,7 @@ export function PlaybackUrlPage() {
     return isoLocal(new Date(Date.now() - 60_000));
   });
 
-  const [result, setResult] = useState<PlaybackUrlResponse | null>(null);
+  const [results, setResults] = useState<PlaybackUrlResponse[]>([]);
   const [status, setStatus] = useState<"idle" | "loading" | "ok" | "err">("idle");
   const [statusMsg, setStatusMsg] = useState<string>("");
 
@@ -191,49 +206,94 @@ export function PlaybackUrlPage() {
       }
       setStatus("loading");
       setStatusMsg("");
-      // Open the target tab synchronously BEFORE the fetch when the
-      // user clicked "Open in VLC" — popup blockers require the open()
-      // call to happen inside the click handler. Navigating happens
-      // once the URL is back.
-      const targetTab = openInVlc ? window.open("about:blank", "_blank") : null;
+      // Open one tab per channel synchronously BEFORE the fetches —
+      // popup blockers require the open() call to happen inside the
+      // click handler; deferred opens after `await` are blocked. Store
+      // the tabs in the channel order so we can navigate them once the
+      // corresponding URL comes back.
+      const targetTabs: (Window | null)[] = openInVlc
+        ? channels.map(() => window.open("about:blank", "_blank"))
+        : [];
+
       try {
-        const params = new URLSearchParams({
-          channel: String(channel),
-          source,
-        });
-        if (source === "nvr") {
-          params.set("start", startStr);
-          params.set("end", endStr);
-          params.set("nvr", nvr);
-        }
-        const r = await fetch(`/api/playback-url?${params.toString()}`);
-        const body = (await r.json()) as PlaybackUrlResponse;
-        if (!r.ok || !body.url) {
+        // Fan-out: one API request per channel, all in parallel. Same
+        // start/end/nvr — different channel. Backend is 1 ms per call
+        // so serializing would only save one round-trip; parallel keeps
+        // the UI snappy even with 8 channels.
+        const responses = await Promise.all(
+          channels.map(async (ch) => {
+            const params = new URLSearchParams({
+              channel: String(ch),
+              source,
+            });
+            if (source === "nvr") {
+              params.set("start", startStr);
+              params.set("end", endStr);
+              params.set("nvr", nvr);
+            }
+            const r = await fetch(`/api/playback-url?${params.toString()}`);
+            const body = (await r.json()) as PlaybackUrlResponse;
+            return { ok: r.ok, status: r.status, body };
+          }),
+        );
+
+        const errs = responses.filter((r) => !r.ok || !r.body.url);
+        const oks = responses.filter((r) => r.ok && r.body.url).map((r) => r.body);
+
+        if (oks.length === 0) {
           setStatus("err");
-          setStatusMsg(body.error ?? `HTTP ${r.status}`);
-          targetTab?.close();
+          setStatusMsg(errs[0]?.body?.error ?? `HTTP ${errs[0]?.status ?? "?"}`);
+          targetTabs.forEach((t) => t?.close());
           return;
         }
-        setResult(body);
-        setStatus("ok");
-        // Belt: copy to clipboard so VLC "Open Network Stream" paste works
-        // even when the OS rtsp:// handler isn't registered.
+
+        setResults(oks);
+        setStatus(errs.length > 0 ? "err" : "ok");
+
+        // Belt: copy all URLs to clipboard newline-separated for VLC's
+        // "Open Network Stream" paste when the OS handler isn't hooked
+        // up. With multi-select this becomes a multi-line paste; VLC
+        // adds each URL as a playlist item.
+        const allUrls = oks.map((r) => r.url as string).join("\n");
         try {
-          await navigator.clipboard.writeText(body.url);
-          setStatusMsg("URL copied to clipboard");
+          await navigator.clipboard.writeText(allUrls);
+          setStatusMsg(
+            errs.length > 0
+              ? `${oks.length}/${channels.length} URLs copied — ${errs.length} channel(s) failed`
+              : oks.length > 1
+                ? `${oks.length} URLs copied to clipboard`
+                : "URL copied to clipboard",
+          );
         } catch {
-          setStatusMsg("URL ready (clipboard blocked)");
+          setStatusMsg(
+            errs.length > 0
+              ? `${oks.length}/${channels.length} URLs ready — ${errs.length} channel(s) failed`
+              : oks.length > 1
+                ? `${oks.length} URLs ready (clipboard blocked)`
+                : "URL ready (clipboard blocked)",
+          );
         }
-        if (openInVlc && targetTab) {
-          targetTab.location.href = body.url;
+
+        if (openInVlc) {
+          // Navigate the pre-opened tabs in order. Close any leftover
+          // tabs whose fetch failed (their channel produced no URL).
+          channels.forEach((_ch, i) => {
+            const tab = targetTabs[i];
+            const res = responses[i];
+            if (tab && res.ok && res.body.url) {
+              tab.location.href = res.body.url;
+            } else if (tab) {
+              tab.close();
+            }
+          });
         }
       } catch (e) {
         setStatus("err");
         setStatusMsg(e instanceof Error ? e.message : String(e));
-        targetTab?.close();
+        targetTabs.forEach((t) => t?.close());
       }
     },
-    [channel, source, startStr, endStr, nvr],
+    [channels, source, startStr, endStr, nvr],
   );
 
   return (
@@ -276,11 +336,18 @@ export function PlaybackUrlPage() {
           )}
 
           <label className={styles.label}>
-            channel
+            channels <span style={{ opacity: 0.6, fontSize: 11 }}>(Ctrl/Cmd + click for multi)</span>
             <select
               className={styles.select}
-              value={channel}
-              onChange={(e) => setChannel(Number.parseInt(e.target.value, 10))}
+              multiple
+              size={Math.min(8, (source === "nvr" ? NVR_CHANNELS[nvr].length : CHANNELS.length))}
+              value={channels.map(String)}
+              onChange={(e) => {
+                const picked = Array.from(e.target.selectedOptions, (o) =>
+                  Number.parseInt(o.value, 10),
+                );
+                setChannels(picked);
+              }}
             >
               {(source === "nvr" ? NVR_CHANNELS[nvr] : CHANNELS).map((c) => {
                 const labels = source === "nvr" ? CHANNEL_LABEL_BY_NVR[nvr] : CHANNEL_LABEL;
@@ -339,7 +406,11 @@ export function PlaybackUrlPage() {
             onClick={() => void build(true)}
             disabled={status === "loading"}
           >
-            {status === "loading" ? "Building…" : "▶ Open in VLC"}
+            {status === "loading"
+              ? "Building…"
+              : channels.length > 1
+                ? `▶ Open ${channels.length} in VLC`
+                : "▶ Open in VLC"}
           </button>
           <button
             type="button"
@@ -347,15 +418,19 @@ export function PlaybackUrlPage() {
             onClick={() => void build(false)}
             disabled={status === "loading"}
           >
-            Copy URL
+            {channels.length > 1 ? `Copy ${channels.length} URLs` : "Copy URL"}
           </button>
         </div>
 
         {statusMsg && <div className={status === "err" ? styles.err : styles.ok}>{statusMsg}</div>}
 
-        {result?.url && (
+        {results.length > 0 && (
           <div className={styles.urlBox}>
-            <code className={styles.url}>{result.url}</code>
+            {results.map((r, i) => (
+              <code key={i} className={styles.url} style={{ display: "block", marginBottom: 4 }}>
+                {r.url}
+              </code>
+            ))}
           </div>
         )}
       </div>
