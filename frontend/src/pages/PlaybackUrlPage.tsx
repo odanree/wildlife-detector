@@ -56,13 +56,17 @@ const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "annke", Record<number, string>> 
   },
 };
 
-// Inverse of NVR_CHANNEL_YARD/BACKYARD/ROOFTOP — the alerts page hands
-// us a camera_id in the deep link (?camera=yard), we translate to the
-// channel dropdown value.
-const CAMERA_TO_CHANNEL: Record<string, number> = {
-  yard: 5,
-  backyard: 8,
-  rooftop: 6,
+// Alerts-page deep-link camera_id → (channel, NVR) mapping. The alerts
+// page hands us ?camera=<id> and we preselect the picker so the operator
+// lands on the right NVR + channel for THAT camera's recording home.
+// After PR #220, rooftop + backyard playback lives on the Annke NVR, not
+// Amcrest. Yard and the two crawlspace cams stay on Amcrest.
+const CAMERA_TO_CHANNEL: Record<string, { channel: number; nvr: "amcrest" | "annke" }> = {
+  yard: { channel: 5, nvr: "amcrest" },
+  rooftop: { channel: 2, nvr: "annke" },
+  backyard: { channel: 4, nvr: "annke" },
+  crawlspace: { channel: 7, nvr: "amcrest" },
+  crawlspace_inside: { channel: 3, nvr: "amcrest" },
 };
 
 const DURATION_OPTIONS: readonly { label: string; seconds: number }[] = [
@@ -100,11 +104,16 @@ export function PlaybackUrlPage() {
   // localStorage for one-shot deep-links but don't overwrite the
   // sticky value (the user's "usual channel" survives).
   const [urlParams] = useSearchParams();
-  const paramCameraChannel = (() => {
+  // Deep-link resolves to a single (channel, NVR) pair or null. When
+  // present, this forces the picker onto exactly one channel and the
+  // right NVR — sticky multi-selection is ignored so the operator's
+  // starting point matches the alert they clicked from.
+  const paramPreset = (() => {
     const cam = (urlParams.get("camera") ?? "").toLowerCase();
     if (cam && cam in CAMERA_TO_CHANNEL) return CAMERA_TO_CHANNEL[cam];
     const c = Number.parseInt(urlParams.get("channel") ?? "", 10);
-    return CHANNELS.includes(c) ? c : null;
+    if (CHANNELS.includes(c)) return { channel: c, nvr: "amcrest" as const };
+    return null;
   })();
   const paramStart = urlParams.get("start");
 
@@ -113,7 +122,7 @@ export function PlaybackUrlPage() {
   // comma-separated list in localStorage; single-int legacy value is
   // still honored on load so no config reset for existing users.
   const [channels, setChannelsRaw] = useState<number[]>(() => {
-    if (paramCameraChannel != null) return [paramCameraChannel];
+    if (paramPreset != null) return [paramPreset.channel];
     const saved = localStorage.getItem("playbackUrlChannels") ?? localStorage.getItem("playbackUrlChannel") ?? "";
     const parsed = saved
       .split(",")
@@ -151,6 +160,9 @@ export function PlaybackUrlPage() {
   // different URL shape (/Streaming/tracks/… + Pacific-as-fake-Z). See
   // src/web_service.py::api_playback_url for the vendor branch.
   const [nvr, setNvrRaw] = useState<"amcrest" | "annke">(() => {
+    // Deep-link overrides sticky NVR — same rationale as the channel
+    // reset above (align the picker to the alert's playback home).
+    if (paramPreset != null) return paramPreset.nvr;
     const saved = localStorage.getItem("playbackUrlNvr");
     return saved === "annke" ? "annke" : "amcrest";
   });
