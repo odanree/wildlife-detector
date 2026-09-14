@@ -25,7 +25,7 @@
 .imgViewport {
   position: relative;
   max-width: 100%;
-  max-height: calc(100vh - 200px);
+  max-height: calc(100vh - 320px);
   overflow: hidden;
   border-radius: var(--r-md);
   background: #000;
@@ -34,7 +34,7 @@
 .img {
   display: block;
   max-width: 100%;
-  max-height: calc(100vh - 200px);
+  max-height: calc(100vh - 320px);
   object-fit: contain;
   /* transform-origin + transition set inline for zoom/pan */
   transition: transform 60ms ease-out;
