@@ -106,11 +106,22 @@ def build_nvr_playback_url(
         start = dt - timedelta(seconds=pre_roll_seconds)
         end   = dt + timedelta(minutes=2)
         if family == "hikvision":
-            # Annke / Hikvision playback expects UTC ISO-8601 without
-            # separators: YYYYMMDDTHHMMSSZ. The device converts to its
-            # own configured timezone internally.
-            start_utc = start.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            end_utc   = end.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            # Annke / Hikvision playback URL uses YYYYMMDDTHHMMSSZ. The `Z`
+            # suffix LOOKS like a UTC marker but at least on Annke N98PBK
+            # firmware V4.75 the device treats it as its own NVR-local
+            # wall clock, not real UTC. The SDP `a=range:clock=` values
+            # returned by DESCRIBE are stamped with the same local-wall-
+            # clock-plus-fake-Z convention — verified 2026-09-13 by
+            # comparing a=range tails against `<localTime>` in
+            # /ISAPI/System/time.
+            #
+            # `start` was already .astimezone(_nvr_tz)-adjusted above, so
+            # a naive strftime here produces NVR-local time — exactly what
+            # the fake-Z convention wants. Sending real UTC (an earlier
+            # bug) put every playback request 7-8h in the future of the
+            # recording tail and returned 400 for every alert.
+            start_local = start.strftime("%Y%m%dT%H%M%SZ")
+            end_local   = end.strftime("%Y%m%dT%H%M%SZ")
             if speed != 1:
                 logger.warning(
                     "NVR playback: Hikvision family ignores speed=%dx (no query knob).",
@@ -118,9 +129,9 @@ def build_nvr_playback_url(
                 )
             url = (
                 f"rtsp://{user}:{pwd}@{host}:{port}"
-                f"/Streaming/tracks/{ch}01/?starttime={start_utc}&endtime={end_utc}"
+                f"/Streaming/tracks/{ch}01/?starttime={start_local}&endtime={end_local}"
             )
-            logger.info("NVR playback (hikvision) ch=%s start=%s", ch, start_utc)
+            logger.info("NVR playback (hikvision) ch=%s start=%s", ch, start_local)
         else:
             # Dahua/Amcrest /cam/playback expects starttime/endtime in
             # the NVR's local clock. subtype=0 pins the main stream —
