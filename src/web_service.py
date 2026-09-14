@@ -727,6 +727,13 @@ def create_app(registry: DetectorRegistry) -> Flask:
         nvr = (request.args.get("nvr") or "amcrest").strip().lower()
         if nvr not in ("amcrest", "annke"):
             return jsonify({"error": f"nvr must be amcrest|annke, got {nvr!r}"}), 400
+        # N98PBK physically has 8 channels — anything past that produces
+        # an invalid /Streaming/tracks/<>01 path that 400s at the NVR
+        # without a useful error. Reject at the boundary instead.
+        if nvr == "annke" and channel > 8:
+            return jsonify({
+                "error": f"channel {channel} not valid on Annke (only ch 1..8)",
+            }), 400
 
         if nvr == "annke":
             host = os.environ.get("ANNKE_HOST", "")

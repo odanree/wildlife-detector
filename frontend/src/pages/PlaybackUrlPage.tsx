@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { GlobalHeader } from "../components/GlobalHeader";
 import styles from "./PlaybackUrlPage.module.css";
@@ -19,6 +19,14 @@ import styles from "./PlaybackUrlPage.module.css";
  */
 
 const CHANNELS: readonly number[] = [1, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+
+// Per-NVR valid channel sets. Annke N98PBK physically has 8 channels;
+// Amcrest holds the rest of the fleet. Direct-mode picker still shows
+// every CAMERA_RTSP_<N> slot regardless of NVR (no NVR involved).
+const NVR_CHANNELS: Record<"amcrest" | "annke", readonly number[]> = {
+  amcrest: [1, 3, 4, 5, 6, 7, 8],
+  annke: [1, 2, 3, 4, 5, 6, 7, 8],
+};
 
 // Known channel → camera-name mapping (from NVR_CHANNEL_* env on the
 // web container). Only three channels are mapped today; the rest show
@@ -138,6 +146,16 @@ export function PlaybackUrlPage() {
     setNvrRaw(n);
     localStorage.setItem("playbackUrlNvr", n);
   }, []);
+
+  // When the operator flips NVR (or source) and the sticky channel is
+  // not valid on the new NVR (e.g. Amcrest ch11 does not exist on Annke's
+  // 8-channel N98PBK), snap the picker to the first valid channel so the
+  // URL builder cannot produce an invalid /Streaming/tracks/1101/ path.
+  useEffect(() => {
+    if (source !== "nvr") return;
+    const valid = NVR_CHANNELS[nvr];
+    if (!valid.includes(channel)) setChannel(valid[0]);
+  }, [source, nvr, channel, setChannel]);
 
   // Start defaults to "1 minute ago" so the operator can drop in a
   // near-live view without touching the picker. `?start=` from a deep
@@ -264,7 +282,7 @@ export function PlaybackUrlPage() {
               value={channel}
               onChange={(e) => setChannel(Number.parseInt(e.target.value, 10))}
             >
-              {CHANNELS.map((c) => {
+              {(source === "nvr" ? NVR_CHANNELS[nvr] : CHANNELS).map((c) => {
                 const labels = source === "nvr" ? CHANNEL_LABEL_BY_NVR[nvr] : CHANNEL_LABEL;
                 return (
                   <option key={c} value={c}>
