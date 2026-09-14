@@ -932,6 +932,16 @@ services:
       CLAUDE_MODEL: claude-sonnet-5
       CASCADE_CONFIRM_MODEL: claude-sonnet-5
       OLLAMA_URL: http://host.docker.internal:11434
+      # PTZ command target — Hiseeu HD985-PJ at .86, ONVIF-only.
+      # camera_id=7 in the slew config below maps to these env vars.
+      # Same shape as detector-crawlspace's PTZ_*_6 for .105 —
+      # /onvif/ptz SOAP with profile MainStream (Hiseeu's default,
+      # unlike YHD912-P which uses 'media_profile1').
+      PTZ_HOST_7: "192.168.1.86"
+      PTZ_USER_7: "admin"
+      PTZ_PASS_7: "[SCRUBBED]"
+      PTZ_BACKEND_7: "onvif"
+      PTZ_ONVIF_PROFILE_7: "MainStream"
       DETECTOR_INTERNAL_HOST: 0.0.0.0
       # Fifth detector port — yard=8101, rooftop=8102, backyard=8103,
       # crawlspace=8104, crawlspace-inside=8105.
