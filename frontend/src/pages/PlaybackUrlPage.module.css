@@ -1,7 +1,14 @@
+/* Tokens come from src/index.css (:root). This file previously referenced
+ * a phantom token set (--bg, --fg, --bg-elevated, --border, --accent, …)
+ * that was never defined anywhere, so every var() here resolved to its
+ * initial value — transparent backgrounds, no borders — and the option
+ * "contrast fix" below was silently a no-op that broke listbox selection
+ * highlighting (see .select option rules). Mapped onto the real tokens. */
+
 .wrap {
   min-height: 100vh;
-  background: var(--bg);
-  color: var(--fg);
+  background: var(--bg-0);
+  color: var(--text-hi);
 }
 
 .body {
@@ -17,7 +24,7 @@
 
 .hint {
   margin: 0 0 20px 0;
-  color: var(--fg-dim);
+  color: var(--text-md);
   font-size: 13px;
   line-height: 1.5;
 }
@@ -35,7 +42,7 @@
   flex-direction: column;
   gap: 4px;
   font-size: 12px;
-  color: var(--fg-dim);
+  color: var(--text-md);
   min-width: 160px;
 }
 
@@ -43,29 +50,53 @@
 .input {
   padding: 6px 8px;
   font: inherit;
-  background: var(--bg-elevated);
-  color: var(--fg);
-  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-2);
   border-radius: 4px;
   min-height: 30px;
 }
 
-/* Chromium renders <option> in the popup with its own theming and
- * ignores most of the parent's inherited styles — the entries end up
- * looking grayed-out on our dark background. Explicit bg/fg on option
- * fixes contrast; the popup itself takes the same tokens. */
-.select option {
-  background: var(--bg-elevated);
-  color: var(--fg);
+/* Chromium renders single-select <option> in the popup with its own
+ * theming and ignores most of the parent's inherited styles — the
+ * entries end up looking grayed-out on our dark background. Explicit
+ * bg/fg on option fixes popup contrast.
+ *
+ * Scoped to :not([multiple]) on purpose. A <select multiple> renders as
+ * an inline LISTBOX, and Chromium's UA stylesheet paints the selected
+ * rows with a plain (non-!important) rule:
+ *   select:-internal-list-box option:checked { background-color: … }
+ * Any author `background` on <option> — even one that resolves to
+ * transparent — outranks that UA rule in the cascade and erases the
+ * selection highlight entirely, so a correctly-selected option looks
+ * unselected. That is the bug behind "deep-link preselect shows nothing
+ * highlighted" (the DOM had option.selected === true the whole time). */
+.select:not([multiple]) option {
+  background: var(--bg-2);
+  color: var(--text-hi);
+}
+
+/* Listbox rows: leave unselected rows on the UA default (transparent
+ * over the select's own bg) and paint selected rows ourselves so the
+ * highlight is unmistakable in both focused and unfocused states —
+ * Chromium's unfocused dark-mode default is #545454, which is low
+ * contrast against --bg-2. */
+.select[multiple] option {
+  padding: 3px 6px;
+}
+
+.select[multiple] option:checked {
+  background: var(--accent-blue);
+  color: #000;
 }
 
 .readout {
   font-size: 13px;
-  color: var(--fg-dim);
+  color: var(--text-md);
 }
 
 .readout b {
-  color: var(--fg);
+  color: var(--text-hi);
   font-weight: 600;
 }
 
@@ -78,15 +109,15 @@
 .btn {
   padding: 8px 14px;
   font: inherit;
-  background: var(--bg-elevated);
-  color: var(--fg);
-  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-2);
   border-radius: 4px;
   cursor: pointer;
 }
 
 .btn:hover:not(:disabled) {
-  background: var(--bg-hover);
+  background: var(--border-1);
 }
 
 .btn:disabled {
@@ -95,14 +126,15 @@
 }
 
 .btnPrimary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #000;
   font-weight: 600;
 }
 
 .btnPrimary:hover:not(:disabled) {
-  background: var(--accent-hover, var(--accent));
+  background: var(--accent-camera);
+  border-color: var(--accent-camera);
 }
 
 .ok {
@@ -120,8 +152,8 @@
 .urlBox {
   margin-top: 12px;
   padding: 10px 12px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
+  background: var(--bg-2);
+  border: 1px solid var(--border-2);
   border-radius: 4px;
   overflow-x: auto;
 }
@@ -130,5 +162,5 @@
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 12px;
   word-break: break-all;
-  color: var(--fg);
+  color: var(--text-hi);
 }
