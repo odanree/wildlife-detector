@@ -123,7 +123,10 @@ export function PlaybackUrlPage() {
   // still honored on load so no config reset for existing users.
   const [channels, setChannelsRaw] = useState<number[]>(() => {
     if (paramPreset != null) return [paramPreset.channel];
-    const saved = localStorage.getItem("playbackUrlChannels") ?? localStorage.getItem("playbackUrlChannel") ?? "";
+    const saved =
+      localStorage.getItem("playbackUrlChannels") ??
+      localStorage.getItem("playbackUrlChannel") ??
+      "";
     const parsed = saved
       .split(",")
       .map((s) => Number.parseInt(s, 10))
@@ -192,6 +195,29 @@ export function PlaybackUrlPage() {
     if (paramStart && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(paramStart)) return paramStart;
     return isoLocal(new Date(Date.now() - 60_000));
   });
+
+  // Deep-link re-application: initial-state seeding only runs on MOUNT.
+  // If the operator is already on /playback and clicks another alert's
+  // Playback Tool link, react-router updates urlParams but the picker
+  // state stays sticky. Watch the deep-link tuple and reset channel/NVR
+  // (and startStr) whenever it changes so the preset always wins.
+  // Declared after the startStr state so setStartStr is not referenced
+  // before its declaration (worked at runtime — effects run post-render —
+  // but read as a TDZ hazard).
+  //
+  // paramPreset is a fresh object every render, so the effect captures
+  // its primitives instead: depending on the object itself would refire
+  // this reset on every render and clobber the operator's manual picks.
+  const presetChannel = paramPreset?.channel ?? null;
+  const presetNvr = paramPreset?.nvr ?? null;
+  useEffect(() => {
+    if (presetChannel == null || presetNvr == null) return;
+    setChannels([presetChannel]);
+    setNvr(presetNvr);
+    if (paramStart && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(paramStart)) {
+      setStartStr(paramStart);
+    }
+  }, [presetChannel, presetNvr, paramStart, setChannels, setNvr]);
 
   const [results, setResults] = useState<PlaybackUrlResponse[]>([]);
   const [status, setStatus] = useState<"idle" | "loading" | "ok" | "err">("idle");
@@ -348,11 +374,12 @@ export function PlaybackUrlPage() {
           )}
 
           <label className={styles.label}>
-            channels <span style={{ opacity: 0.6, fontSize: 11 }}>(Ctrl/Cmd + click for multi)</span>
+            channels{" "}
+            <span style={{ opacity: 0.6, fontSize: 11 }}>(Ctrl/Cmd + click for multi)</span>
             <select
               className={styles.select}
               multiple
-              size={Math.min(8, (source === "nvr" ? NVR_CHANNELS[nvr].length : CHANNELS.length))}
+              size={Math.min(8, source === "nvr" ? NVR_CHANNELS[nvr].length : CHANNELS.length)}
               value={channels.map(String)}
               onChange={(e) => {
                 const picked = Array.from(e.target.selectedOptions, (o) =>
@@ -363,6 +390,13 @@ export function PlaybackUrlPage() {
             >
               {(source === "nvr" ? NVR_CHANNELS[nvr] : CHANNELS).map((c) => {
                 const labels = source === "nvr" ? CHANNEL_LABEL_BY_NVR[nvr] : CHANNEL_LABEL;
+                // Numeric `value` is fine here: React's <select multiple>
+                // matches `value` entries against option.value via string
+                // coercion ('$' + v) in ReactDOMSelect.updateOptions, so
+                // [3] vs "3" is never the problem. If the highlight ever
+                // "disappears" again, check option.selected in the DOM
+                // first — last time it was a CSS cascade issue, not React
+                // (see PlaybackUrlPage.module.css `.select option`).
                 return (
                   <option key={c} value={c}>
                     {labels[c] ?? `channel ${c}`}
@@ -438,10 +472,38 @@ export function PlaybackUrlPage() {
 
         {results.length > 0 && (
           <div className={styles.urlBox}>
+            {results.length > 1 && (
+              <p className={styles.hint} style={{ marginTop: 0 }}>
+                Browsers block multiple popups from a single click, and VLC may route later rtsp://
+                launches into its existing instance as playlist items. Click each row to open its
+                own VLC window (or in VLC → Tools → Preferences → Interface, uncheck "Allow only one
+                instance"):
+              </p>
+            )}
             {results.map((r, i) => (
-              <code key={i} className={styles.url} style={{ display: "block", marginBottom: 4 }}>
-                {r.url}
-              </code>
+              <div
+                key={i}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  marginBottom: 6,
+                }}
+              >
+                <button
+                  type="button"
+                  className={`${styles.btn} ${styles.btnPrimary}`}
+                  onClick={() => {
+                    if (r.url) window.open(r.url, "_blank");
+                  }}
+                  title={`Open channel ${r.channel} in VLC`}
+                >
+                  ▶ ch{r.channel}
+                </button>
+                <code className={styles.url} style={{ flex: 1 }}>
+                  {r.url}
+                </code>
+              </div>
             ))}
           </div>
         )}
