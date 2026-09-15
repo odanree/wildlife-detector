@@ -1,0 +1,14 @@
+# Clusterer deps — HDBSCAN over pgvector embeddings, writes rat_id. NO
+# torch, NO transformers, NO OpenCV: this service never touches an image.
+# The embedder (docker/embedder) owns CLIP; we only read its vectors.
+#
+# hdbscan pulls scikit-learn + joblib + numpy. Wheels exist for cp311
+# manylinux so no compiler is needed in the image.
+hdbscan>=0.8.38
+numpy>=1.24,<3
+scikit-learn>=1.4.0
+# psycopg[binary] bundles libpq; pgvector adds the `vector` type adapter
+# so vector(512) columns come back as numpy arrays and centroids bind
+# straight into rats.centroid.
+psycopg[binary]>=3.2
+pgvector>=0.3

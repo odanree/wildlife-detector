@@ -62,6 +62,49 @@ x-detector-common: &detector-common
     - ./models:/app/models-host:ro
     - ./config:/app/config
 
+# Rat re-id clusterer (Phase 2b) — shared by the `clusterer` (one-shot /
+# backfill, profile `tools`) and `clusterer-timer` (nightly loop) services.
+# See the service block comments for the design rationale.
+x-clusterer-common: &clusterer-common
+  build:
+    context: .
+    dockerfile: docker/clusterer/Dockerfile
+  env_file:
+    # DATABASE_URL only. Nothing else from .env is read.
+    - .env
+  environment:
+    # Must match alert_embeddings.model_version the embedder writes.
+    CLIP_MODEL_ID: openai/clip-vit-base-patch32
+    CLUSTER_WINDOW_DAYS: "30"
+    # HDBSCAN knobs — calibrated 2026-09-15 on 9.3k TP alerts, see
+    # src/clusterer/clusterer.py "Parameter calibration" for the numbers.
+    # A rat seen fewer than min_cluster_size times in the window stays
+    # noise (-1) and gets NO rat_id — uncatalogued fragment or one-off.
+    CLUSTER_MIN_CLUSTER_SIZE: "5"
+    CLUSTER_MIN_SAMPLES: "2"
+    # 'leaf', not 'eom': excess-of-mass collapses this corpus into one
+    # cluster holding 98% of the window (no identity at all).
+    CLUSTER_SELECTION: leaf
+    # Centroid cosine >= this → same rat as an existing catalog entry.
+    # 0.93 (not the 0.85 in the brief): distinct same-camera clusters
+    # already sit at median 0.91-0.94; 0.85 merges ~80% of all pairs.
+    CLUSTER_LINK_THRESHOLD: "0.93"
+    # Soft-retire rats with no match for this many days.
+    CLUSTER_RETIRE_DAYS: "30"
+  volumes:
+    # scripts/ bind-mounted (not COPYed) so backfill_rat_ids.py can be
+    # edited on the host and re-run without a rebuild — same convention
+    # as the web image + backfill_tp_clips.py.
+    - ./scripts:/app/scripts:ro
+  deploy:
+    resources:
+      limits:
+        cpus: "4"
+        memory: 2g
+  depends_on:
+    postgres:
+      condition: service_healthy
+
 services:
   # Postgres backing store — replaces the SQLite bind-mount we hit 3
   # times in ~10 days for "unable to open database file" (9P + SQLite
@@ -1257,6 +1300,40 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+  # ── Rat re-id clusterer (Phase 2b) ──────────────────────────────────
+  # Bounded-context BATCH service: HDBSCAN over the trailing 30 days of
+  # alert_embeddings, linked to the persistent `rats` catalog by centroid
+  # cosine, written back as alerts.rat_id. No CLIP, no images — it only
+  # reads the vectors the embedder wrote. See src/clusterer/clusterer.py.
+  #
+  # Two services, one image:
+  #   clusterer        profile `tools` — one-shots + the backfill:
+  #                      docker compose run --rm clusterer python -m src.clusterer.main --dry-run
+  #                      docker compose run --rm clusterer python scripts/backfill_rat_ids.py
+  #   clusterer-timer  always-on nightly loop (--every-hours 24). Same
+  #                    shape as archiver-backfill-timer: the schedule is
+  #                    in the repo, not in host cron. The loop lives IN
+  #                    the Python process rather than a `docker exec`
+  #                    sidecar so no container needs the Docker socket
+  #                    (root-equivalent trust boundary) just to fire a cron.
+  #
+  # Bulkhead: 4 cpus / 2g. HDBSCAN on ~6k x 512 unit vectors is a few
+  # seconds; the cap exists so a pathological window can't contend with
+  # the five live detectors. Shared config lives in the top-level
+  # `x-clusterer-common` anchor (same convention as x-detector-common).
+  clusterer:
+    <<: *clusterer-common
+    profiles: [tools]
+    container_name: wildlife-clusterer
+    # One-shot by default; `docker compose run --rm clusterer <cmd>` overrides.
+    command: ["python", "-m", "src.clusterer.main"]
+
+  clusterer-timer:
+    <<: *clusterer-common
+    container_name: wildlife-clusterer-timer
+    restart: unless-stopped
+    command: ["python", "-m", "src.clusterer.main", "--every-hours", "24"]
 
   # ── Remote-access tunnel (Cloudflare) ───────────────────────────────
   # Outbound-only tunnel from this host to Cloudflare's edge. Public

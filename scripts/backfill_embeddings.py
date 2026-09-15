@@ -36,6 +36,16 @@ the script parks instead of filling a queue that will be dropped.
 Newest → oldest. Recent alerts are the ones the operator is looking at
 in the UI today, and the ones Phase 2b will want first.
 
+## Priority (Phase 2b live-first)
+
+Notifies are published as `<id>:low` so the embedder dequeues live
+rodent alerts (bare-id payloads from StateDB.append_alert) ahead of the
+backlog — see src/embedder/priority.py. DEPLOYMENT ORDER MATTERS: an
+embedder image older than Phase 2b parses payloads with `int()` and
+drops every `:low` notify with a WARNING, so rebuild it first
+(`docker compose up -d --build embedder`) or pass `--priority high` to
+publish bare ids the old listener understands.
+
 Usage (from repo root, with the stack up):
 
     docker compose exec web python scripts/backfill_embeddings.py --dry-run
@@ -109,6 +119,11 @@ def main() -> int:
         help="Also enqueue historical=TRUE rows (disk-backfilled, no description). "
              "Default: live rows only — these have the richest metadata for 2b.",
     )
+    ap.add_argument(
+        "--priority", choices=["low", "high"], default="low",
+        help="embed_queue traffic class (default: low — live alerts jump the queue). "
+             "Use 'high' only against a pre-Phase-2b embedder image, which drops ':low' payloads.",
+    )
     ap.add_argument("--sleep-ms", type=int, default=20, help="ms between notifies (default: 20)")
     ap.add_argument(
         "--max-lag", type=int, default=2000,
@@ -156,7 +171,13 @@ def main() -> int:
             with conn.cursor() as cur:
                 # pg_notify() function form accepts bound parameters; the
                 # NOTIFY statement doesn't. Same as StateDB.notify().
-                cur.execute("SELECT pg_notify(%s, %s)", (CHANNEL, str(alert_id)))
+                # `:low` = backfill traffic class — the embedder dequeues
+                # live (bare-id) notifies ahead of these, so a rodent
+                # alert firing mid-backfill is embedded within one batch
+                # instead of behind the backlog (src/embedder/priority.py).
+                # Bare id for --priority high (wire-compatible with 2a).
+                payload = str(alert_id) if args.priority == "high" else f"{alert_id}:low"
+                cur.execute("SELECT pg_notify(%s, %s)", (CHANNEL, payload))
             published.append(alert_id)
             n = len(published)
             if n % args.check_every == 0 or n == total:

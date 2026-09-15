@@ -30,6 +30,8 @@ on:
       - "requirements*.txt"
       - "pytest.ini"
       - "docker/detector/Dockerfile"
+      - "docker/clusterer/**"
+      - "docker/embedder/**"
       - ".github/workflows/backend.yml"
   pull_request:
     paths:
@@ -39,6 +41,8 @@ on:
       - "requirements*.txt"
       - "pytest.ini"
       - "docker/detector/Dockerfile"
+      - "docker/clusterer/**"
+      - "docker/embedder/**"
       - ".github/workflows/backend.yml"
 
 concurrency:
@@ -74,6 +78,9 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-train.txt
+          # Rat re-id Phase 2a/2b: pgvector adapter (src/embedder imports
+          # it at module level) + hdbscan for tests/unit/test_clusterer_*.
+          pip install -r docker/clusterer/requirements.txt
           pip install pytest pytest-asyncio
       - name: Run unit tests
         # Skip test_state_db.py — pre-existing migration debt from SQLite
