@@ -728,7 +728,17 @@ services:
       # 2026-09-12: cutover from .229 to the YHD912-P Hiseeu at .105 (12MP,
       # 3840x2880 HEVC main on /1/stream0). Also on Amcrest NVR channel 7 —
       # NVR_CHANNEL_CRAWLSPACE bumped 1 → 7 in the web + archiver env blocks.
-      RTSP_URL: rtsp://admin:Windowsxp20!@192.168.1.105:554/1/stream0
+      # 2026-09-15: live feed routed through Amcrest realmonitor relay
+      # instead of direct-to-camera. .105's tiny concurrent-session cap
+      # (verified 503 on ffprobe when detector+NVR+VLC all pulled direct)
+      # was bottlenecking the detector when the operator opened VLC. Now
+      # the camera has ONE consumer (Amcrest NVR), which fans out to
+      # detector + recording internally. 30-min A/B (scripts/rtsp_ab.sh)
+      # showed p95 pickup 647ms → 527ms and no downside. Trade-off is
+      # ~300ms added first-frame latency and NVR becomes a hard dep for
+      # live detection — but the NVR is already required for playback so
+      # incremental risk is near-zero.
+      RTSP_URL: rtsp://admin:windows98@192.168.1.148:554/cam/realmonitor?channel=7&subtype=0
       BASELINE_PATH: data/baseline_crawlspace.jpg
       # Indoor crawlspace has no sun cycle — permanent IR-lit night scene.
       # Crawlspace is IR-lit 24/7 with essentially zero brightness delta
@@ -1017,7 +1027,16 @@ services:
       # of three.
       # 2026-09-12: cutover from .229 (Amcrest ch1) to the YHD912-P at
       # .105 on Amcrest ch7. RTSP_URL on detector-crawlspace updated too.
-      NVR_CHANNEL_CRAWLSPACE: "7"
+      # 2026-09-15: playback routed through Annke ch3. Amcrest chokes on
+      # 12MP playback (operator's original reason for buying the Annke);
+      # .105 is already adopted on both NVRs, so we hit Annke for
+      # playback and keep Amcrest for live recording. Live-feed relay
+      # (detector's RTSP_URL) stays on Amcrest — see PR discussion.
+      NVR_CHANNEL_CRAWLSPACE: "3"
+      NVR_HOST_CRAWLSPACE: "${ANNKE_HOST:?}"
+      NVR_USER_CRAWLSPACE: "${ANNKE_USER:?}"
+      NVR_PASS_CRAWLSPACE: "${ANNKE_PASS:?}"
+      NVR_FAMILY_CRAWLSPACE: "hikvision"
       # 2026-09-11: .86 moved to the Amcrest at .148 channel 3 (simpler
       # than the earlier Annke/AgentDVR arrangement). No per-camera NVR
       # overrides needed — inherits fleet-wide AMCREST_HOST/USER/PASS.
@@ -1119,7 +1138,12 @@ services:
       # likely has footage for windows AgentDVR missed.
       # 2026-09-12: cutover from .229 (Amcrest ch1) to the YHD912-P at
       # .105 on Amcrest ch7. RTSP_URL on detector-crawlspace updated too.
-      NVR_CHANNEL_CRAWLSPACE: "7"
+      # 2026-09-15: playback via Annke ch3 (see web env block above).
+      NVR_CHANNEL_CRAWLSPACE: "3"
+      NVR_HOST_CRAWLSPACE: "${ANNKE_HOST:?}"
+      NVR_USER_CRAWLSPACE: "${ANNKE_USER:?}"
+      NVR_PASS_CRAWLSPACE: "${ANNKE_PASS:?}"
+      NVR_FAMILY_CRAWLSPACE: "hikvision"
       # 2026-09-11: .86 moved to the Amcrest at .148 channel 3 — see
       # matching note in the web env block above. Standard NVR dispatch,
       # no AgentDVR bind mount, no per-camera host overrides.
