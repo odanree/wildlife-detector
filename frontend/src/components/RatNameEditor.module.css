@@ -1,0 +1,58 @@
+.wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+/* Reads as plain text at rest (transparent, no border) and becomes a
+   field on hover/focus — the "click to rename" affordance without a
+   pencil icon eating card real estate. */
+.input {
+  background: transparent;
+  color: var(--text-hi);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  padding: 2px 6px;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  min-width: 0;
+  width: 100%;
+  cursor: text;
+  transition: border-color 100ms ease, background 100ms ease;
+}
+.input::placeholder {
+  color: var(--text-hi);
+  opacity: 0.85;
+}
+.input:hover {
+  border-color: var(--border-3);
+  background: var(--bg-1);
+}
+.input:focus,
+.inputEditing {
+  outline: none;
+  border-color: var(--accent-blue);
+  background: var(--bg-1);
+}
+
+.inputSm {
+  font-size: 13px;
+}
+.inputLg {
+  font-size: 20px;
+  padding: 4px 8px;
+}
+
+.status {
+  color: var(--text-lo);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+.err {
+  color: var(--accent-err);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}

@@ -24,3 +24,19 @@ export function fmtRelative(unixSec: number): string {
   const ago = Math.max(0, Math.floor(Date.now() / 1000 - unixSec));
   return `${fmtAgo(ago)} ago`;
 }
+
+/** Relative time for an ISO-8601 string (TIMESTAMPTZ columns like
+ *  rats.first_seen). Returns "—" for unparseable input rather than
+ *  "NaN ago". */
+export function fmtRelativeIso(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const sec = Date.parse(iso) / 1000;
+  return Number.isFinite(sec) ? fmtRelative(sec) : "—";
+}
+
+/** Absolute timestamp for an ISO-8601 string, same layout as fmtTs. */
+export function fmtTsIso(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const sec = Date.parse(iso) / 1000;
+  return Number.isFinite(sec) ? fmtTs(sec) : "—";
+}
