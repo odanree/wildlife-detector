@@ -51,7 +51,7 @@ const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "annke", Record<number, string>> 
     4: "4 (backyard)",
     5: "5 (frontyard)",
     6: "6 (front ptz)",
-    7: "7 (driveway ptz)",
+    7: "7 (side path)",
     8: "8 (plant pathway)",
   },
 };
