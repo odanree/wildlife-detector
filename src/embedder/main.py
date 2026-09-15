@@ -5,12 +5,12 @@ src/archiver/listener.py. StateDB.append_alert publishes
 `pg_notify('embed_queue', str(alert_id))` after every live rodent insert;
 scripts/backfill_embeddings.py re-drives history on the same channel.
 
-## Two threads, one bounded queue
+## Two threads, two bounded queues (live-first)
 
-    LISTEN thread ──push alert_id──► queue.Queue(maxsize=N) ──► worker thread
-                                                                 (collects ≤ BATCH_SIZE
-                                                                  or waits BATCH_WAIT_S,
-                                                                  then embed_batch)
+    LISTEN thread ──push alert_id──► PriorityQueues{high, low} ──► worker thread
+                                     (payload '<id>' → high,        (collects ≤ BATCH_SIZE
+                                      '<id>:low' → low)              or waits BATCH_WAIT_S,
+                                                                     then embed_batch)
 
 The archiver dispatches each notify straight into its thread pool
 because ffmpeg pulls are independent. CLIP is the opposite: a batch of
@@ -18,6 +18,11 @@ because ffmpeg pulls are independent. CLIP is the opposite: a batch of
 micro-batches is the whole throughput story for the 29k backfill. This
 is a **debounce coalescer**: drain whatever arrived within BATCH_WAIT_S,
 cap at BATCH_SIZE, run once.
+
+Live alerts (bare-id payload, published by StateDB.append_alert) are
+dequeued before backfill traffic (`:low`, scripts/backfill_embeddings.py)
+so an operator-visible alert never waits behind a 10k backlog — see
+src/embedder/priority.py.
 
 ## Delivery semantics
 
@@ -47,6 +52,7 @@ from pathlib import Path
 import psycopg
 
 from src.embedder.embedder import DEFAULT_MODEL_ID, AlertEmbedder, BatchStats
+from src.embedder.priority import PriorityQueues, parse_payload
 from src.embedder.schema import ensure_schema
 
 logger = logging.getLogger(__name__)
@@ -72,7 +78,7 @@ class EmbedWorker(threading.Thread):
     def __init__(
         self,
         embedder: AlertEmbedder,
-        q: "queue.Queue[int]",
+        q: PriorityQueues,
         batch_size: int,
         batch_wait_s: float,
     ) -> None:
@@ -89,22 +95,9 @@ class EmbedWorker(threading.Thread):
 
     def _collect(self) -> list[int]:
         """Block for the first item, then sweep up to batch_size more
-        that arrive within batch_wait_s."""
-        try:
-            first = self.q.get(timeout=1.0)
-        except queue.Empty:
-            return []
-        batch = [first]
-        deadline = time.monotonic() + self.batch_wait_s
-        while len(batch) < self.batch_size:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            try:
-                batch.append(self.q.get(timeout=remaining))
-            except queue.Empty:
-                break
-        return batch
+        that arrive within batch_wait_s — high-priority first (see
+        PriorityQueues.collect)."""
+        return self.q.collect(self.batch_size, self.batch_wait_s, first_timeout=1.0)
 
     def run(self) -> None:
         batches = 0
@@ -120,12 +113,13 @@ class EmbedWorker(threading.Thread):
             self.totals.merge(stats)
             batches += 1
             per = stats.infer_ms / stats.embedded if stats.embedded else 0.0
+            q_high, q_low = self.q.sizes()
             logger.info(
                 "embedded %d (skip=%d nf=%d nosnap=%d fail=%d) infer=%.0fms (%.0fms/alert) "
-                "total=%.0fms queue=%d src=%s",
+                "total=%.0fms queue=%d/%d(hi/lo) src=%s",
                 stats.embedded, stats.skipped_existing, stats.not_found,
                 stats.missing_snapshot, stats.failed, stats.infer_ms, per,
-                stats.total_ms, self.q.qsize(), stats.sources or "-",
+                stats.total_ms, q_high, q_low, stats.sources or "-",
             )
             if batches % 50 == 0:
                 t = self.totals
@@ -139,7 +133,7 @@ class EmbedWorker(threading.Thread):
 class EmbedListener:
     """Blocking LISTEN loop; pushes alert_ids onto the worker queue."""
 
-    def __init__(self, dsn: str, q: "queue.Queue[int]") -> None:
+    def __init__(self, dsn: str, q: PriorityQueues) -> None:
         self.dsn = dsn
         self.q = q
         self._stopped = False
@@ -177,19 +171,19 @@ class EmbedListener:
 
     def _dispatch(self, payload: str) -> None:
         try:
-            alert_id = int(payload)
+            alert_id, priority = parse_payload(payload)
         except ValueError:
-            logger.warning("Listener: non-integer payload dropped: %r", payload)
+            logger.warning("Listener: malformed payload dropped: %r", payload)
             return
         try:
-            self.q.put_nowait(alert_id)
+            self.q.put_nowait(alert_id, priority)
         except queue.Full:
             self._dropped += 1
             if self._dropped == 1 or self._dropped % 500 == 0:
                 logger.warning(
-                    "Listener: queue full (%d), dropped alert_id=%d (dropped so far: %d). "
+                    "Listener: %s queue full, dropped alert_id=%d (dropped so far: %d). "
                     "Backfill will reconcile; slow the publisher (--sleep-ms) if this persists.",
-                    self.q.maxsize, alert_id, self._dropped,
+                    priority, alert_id, self._dropped,
                 )
 
 
@@ -218,7 +212,9 @@ def main() -> None:
     ensure_schema(dsn)
 
     embedder = AlertEmbedder(dsn=dsn, snapshots_dir=snapshots_dir, model_id=model_id)
-    q: "queue.Queue[int]" = queue.Queue(maxsize=queue_max)
+    # One bounded queue per traffic class (live vs backfill) — a full
+    # backfill queue can never drop a live notify.
+    q = PriorityQueues(high_max=queue_max, low_max=queue_max)
     worker = EmbedWorker(embedder, q, batch_size=batch_size, batch_wait_s=batch_wait_s)
     worker.start()
     logger.info(
