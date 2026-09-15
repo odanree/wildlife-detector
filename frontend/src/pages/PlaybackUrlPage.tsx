@@ -281,7 +281,7 @@ export function PlaybackUrlPage() {
         if (oks.length === 0) {
           setStatus("err");
           setStatusMsg(errs[0]?.body?.error ?? `HTTP ${errs[0]?.status ?? "?"}`);
-          targetTabs.forEach((t) => t?.close());
+          for (const t of targetTabs) t?.close();
           return;
         }
 
@@ -315,7 +315,7 @@ export function PlaybackUrlPage() {
         if (openInVlc) {
           // Navigate the pre-opened tabs in order. Close any leftover
           // tabs whose fetch failed (their channel produced no URL).
-          channels.forEach((_ch, i) => {
+          for (let i = 0; i < channels.length; i++) {
             const tab = targetTabs[i];
             const res = responses[i];
             if (tab && res.ok && res.body.url) {
@@ -323,12 +323,12 @@ export function PlaybackUrlPage() {
             } else if (tab) {
               tab.close();
             }
-          });
+          }
         }
       } catch (e) {
         setStatus("err");
         setStatusMsg(e instanceof Error ? e.message : String(e));
-        targetTabs.forEach((t) => t?.close());
+        for (const t of targetTabs) t?.close();
       }
     },
     [channels, source, startStr, endStr, nvr],
@@ -480,9 +480,9 @@ export function PlaybackUrlPage() {
                 instance"):
               </p>
             )}
-            {results.map((r, i) => (
+            {results.map((r) => (
               <div
-                key={i}
+                key={r.url ?? `${r.channel}-${r.start ?? ""}`}
                 style={{
                   display: "flex",
                   alignItems: "center",
