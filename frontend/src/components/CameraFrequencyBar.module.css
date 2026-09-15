@@ -1,0 +1,52 @@
+.chart {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-width: 480px;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 120px 1fr 44px;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 12px;
+}
+
+.label {
+  color: var(--text-md);
+  font-family: var(--font-mono);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Recessive track, thin mark, rounded data-end only (left edge stays
+   square against the baseline). */
+.track {
+  height: 10px;
+  background: var(--bg-2);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  overflow: hidden;
+}
+.fill {
+  height: 100%;
+  min-width: 2px;
+  background: var(--accent-camera);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  transition: width 200ms ease;
+}
+
+.pct {
+  color: var(--text-hi);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.empty {
+  color: var(--text-lo);
+  font-size: 12px;
+}

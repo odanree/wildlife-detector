@@ -4,6 +4,8 @@ import { BaselinesPage } from "./pages/BaselinesPage";
 import { DropsPage } from "./pages/DropsPage";
 import { LivePreviewPage } from "./pages/LivePreviewPage";
 import { PlaybackUrlPage } from "./pages/PlaybackUrlPage";
+import { RatTimelinePage } from "./pages/RatTimelinePage";
+import { RatsPage } from "./pages/RatsPage";
 import { StatusDashboard } from "./pages/StatusDashboard";
 
 /**
@@ -27,6 +29,8 @@ export function App() {
         <Route path="/preview" element={<LivePreviewPage />} />
         <Route path="/status" element={<StatusDashboard />} />
         <Route path="/alerts" element={<AlertsPage />} />
+        <Route path="/rats" element={<RatsPage />} />
+        <Route path="/rats/:id" element={<RatTimelinePage />} />
         <Route path="/drops" element={<DropsPage />} />
         <Route path="/baselines" element={<BaselinesPage />} />
         <Route path="/playback" element={<PlaybackUrlPage />} />

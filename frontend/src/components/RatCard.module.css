@@ -1,0 +1,115 @@
+.card {
+  background: var(--bg-2);
+  border: 2px solid var(--border-2);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: border-color 100ms ease, opacity 100ms ease;
+}
+.card:hover {
+  border-color: var(--border-3);
+}
+
+/* Retired: dimmed body + strip over the thumb. opacity on the whole
+   card (not a filter) so text stays crisp and the rename input still
+   reads as interactive. */
+.cardRetired {
+  opacity: 0.55;
+  border-style: dashed;
+}
+.cardRetired:hover {
+  opacity: 0.85;
+}
+
+.link {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
+
+.thumbWrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+}
+.thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.noThumb {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-lo);
+  font-size: 11px;
+}
+
+.retiredStrip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(20, 20, 26, 0.85);
+  color: var(--text-md);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 8px;
+  text-align: center;
+  border-top: 1px dashed var(--border-3);
+}
+
+.body {
+  padding: var(--sp-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.nameRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.idTag {
+  color: var(--text-lo);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+
+.metaLink {
+  color: inherit;
+  text-decoration: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.metaRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  font-size: 12px;
+  color: var(--text-md);
+  flex-wrap: wrap;
+}
+.span {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.count {
+  color: var(--text-md);
+}
+.count b {
+  color: var(--text-hi);
+  font-variant-numeric: tabular-nums;
+}
