@@ -45,6 +45,10 @@ class VideoFileHandler:
         self._queue: queue.Queue = queue.Queue(maxsize=queue_size)
         self._stop   = threading.Event()
         self._paused = threading.Event()
+        # Set once a single-pass (loop=False) playlist has been fully
+        # decoded. Frames may still sit in the queue at that point — callers
+        # should treat `finished and get_frame() is None` as true EOF.
+        self._finished = threading.Event()
         self._thread: threading.Thread | None = None
         self._file_start_ts: float | None = None  # Unix ts of current file's first frame
         self._file_pos_sec: float = 0.0           # seconds into the current file
@@ -83,6 +87,18 @@ class VideoFileHandler:
             return self._queue.get(timeout=timeout)
         except queue.Empty:
             return None
+
+    @property
+    def finished(self) -> bool:
+        """True once a single-pass playlist has been fully decoded."""
+        return self._finished.is_set()
+
+    @property
+    def position_seconds(self) -> float:
+        """Seconds into the current file of the most recently decoded frame.
+        Approximate for consumers: up to queue_size frames ahead of what the
+        pipeline is processing."""
+        return self._file_pos_sec
 
     def get_current_wall_time(self) -> float | None:
         """Return estimated wall-clock Unix timestamp of the current frame.
@@ -131,6 +147,7 @@ class VideoFileHandler:
 
             if not self._loop:
                 logger.info("Video playback finished — pipeline will idle")
+                self._finished.set()
                 break
 
             logger.info("Video playlist looping…")

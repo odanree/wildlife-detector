@@ -28,7 +28,10 @@ import logging
 import os
 import time
 from collections import deque
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor
+from concurrent.futures import wait as _wait
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import NamedTuple
 
 import cv2
@@ -616,6 +619,13 @@ def run(stream_url: str | None = None, video_path: str | None = None,
         shutdown_event=None) -> None:
     cfg_det = _load_yaml("config/detection.yaml")
     cfg_alerts = _load_yaml("config/alerts.yaml")
+    # SNAPSHOT_DIR env overrides alerts.yaml's snapshot_dir. Replay /
+    # sandbox runs (scripts/replay.sh, scripts/event_triggered_replay.py)
+    # rely on this to keep their JPEGs out of the production snapshots/
+    # tree; previously only the reject-crop path honored the env and the
+    # notifier wrote replay snapshots into prod. Unset in prod → no change.
+    if os.getenv("SNAPSHOT_DIR"):
+        cfg_alerts["alerts"]["snapshot_dir"] = os.getenv("SNAPSHOT_DIR")
 
     det_cfg = cfg_det["detector"]
     mot_cfg = cfg_det.get("motion_detector", {})
@@ -1005,6 +1015,55 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     vlm_jobs: dict[int, tuple[Future, np.ndarray, tuple, float, bytes, float]] = {}
     last_vlm_ts: dict[int, float] = {}
     VLM_INTERVAL_S = float(os.getenv("VLM_INTERVAL_S", "2.0"))
+
+    # ── Replay report sidecar (opt-in; scripts/event_triggered_replay.py) ──
+    # REPLAY_REPORT_PATH=<file>: on exit, write a JSON report of every VLM
+    # verdict + every notifier.send() call this process made, keyed to the
+    # clip position. REPLAY_EXIT_ON_EOF=1: when a single-pass video file
+    # (VIDEO_LOOP=false) is exhausted, drain in-flight VLM jobs (the
+    # `frame is None → continue` branch below would otherwise never reach
+    # the harvest block, silently losing verdicts on the clip's tail) and
+    # return instead of idling forever. Both are no-ops unless set, so the
+    # live RTSP path is untouched.
+    _replay_report_path = os.getenv("REPLAY_REPORT_PATH") or None
+    _replay_exit_on_eof = os.getenv("REPLAY_EXIT_ON_EOF", "0") == "1"
+    _replay_drain_timeout_s = float(os.getenv("REPLAY_DRAIN_TIMEOUT_S") or 60)
+    _replay_verdicts: list[dict] = []
+    _replay_alerts: list[dict] = []
+    _replay_submit_pos: dict[int, float] = {}   # track_id → clip position at VLM submit
+    _replay_eof_deadline: float | None = None
+    _replay_exit_reason = "shutdown"
+    _replay_frames_processed = 0
+    _last_frame: "np.ndarray | None" = None
+
+    def _replay_clip_pos() -> float | None:
+        pos = getattr(stream, "position_seconds", None)
+        return round(float(pos), 2) if pos is not None else None
+
+    if _replay_report_path:
+        # Wrap the single choke point every fired alert goes through (both
+        # the rodent-positive and VLM-reject-override paths call
+        # notifier.send). Recording here — before the notifier's own
+        # min-conf/cooldown gates — mirrors what lands in the alerts table.
+        _orig_notifier_send = notifier.send
+
+        def _replay_notifier_send(event_type, vlm_result, frame_, bbox=None, yolo_conf=None):
+            _replay_alerts.append({
+                "clip_pos_s": _replay_clip_pos(),
+                "wall_ts": time.time(),
+                "event_type": event_type,
+                "species": vlm_result.get("species"),
+                "confidence": round(float(vlm_result.get("confidence", 0.0) or 0.0), 3),
+                "is_rodent": bool(vlm_result.get("is_rodent", False)),
+                "bbox": [int(v) for v in bbox] if bbox is not None else None,
+                "yolo_conf": round(float(yolo_conf), 3) if yolo_conf is not None else None,
+                "description": (vlm_result.get("description") or "")[:300],
+            })
+            return _orig_notifier_send(event_type, vlm_result, frame_, bbox, yolo_conf)
+
+        notifier.send = _replay_notifier_send  # type: ignore[method-assign]
+        logger.info("Replay report enabled → %s (exit_on_eof=%s drain_timeout=%.0fs)",
+                    _replay_report_path, _replay_exit_on_eof, _replay_drain_timeout_s)
     # Stationary-FP suppression: blinking indicator lights (LEDs, chargers,
     # camera IR emitters) turn on/off at the same pixel spot repeatedly.
     # MOG2/KNN sees each transition as fresh foreground and creates a new
@@ -1096,11 +1155,34 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 break
             frame = stream.get_frame()
             if frame is None:
-                continue
+                if not (_replay_exit_on_eof and getattr(stream, "finished", False)):
+                    continue
+                # Single-pass replay reached EOF. If VLM jobs are still in
+                # flight, re-feed the last decoded frame so the harvest
+                # block below runs (a repeated identical frame yields no
+                # MOG2 foreground, so no new detections are minted); once
+                # the pool is empty — or the drain budget is spent — exit.
+                if _replay_eof_deadline is None:
+                    _replay_eof_deadline = time.monotonic() + _replay_drain_timeout_s
+                    logger.info("Replay EOF: %d VLM job(s) in flight — draining up to %.0fs",
+                                len(vlm_jobs), _replay_drain_timeout_s)
+                if not vlm_jobs or _last_frame is None:
+                    _replay_exit_reason = "eof"
+                    break
+                if time.monotonic() > _replay_eof_deadline:
+                    logger.warning("Replay EOF drain timed out with %d VLM job(s) still pending", len(vlm_jobs))
+                    _replay_exit_reason = "eof_drain_timeout"
+                    break
+                _wait([j[0] for j in vlm_jobs.values()], timeout=1.0, return_when=FIRST_COMPLETED)
+                frame = _last_frame
 
             fh, fw = frame.shape[:2]
             if (fw, fh) != (det_w, det_h):
                 frame = cv2.resize(frame, (det_w, det_h))
+            if _replay_exit_on_eof:
+                _last_frame = frame
+                if _replay_eof_deadline is None:
+                    _replay_frames_processed += 1
 
             # Camera off-home flag: either the on-cam AI (Reolink Smart
             # Track, Jennov AI) auto-panned physically, OR our own self-
@@ -1507,6 +1589,20 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     _b_mean, _b_max, _b_ar, _b_wmean, _b_wmax,
                     _queue_age, _inflight,
                 )
+                if _replay_report_path:
+                    _replay_verdicts.append({
+                        "clip_pos_s": _replay_submit_pos.pop(tid, None),
+                        "track_id": tid,
+                        "species": result.get("species"),
+                        "confidence": round(float(result.get("confidence", 0.0) or 0.0), 3),
+                        "wildlife_detected": bool(result.get("wildlife_detected", False)),
+                        "is_rodent": bool(result.get("is_rodent", False)),
+                        "bbox": [int(v) for v in bbox] if bbox is not None else None,
+                        "bbox_wh": [int(_bw), int(_bh)],
+                        "yolo_conf": round(float(yolo_conf), 3) if yolo_conf is not None else None,
+                        "vlm_queue_age_s": round(_queue_age, 2),
+                        "description": (result.get("description") or "")[:300],
+                    })
 
                 # Freshness deadline: discard alerts whose snapshot is too old
                 # to be actionable. Belt-and-suspenders with the ingress cap —
@@ -2289,6 +2385,8 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     # so a rejected verdict can save it for eyeballing.
                     vlm_jobs[det.track_id] = (fut, frame.copy(), det.bbox, det.confidence, crop, time.time())
                     _preview_stats.record_vlm_call()
+                    if _replay_report_path:
+                        _replay_submit_pos[det.track_id] = _replay_clip_pos()
 
             # Evict gone tracks
             for tid in list(last_vlm_ts.keys()):
@@ -2313,3 +2411,37 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     finally:
         vlm_pool.shutdown(wait=False)
         stream.stop()
+        if _replay_report_path:
+            _write_replay_report(
+                _replay_report_path,
+                video_path=video_path or None,
+                exit_reason=_replay_exit_reason,
+                frames_processed=_replay_frames_processed,
+                pending_vlm_jobs=len(vlm_jobs),
+                verdicts=_replay_verdicts,
+                alerts=_replay_alerts,
+            )
+
+
+def _write_replay_report(path: str, **body) -> None:
+    """Atomic JSON dump for the replay sidecar (see REPLAY_REPORT_PATH in run()).
+    Never raises — a failed report must not mask the pipeline's own exit."""
+    import json
+    try:
+        snap = _preview_stats.snapshot() if hasattr(_preview_stats, "snapshot") else {}
+        body = {
+            "schema": "replay_report/v1",
+            "written_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "gate_funnel": snap.get("gate_funnel", {}),
+            "backend": snap.get("backend"),
+            **body,
+        }
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        tmp.write_text(json.dumps(body, indent=2, default=str), encoding="utf-8")
+        tmp.replace(p)
+        logger.info("Replay report written → %s (%d verdicts, %d alerts, exit=%s)",
+                    path, len(body["verdicts"]), len(body["alerts"]), body["exit_reason"])
+    except Exception:
+        logger.exception("Failed to write replay report to %s", path)
