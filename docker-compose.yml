@@ -73,8 +73,16 @@ services:
   # ext4 filesystem — no 9P layer between anyone and the data.
   # Trade-off: `scp state.db` portability is gone, replaced with
   # `pg_dump` (net win, since pg_dump is online-safe).
+  #
+  # 2026-09-15 (rat re-id Phase 2a): image → build. Same postgres:16-alpine
+  # base with pgvector compiled in for the embedder's `vector(512)` column.
+  # Built on alpine (not the Debian pgvector/pgvector image) so the
+  # existing pg-data volume's musl collation stays valid — no REINDEX,
+  # no data migration. See docker/postgres/Dockerfile for the rationale.
   postgres:
-    image: postgres:16-alpine
+    build:
+      context: .
+      dockerfile: docker/postgres/Dockerfile
     container_name: wildlife-postgres
     restart: unless-stopped
     environment:
@@ -1195,6 +1203,61 @@ services:
       postgres:
         condition: service_healthy
 
+  # ── Rat re-id embedder (Phase 2a) ───────────────────────────────────
+  # Bounded-context service: LISTENs on `embed_queue`, crops the animal
+  # out of each rodent alert's snapshot, runs CLIP ViT-B/32 on CPU and
+  # writes a 512-dim vector to alert_embeddings (pgvector). Publisher is
+  # StateDB.append_alert (live rodent inserts); history is re-driven by
+  # scripts/backfill_embeddings.py. Phase 2b (clusterer → rat_id) and 2c
+  # (timeline UI) consume the table; neither lives here.
+  #
+  # Structural twin of `archiver`: one Python process, one DB channel,
+  # no camera bindings. Missed notifies are recovered by the backfill
+  # script — no durable outbox for MVP.
+  #
+  # Bulkhead: hard CPU/memory caps so a 29k-alert backfill can't starve
+  # the five live detectors on this 24-core box. 8 threads ≈ 50ms/image
+  # batched; the backfill's --max-lag backpressure keeps the queue
+  # shallow regardless.
+  embedder:
+    build:
+      context: .
+      dockerfile: docker/embedder/Dockerfile
+    container_name: wildlife-embedder
+    restart: unless-stopped
+    env_file:
+      # DATABASE_URL for LISTEN + writes. Nothing else from .env is read.
+      - .env
+    environment:
+      SNAPSHOT_DIR: /app/snapshots
+      # MUST match the ARG baked into the image (docker/embedder/Dockerfile)
+      # — the container runs HF_HUB_OFFLINE=1 and fails fast on a miss.
+      CLIP_MODEL_ID: openai/clip-vit-base-patch32
+      # Micro-batch coalescer: sweep up to 16 notifies that arrive within
+      # 250ms, run CLIP once. A live alert (arrives alone) pays ≤250ms
+      # extra latency; the backfill (arrives in a stream) gets ~1.3x the
+      # cost of a single image for 16 of them.
+      EMBEDDER_BATCH_SIZE: "16"
+      EMBEDDER_BATCH_WAIT_S: "0.25"
+      EMBEDDER_TORCH_THREADS: "8"
+      # Bounded in-process queue. Notifies past this are dropped with a
+      # WARNING and reconciled by the backfill's gap query.
+      EMBEDDER_QUEUE_MAX: "10000"
+    volumes:
+      # Read-only: the embedder never writes images.
+      - ./snapshots:/app/snapshots:ro
+      # CLIP weights. Seeded from the image layer on first mount so a
+      # container restart (or a src-only rebuild) never re-downloads.
+      - clip-cache:/app/hf-cache
+    deploy:
+      resources:
+        limits:
+          cpus: "8"
+          memory: 4g
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # ── Remote-access tunnel (Cloudflare) ───────────────────────────────
   # Outbound-only tunnel from this host to Cloudflare's edge. Public
   # HTTPS URL (e.g. https://wildlife.danhle.net) fronts wildlife-web
@@ -1244,3 +1307,6 @@ volumes:
   # that motivated this migration in the first place. Backup via
   # `docker compose exec postgres pg_dump ...` — online, no downtime.
   pg-data:
+  # CLIP ViT-B/32 weights for the embedder (~600MB). Seeded from the
+  # image on first mount; survives container restarts + rebuilds.
+  clip-cache:

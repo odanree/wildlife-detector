@@ -39,11 +39,17 @@ import time
 from typing import Any
 
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 logger = logging.getLogger(__name__)
 
 _SCHEMA_VERSION = 1
+
+# LISTEN/NOTIFY channel the embedder service consumes (src/embedder/main.py).
+# Payload is the stringified alert id. Kept here — not in src/embedder —
+# because the detector image doesn't ship that package.
+EMBED_QUEUE_CHANNEL = "embed_queue"
 
 
 class StateDB:
@@ -118,6 +124,15 @@ class StateDB:
             "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS label_species TEXT",
             "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS label_notes   TEXT",
             "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS label_ts      DOUBLE PRECISION",
+            # Rat re-id Phase 2a: detector bbox in snapshot-frame pixel
+            # coords, `{"x1","y1","x2","y2","frame_w","frame_h"}`. The
+            # snapshot JPEG is the ANNOTATED frame (red outline burned
+            # in); the embedder needs the raw region to crop, and the
+            # description column only ever stored WxH. NULL for every
+            # row written before this column existed — the embedder
+            # falls back to red-outline recovery for those
+            # (src/embedder/crop.py).
+            "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS bbox          JSONB",
         ]:
             self._exec(col_ddl)
         # Indexes — one DDL statement each so a partial failure logs
@@ -178,16 +193,44 @@ class StateDB:
         is_rodent: bool = False,
         historical: bool = False,
         camera_id: str = "yard",
+        bbox: tuple[int, int, int, int] | None = None,
+        frame_size: tuple[int, int] | None = None,
     ) -> int | None:
         """Insert an alert row. Returns the row ID, or None if the unique
         constraint suppressed it (already exists).
+
+        `bbox` is the detector's (x1, y1, x2, y2) in the same pixel space
+        as the saved snapshot; `frame_size` is that frame's (w, h). Both
+        are persisted together as JSONB so a later INPUT_WIDTH change
+        can't silently misplace the crop (the embedder rescales when the
+        recorded frame size disagrees with the JPEG on disk).
+
+        ## embed_queue publisher (rat re-id Phase 2a)
+
+        After a LIVE rodent row lands (is_rodent AND NOT historical —
+        disk-backfilled rows are re-driven by scripts/backfill_embeddings.py
+        instead) we `pg_notify('embed_queue', id)` so the embedder
+        container picks it up. Same shape as web_service's
+        `archive_queue` publish. The notify rides in the SAME transaction
+        as the INSERT: Postgres only delivers NOTIFY on commit, so a
+        listener can never observe an id that isn't visible yet, and a
+        rolled-back insert publishes nothing. A notify failure must not
+        fail the alert — the row is the source of truth, the embedding is
+        derived state the backfill can rebuild.
         """
+        bbox_json = None
+        if bbox is not None:
+            x1, y1, x2, y2 = (int(v) for v in bbox)
+            bbox_json = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+            if frame_size is not None:
+                bbox_json["frame_w"] = int(frame_size[0])
+                bbox_json["frame_h"] = int(frame_size[1])
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO alerts
                    (ts, camera_id, species, confidence, description, snapshot,
-                    track_id, yolo_conf, is_rodent, historical)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    track_id, yolo_conf, is_rodent, historical, bbox)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    ON CONFLICT (ts, species, COALESCE(snapshot, '')) DO NOTHING
                    RETURNING id""",
                 (
@@ -201,10 +244,18 @@ class StateDB:
                     round(yolo_conf, 3) if yolo_conf is not None else None,
                     is_rodent,
                     historical,
+                    Jsonb(bbox_json) if bbox_json is not None else None,
                 ),
             )
             row = cur.fetchone()
-            return row[0] if row else None
+            alert_id = int(row[0]) if row else None
+            if alert_id is not None and is_rodent and not historical and snapshot:
+                try:
+                    cur.execute("SELECT pg_notify(%s, %s)", (EMBED_QUEUE_CHANNEL, str(alert_id)))
+                except Exception:
+                    # Never let derived-state plumbing fail the alert.
+                    logger.exception("embed_queue NOTIFY failed for alert=%d", alert_id)
+            return alert_id
 
     def append_alerts_bulk(self, rows: list[dict]) -> int:
         """Batch insert for backfill. Returns the number of new rows
