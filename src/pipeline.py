@@ -1786,6 +1786,14 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                             # the actual sighting instead of `queue_age`
                             # seconds past it (up to VLM_MAX_ALERT_AGE_S=40).
                             ts=submit_ts,
+                            # Override alerts are `other`, not rodent, so
+                            # the embedder ignores them today — but the
+                            # operator relabels a share of these as TP
+                            # rodents, and a bbox on the row is what lets
+                            # Phase 2b embed those without red-outline
+                            # recovery.
+                            bbox=tuple(int(v) for v in bbox) if bbox is not None else None,
+                            frame_size=(snap_fr.shape[1], snap_fr.shape[0]),
                         )
                         if tid >= MANUAL_TRACK_ID_BASE:
                             _release_manual_submission(tid)
@@ -1946,6 +1954,12 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     # inflated wallclock stamp and playback URLs land
                     # on the actual sighting.
                     ts=submit_ts,
+                    # Rat re-id: persist the bbox the snapshot was
+                    # annotated with, in snap_fr's pixel space, so the
+                    # embedder crops the animal instead of recovering
+                    # the drawn rectangle. (sw, sh) computed above.
+                    bbox=tuple(int(v) for v in bbox) if bbox is not None else None,
+                    frame_size=(sw, sh),
                 )
                 # Manual dets: release submission entry now that the alert
                 # has fired, so the in-flight lookup dict stays bounded.
@@ -2097,6 +2111,8 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         snapshot=_snap_ref,
                         track_id=int(det.track_id),
                         yolo_conf=float(det.confidence),
+                        bbox=tuple(int(v) for v in det.bbox) if det.bbox is not None else None,
+                        frame_size=(sw, sh),
                     )
                     continue
 

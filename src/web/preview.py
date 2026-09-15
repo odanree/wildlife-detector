@@ -472,7 +472,14 @@ class Stats:
                      snapshot: str | None = None,
                      track_id: int | None = None,
                      yolo_conf: float | None = None,
-                     ts: float | None = None) -> None:
+                     ts: float | None = None,
+                     bbox: tuple[int, int, int, int] | None = None,
+                     frame_size: tuple[int, int] | None = None) -> None:
+        # bbox / frame_size: detector bbox in the saved snapshot's pixel
+        # space + that frame's (w, h). Persisted as alerts.bbox JSONB so
+        # the rat re-id embedder can crop the animal out of the annotated
+        # snapshot without recovering the drawn rectangle. Optional —
+        # callers without a bbox (human_heartbeat) leave it None.
         # ts: frame capture wall-clock (submit_ts). Callers that fire after
         # a VLM harvest should pass the submit_ts they've been carrying so
         # the alert row's ts anchors to when the event actually happened,
@@ -496,7 +503,8 @@ class Stats:
         # Also push into the durable ring buffer for /alerts.
         _alerts.append(species, confidence, description,
                        snapshot=snapshot, track_id=track_id, yolo_conf=yolo_conf,
-                       camera_id=camera_id, ts=alert_ts)
+                       camera_id=camera_id, ts=alert_ts,
+                       bbox=bbox, frame_size=frame_size)
 
     def set_backend(self, backend: str) -> None:
         with self._lock:
@@ -662,7 +670,9 @@ class AlertLog:
                track_id: int | None = None,
                yolo_conf: float | None = None,
                camera_id: str = "yard",
-               ts: float | None = None) -> None:
+               ts: float | None = None,
+               bbox: tuple[int, int, int, int] | None = None,
+               frame_size: tuple[int, int] | None = None) -> None:
         if self._state is None:
             return   # AlertLog wasn't init'd; no-op like before
         self._state.append_alert(
@@ -676,6 +686,8 @@ class AlertLog:
             historical=False,
             camera_id=camera_id,
             ts=ts,
+            bbox=bbox,
+            frame_size=frame_size,
         )
 
     def list(self, limit: int = 200, species: str | None = None,
