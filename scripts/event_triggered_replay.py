@@ -37,14 +37,23 @@ burst of 5 alerts in 20s yields one clip, not five copies of the same
 5. Write `manifest.json` (rewritten after every pull so a crash still
    leaves a usable partial record).
 
-Detection on the pulled clips is deliberately out of scope — this is
-the clip-acquisition MVP.
+6. Optional `--run-detection`: push each pulled clip through the real
+   detector (`python -m src.main --video <clip>`) in a **test bulkhead**
+   — `STATE_DRY_RUN=1` (no Postgres rows, no HA/webhooks), snapshots
+   redirected under the out-dir, PTZ slew disabled — and collect the
+   VLM verdicts via the pipeline's opt-in `REPLAY_REPORT_PATH` sidecar.
+   Each window's manifest entry gains `detection` (gate-funnel counters
+   + per-verdict `{ts_offset_s, species, confidence, bbox}`) and a
+   `verdict` (`caught_event`, `n_source_alerts`); a top-level `summary`
+   carries `total_windows / caught_event_count / catch_rate`. That is
+   the actual validation signal: did the TARGET camera see what the
+   source cameras alerted on?
 
 ## Running
 
-The `archiver` image is the right runtime (ffmpeg + psycopg + the
-cv2-free playback_url + clips mount + NVR_* env); `web` has no ffmpeg.
-`scripts/` isn't baked into that image, so bind-mount it:
+Clip pull only: the `archiver` image is the right runtime (ffmpeg +
+psycopg + the cv2-free playback_url + clips mount + NVR_* env); `web`
+has no ffmpeg. `scripts/` isn't baked into that image, so bind-mount it:
 
     MSYS_NO_PATHCONV=1 docker compose run --rm --no-deps \\
         -v "$(pwd)/scripts:/app/scripts:ro" archiver \\
@@ -52,6 +61,23 @@ cv2-free playback_url + clips mount + NVR_* env); `web` has no ffmpeg.
             --target-camera annke:7 --target-label side_path \\
             --lookback-hours 6 --limit 10 \\
             --out-dir /app/clips/event_triggered/side_path_smoke
+
+With `--run-detection` the runtime must be a `detector-*` image instead
+(cv2 + YOLO weights + Ollama reach; it also carries ffmpeg and psycopg,
+so the pull path works unchanged). The archiver image has no docker
+socket, so it cannot spawn detector containers — run the whole script in
+the detector image rather than pretending otherwise:
+
+    MSYS_NO_PATHCONV=1 docker compose run --rm --no-deps \\
+        -v "$(pwd)/scripts:/app/scripts:ro" detector-backyard \\
+        python scripts/event_triggered_replay.py \\
+            --target-camera annke:7 --target-label side_path \\
+            --lookback-hours 6 --limit 3 --run-detection \\
+            --out-dir /app/clips/event_triggered/side_path_smoke
+
+Pick the detector service whose tuning is closest to the target camera
+(backyard = Hikvision-family 4K side angle); its env is the baseline the
+replay inherits. Add `--detector-env KEY=VAL` to override tuning knobs.
 
 Add `--dry-run` to print the manifest without pulling, `--print-cmd` to
 see the ffmpeg invocations (credentials included — for debugging only).
@@ -64,6 +90,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -366,6 +393,218 @@ def _classify_failure(stderr: str, rc: Optional[int]) -> str:
     return _tail(s, 200) or f"ffmpeg_rc_{rc}"
 
 
+# ── Detection (opt-in) ─────────────────────────────────────────────────
+
+# Species the VLM returns for "nothing alertable here". A verdict with one
+# of these is never a catch, even if the model mislabels detected=true.
+NON_CATCH_SPECIES = {"insect", "none", "unknown", ""}
+
+# Env the replay subprocess ALWAYS gets. Isolation first (test bulkhead:
+# no DB rows, no pages, no PTZ moves), then "make the replay complete":
+# single pass, no stale-drop (freshness deadlines are meaningless offline
+# — we want to know whether the target saw it, not whether an alert would
+# have been actionable), EOF exit + JSON sidecar.
+DETECTOR_ENV_FIXED = {
+    "STATE_DRY_RUN": "1",
+    "VIDEO_LOOP": "false",
+    "VIDEO_SPEED": "1.0",
+    "PREVIEW_ENABLED": "false",
+    "SLEW_ENABLED": "false",
+    "SELF_SLEW_ENABLED": "false",
+    "HA_WEBHOOK_URL": "",
+    "ALERT_WEBHOOK_URL": "",
+    "REPLAY_EXIT_ON_EOF": "1",
+    "VLM_MAX_ALERT_AGE_S": "600",
+}
+# Env seeded per target unless the operator overrides via --detector-env.
+# CAMERA_ID/ZONE_KEY keyed on the target label mean: no OSD mask, an
+# empty zone polygon (→ full-frame detection until someone draws one),
+# and a baseline path that doesn't exist (→ no pixel-diff pre-filter
+# tuned for a different camera silently eating the target's motion).
+def _detector_env_defaults(target: Target) -> dict[str, str]:
+    return {
+        "CAMERA_ID": target.label,
+        "ZONE_KEY": f"{target.label}_zone",
+        "BASELINE_PATH": f"data/baseline_{target.label}.jpg",
+        "RTSP_URL": "",   # belt-and-braces: --video wins, but never fall back to a live cam
+    }
+
+
+def parse_env_overrides(items: list[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for item in items or []:
+        if "=" not in item:
+            raise SystemExit(f"--detector-env expects KEY=VAL, got {item!r}")
+        k, v = item.split("=", 1)
+        out[k.strip()] = v
+    return out
+
+
+def preflight_detector(python: str) -> None:
+    """Fail fast at the trust boundary: --run-detection needs the detector
+    stack (cv2 + ultralytics + src.pipeline importable). The archiver image
+    has none of that — say so instead of failing 3 clips in."""
+    probe = subprocess.run(
+        [python, "-c", "import cv2, ultralytics; import src.pipeline"],
+        capture_output=True, text=True, cwd=str(_REPO_ROOT), timeout=120,
+    )
+    if probe.returncode != 0:
+        raise SystemExit(
+            "--run-detection needs the detector image (cv2 + YOLO + Ollama reach). "
+            "Re-run via `docker compose run --rm --no-deps -v \"$(pwd)/scripts:/app/scripts:ro\" "
+            "detector-backyard python scripts/event_triggered_replay.py ...`.\n"
+            f"probe stderr: {_tail(probe.stderr, 400)}"
+        )
+
+
+DETECTOR_KILL_GRACE_S = 45
+
+
+def run_detection(clip_path: Path, detect_dir: Path, target: Target, args,
+                  clip_duration_s: float = 0.0) -> dict:
+    """Replay one clip through `python -m src.main --video` in a dry-run
+    bulkhead and return the `detection` manifest block.
+
+    Serialized by construction (called inline per window). Idempotent:
+    an existing report for this clip is reused unless --force-detection.
+    """
+    stem = clip_path.stem
+    report_path = detect_dir / f"{stem}.report.json"
+    log_path = detect_dir / f"{stem}.detector.log"
+    snap_dir = detect_dir / f"{stem}_snapshots"
+    detect_dir.mkdir(parents=True, exist_ok=True)
+
+    if report_path.exists() and not args.force_detection:
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            block = _detection_block_from_report(report, report_path, log_path, snap_dir)
+            block["skipped_existing"] = True
+            return block
+        except Exception as e:  # corrupt/partial report → re-run
+            logger.warning("existing report %s unreadable (%s) — re-running detection", report_path, e)
+
+    env = os.environ.copy()
+    env.update(_detector_env_defaults(target))
+    env.update(parse_env_overrides(args.detector_env))
+    env.update(DETECTOR_ENV_FIXED)          # isolation keys are not overridable
+    env["SNAPSHOT_DIR"] = str(snap_dir)
+    env["REPLAY_REPORT_PATH"] = str(report_path)
+    env["REPLAY_DRAIN_TIMEOUT_S"] = str(args.detection_drain_seconds)
+    if report_path.exists():
+        report_path.unlink()
+
+    # Timeout budget: CPU decode of 4K HEVC + YOLO + a shared Ollama ran at
+    # ~9-10x realtime in the smoke, so scale with clip length (0 = auto).
+    timeout_s = args.detection_timeout_seconds or max(900, int(clip_duration_s * 15) + 300)
+
+    cmd = [args.detector_python, "-m", "src.main", "--video", str(clip_path)]
+    if args.print_cmd:
+        print(" ".join(cmd))
+    t0 = time.monotonic()
+    timed_out = False
+    with log_path.open("w", encoding="utf-8") as logf:
+        proc = subprocess.Popen(cmd, cwd=str(_REPO_ROOT), env=env, stdout=logf,
+                                stderr=subprocess.STDOUT)
+        try:
+            rc = proc.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            # Graceful first: SIGINT trips src.main's shutdown event, the
+            # loop exits, and the pipeline's `finally` writes the partial
+            # report. Hard-kill only if that doesn't happen in time.
+            timed_out = True
+            logger.warning("    detector exceeded %ds — sending SIGINT, %ds grace for the partial report",
+                           timeout_s, DETECTOR_KILL_GRACE_S)
+            try:
+                proc.send_signal(signal.SIGINT)
+                rc = proc.wait(timeout=DETECTOR_KILL_GRACE_S)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                rc = proc.wait()
+    elapsed = round(time.monotonic() - t0, 1)
+
+    block: dict = {"elapsed_s": elapsed, "rc": rc, "timeout_s": timeout_s, "log": str(log_path)}
+    if not report_path.exists():
+        block.update({
+            "status": "timeout" if timed_out else "no_report",
+            "error": (f"detector exceeded {timeout_s}s and wrote no report" if timed_out
+                      else f"detector exited rc={rc} without writing {report_path.name}; see log"),
+        })
+        return block
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        block.update({"status": "bad_report", "error": str(e)})
+        return block
+    block.update(_detection_block_from_report(report, report_path, log_path, snap_dir))
+    if timed_out:
+        # Report exists (written in finally after SIGINT) but the clip was
+        # not fully processed — verdicts cover only the frames seen.
+        block["status"] = "timeout_partial"
+    return block
+
+
+def _detection_block_from_report(report: dict, report_path: Path, log_path: Path,
+                                 snap_dir: Path) -> dict:
+    funnel = report.get("gate_funnel") or {}
+    verdicts = report.get("verdicts") or []
+    alerts = report.get("alerts") or []
+    detections = [{
+        "ts_offset_s": v.get("clip_pos_s"),
+        "species": v.get("species"),
+        "confidence": v.get("confidence"),
+        "bbox": v.get("bbox"),
+        "wildlife_detected": v.get("wildlife_detected"),
+        "is_rodent": v.get("is_rodent"),
+        "track_id": v.get("track_id"),
+        "vlm_queue_age_s": v.get("vlm_queue_age_s"),
+        "description": v.get("description"),
+    } for v in verdicts]
+    return {
+        "status": "ok" if report.get("exit_reason") in ("eof", "eof_drain_timeout") else report.get("exit_reason", "unknown"),
+        "exit_reason": report.get("exit_reason"),
+        "backend": report.get("backend"),
+        "frames_processed": report.get("frames_processed"),
+        "n_motion_events": funnel.get("motion_events", 0),
+        "n_zone_events": funnel.get("zone_events", 0),
+        "n_baseline_filtered": funnel.get("baseline_filtered", 0),
+        "n_vlm_calls": funnel.get("vlm_calls", 0),
+        "n_vlm_rejected": funnel.get("vlm_rejected", 0),
+        "n_vlm_insect": funnel.get("vlm_insect", 0),
+        "n_vlm_positive": sum(1 for d in detections if d["wildlife_detected"]
+                              and str(d["species"] or "").lower() not in NON_CATCH_SPECIES),
+        "n_vlm_verdicts_harvested": len(detections),
+        "n_vlm_pending_at_exit": report.get("pending_vlm_jobs", 0),
+        "n_alerts": len(alerts),
+        "detections": detections,
+        "alerts": alerts,
+        "report": str(report_path),
+        "log": str(log_path),
+        "snapshot_dir": str(snap_dir),
+    }
+
+
+def compute_verdict(entry: dict) -> dict:
+    """Per-window verdict: did the TARGET camera catch the event the SOURCE
+    cameras alerted on? `caught_event` = at least one VLM-positive verdict
+    with a non-insect species inside the window."""
+    det = entry.get("detection") or {}
+    target_species: dict[str, int] = {}
+    caught = False
+    if det.get("status") in ("ok", "timeout_partial"):
+        for d in det.get("detections", []):
+            sp = str(d.get("species") or "").lower()
+            if d.get("wildlife_detected") and sp not in NON_CATCH_SPECIES:
+                caught = True
+                target_species[sp] = target_species.get(sp, 0) + 1
+    return {
+        "caught_event": caught,
+        "n_source_alerts": entry.get("dedupe_count", 0),
+        "source_species": entry.get("species", {}),
+        "target_species": target_species,
+        "detection_status": det.get("status"),
+    }
+
+
 # ── Main ───────────────────────────────────────────────────────────────
 
 
@@ -381,12 +620,15 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     ap.add_argument("--target-label", default=None,
                     help="filesystem label for the target (default: derived from --target-camera)")
     ap.add_argument("--lookback-hours", type=float, default=24.0)
+    ap.add_argument("--until-iso", default=None,
+                    help="anchor the lookback horizon at this UTC time instead of now (e.g. the previous "
+                         "run's run_started_utc) so a re-run selects the same windows with --limit")
     ap.add_argument("--pre-roll-seconds", type=int, default=30)
     ap.add_argument("--post-roll-seconds", type=int, default=30)
     ap.add_argument("--dedupe-window-seconds", type=int, default=60,
                     help="alerts within this many seconds of each other share one clip")
     ap.add_argument("--max-window-seconds", type=int, default=PLAYBACK_URL_MAX_SECONDS,
-                    help=f"hard cap on one clip's length (NVR playback URL serves ≤{PLAYBACK_URL_MAX_SECONDS}s)")
+                    help=f"hard cap on one clip's length (NVR playback URL serves <={PLAYBACK_URL_MAX_SECONDS}s)")
     ap.add_argument("--min-age-seconds", type=int, default=90,
                     help="skip windows ending closer to now than this — the NVR's live recording tail isn't seekable yet")
     ap.add_argument("--species-filter", default="rat,mouse,other")
@@ -401,6 +643,20 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     ap.add_argument("--database-url", default=os.getenv("DATABASE_URL"))
     ap.add_argument("--dry-run", action="store_true", help="query + coalesce + print manifest; no pulls")
     ap.add_argument("--print-cmd", action="store_true", help="print each ffmpeg command (creds included)")
+    det = ap.add_argument_group("detection (opt-in; needs the detector image)")
+    det.add_argument("--run-detection", action="store_true",
+                     help="after each pull, replay the clip through src.main in STATE_DRY_RUN and record verdicts")
+    det.add_argument("--detector-python", default=sys.executable,
+                     help="interpreter for `-m src.main` (default: this one)")
+    det.add_argument("--detector-env", action="append", default=[], metavar="KEY=VAL",
+                     help="extra env for the detector subprocess (tuning knobs); repeatable. Isolation keys are not overridable")
+    det.add_argument("--detection-timeout-seconds", type=int, default=0,
+                     help="budget for one clip's detection run; 0 = auto: max(900, 15*clip_len + 300). "
+                          "On expiry SIGINT first (partial report), hard kill after 45s")
+    det.add_argument("--detection-drain-seconds", type=int, default=90,
+                     help="after EOF, how long to wait for in-flight VLM verdicts before exiting")
+    det.add_argument("--force-detection", action="store_true",
+                     help="re-run detection even when a report for the clip already exists")
     ap.add_argument("-v", "--verbose", action="store_true")
     return ap.parse_args(argv)
 
@@ -427,6 +683,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     target = resolve_target(args.target_camera, args.target_label)
     run_started = time.time()
     now_ts = run_started
+    if args.until_iso:
+        # Reproducible window selection: `--limit N` keeps the newest N
+        # windows *before the anchor*, so a re-run with the first run's
+        # run_started_utc sees the same set regardless of new alerts.
+        try:
+            _until = datetime.fromisoformat(args.until_iso.replace("Z", "+00:00"))
+        except ValueError:
+            raise SystemExit(f"--until-iso must be ISO-8601, got {args.until_iso!r}")
+        if _until.tzinfo is None:
+            _until = _until.replace(tzinfo=timezone.utc)
+        now_ts = min(_until.timestamp(), run_started)
     since_ts = now_ts - args.lookback_hours * 3600.0
     sources = [c.strip() for c in args.source_cameras.split(",") if c.strip()]
     species = [s.strip() for s in args.species_filter.split(",") if s.strip()]
@@ -464,9 +731,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         for binary in (args.ffmpeg, args.ffprobe):
             if shutil.which(binary) is None:
                 raise SystemExit(f"{binary!r} not on PATH — run inside the archiver image or pass --ffmpeg/--ffprobe")
+        if args.run_detection:
+            preflight_detector(args.detector_python)
+    detect_dir = out_dir / "detect"
 
     manifest: dict = {
-        "schema": "event_triggered_replay/v1",
+        "schema": "event_triggered_replay/v2" if args.run_detection else "event_triggered_replay/v1",
+        # `summary` first so the validation answer is the first thing in the file.
+        "summary": {},
         "run_started_utc": _iso(run_started),
         "args": {k: v for k, v in vars(args).items() if k not in ("database_url",)},
         "target": asdict(target),
@@ -494,6 +766,18 @@ def main(argv: Optional[list[str]] = None) -> int:
             "total_source_alerts": sum(c["dedupe_count"] for c in manifest["clips"]),
             "run_finished_utc": _iso(time.time()),
         }
+        detected = [c for c in manifest["clips"]
+                    if (c.get("detection") or {}).get("status") in ("ok", "timeout_partial")]
+        caught = [c for c in detected if (c.get("verdict") or {}).get("caught_event")]
+        manifest["summary"] = {
+            "total_windows": len(windows),
+            "windows_detected": len(detected),
+            "caught_event_count": len(caught),
+            # Denominator is windows where detection actually ran — a failed
+            # pull is not a miss. `total_windows` is alongside for context.
+            "catch_rate": round(len(caught) / len(detected), 3) if detected else None,
+            "run_detection": bool(args.run_detection),
+        }
         if not args.dry_run:
             tmp = manifest_path.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(manifest, indent=2, default=str))
@@ -519,13 +803,38 @@ def main(argv: Optional[list[str]] = None) -> int:
             "source_cameras": w.source_cameras,
             "species": w.species,
         }
+        def _detect(entry: dict) -> None:
+            """Serialized detection pass on a pulled clip; flushes the manifest
+            before (so a crash mid-detection leaves the pull recorded) and after."""
+            if not (args.run_detection and not args.dry_run and entry.get("pull_status") == "ok"):
+                return
+            entry["detection"] = {"status": "running"}
+            _flush()
+            logger.info("    detect %s …", out_path.name)
+            entry["detection"] = run_detection(
+                out_path, detect_dir, target, args,
+                clip_duration_s=(entry.get("probe") or {}).get("duration") or w.duration)
+            entry["verdict"] = compute_verdict(entry)
+            d, v = entry["detection"], entry["verdict"]
+            if d.get("status") in ("ok", "timeout_partial"):
+                logger.info("    %s  motion=%d zone=%d vlm=%d pos=%d insect=%d alerts=%d  (%.0fs%s)  source=%s target=%s",
+                            "CAUGHT" if v["caught_event"] else "missed",
+                            d["n_motion_events"], d["n_zone_events"], d["n_vlm_calls"],
+                            d["n_vlm_positive"], d["n_vlm_insect"], d["n_alerts"],
+                            d.get("elapsed_s") or 0.0, ", cached" if d.get("skipped_existing") else "",
+                            v["source_species"], v["target_species"] or "{}")
+            else:
+                logger.warning("    detection %s — %s", d.get("status"), d.get("error", ""))
+
         if out_path.exists() and out_path.stat().st_size > 0 and not args.dry_run:
             # Idempotency: same window → same filename; skip re-pull.
             entry.update({"pull_status": "ok", "size_bytes": out_path.stat().st_size,
                           "probe": ffprobe(out_path, args.ffprobe), "skipped_existing": True})
             manifest["clips"].append(entry)
             _flush()
-            logger.info("[%d/%d] exists, skipping %s", i, len(windows), fname)
+            logger.info("[%d/%d] exists, skipping pull of %s", i, len(windows), fname)
+            _detect(entry)
+            _flush()
             continue
 
         logger.info("[%d/%d] %s → %s  (%d alerts: %s)", i, len(windows),
@@ -541,6 +850,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                         p.get("duration") or 0.0, entry["size_bytes"])
         elif entry["pull_status"] == "fail":
             logger.warning("    FAIL %s — %s", fname, entry.get("failure_reason"))
+        _detect(entry)
+        _flush()
         if not args.dry_run and i < len(windows):
             time.sleep(args.sleep_seconds)
 
@@ -552,6 +863,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.info("done: pulled %d/%d ok, %d failed, %.1fs of footage → %s",
                     agg["total_pulled_ok"], agg["total_windows"], agg["total_failed"],
                     agg["total_duration_seconds"], manifest_path)
+        if args.run_detection:
+            s = manifest["summary"]
+            logger.info("detection: %d/%d windows caught the source event (catch_rate=%s)",
+                        s["caught_event_count"], s["windows_detected"], s["catch_rate"])
     return 0 if not windows or manifest["aggregate"].get("total_pulled_ok", 0) > 0 or args.dry_run else 1
 
 
