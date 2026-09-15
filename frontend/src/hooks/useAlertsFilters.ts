@@ -100,12 +100,19 @@ export function useAlertsFilters(): AlertsFiltersApi {
   );
   const [grouped, setGrouped] = useState<boolean>(true);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
-  // Date range — session-only (not persisted). Date filters are
-  // context-specific ("what did the rats do overnight?" today, "what
-  // did that raccoon do last Tuesday?" tomorrow) — never something
-  // the operator wants stuck across a reload.
-  const [dateFrom, setDateFromState] = useState<string>("");
-  const [dateTo, setDateToState] = useState<string>("");
+  // Date range — persisted across reloads. Original design kept these
+  // session-only (rationale: date filters are context-specific — "what
+  // did rats do overnight?" today, "what did that raccoon do last
+  // Tuesday?" tomorrow), but operator feedback flipped the call: filters
+  // clearing on reload cost more friction than the occasional stale
+  // filter costs surprise. Operator-explicit "clear" (empty string)
+  // still wins.
+  const [dateFrom, setDateFromState] = useState<string>(
+    () => localStorage.getItem("alertsDateFrom") ?? "",
+  );
+  const [dateTo, setDateToState] = useState<string>(
+    () => localStorage.getItem("alertsDateTo") ?? "",
+  );
   const [pageSize, setPageSizeState] = useState<AlertsPageSize>(() => {
     const raw = localStorage.getItem("alertsPageSize");
     const n = raw ? Number.parseInt(raw, 10) : Number.NaN;
@@ -150,8 +157,16 @@ export function useAlertsFilters(): AlertsFiltersApi {
     else localStorage.removeItem("alertsLabelSpecies");
   }, []);
 
-  const setDateFrom = useCallback((v: string) => setDateFromState(v), []);
-  const setDateTo = useCallback((v: string) => setDateToState(v), []);
+  const setDateFrom = useCallback((v: string) => {
+    setDateFromState(v);
+    if (v) localStorage.setItem("alertsDateFrom", v);
+    else localStorage.removeItem("alertsDateFrom");
+  }, []);
+  const setDateTo = useCallback((v: string) => {
+    setDateToState(v);
+    if (v) localStorage.setItem("alertsDateTo", v);
+    else localStorage.removeItem("alertsDateTo");
+  }, []);
 
   const setPageSize = useCallback((v: AlertsPageSize) => {
     setPageSizeState(v);
