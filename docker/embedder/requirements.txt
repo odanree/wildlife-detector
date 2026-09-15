@@ -1,0 +1,14 @@
+# Embedder deps — CLIP inference + Postgres/pgvector writes. NO ultralytics,
+# NO ollama client, NO Flask. torch itself is installed in a separate
+# Dockerfile step from the CPU-only wheel index (the default PyPI wheel
+# drags ~2.5GB of CUDA libs we don't use in-container).
+transformers>=4.44,<5
+pillow>=10.0
+numpy>=1.24,<3
+# Red-outline bbox recovery + inpaint on the annotated snapshots. Headless
+# build — no GUI libs, ~40MB smaller than opencv-python.
+opencv-python-headless>=4.9.0
+# psycopg[binary] bundles libpq; pgvector adds the `vector` type adapter
+# so we can bind numpy arrays straight into `vector(512)` columns.
+psycopg[binary]>=3.2
+pgvector>=0.3
