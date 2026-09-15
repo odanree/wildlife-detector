@@ -998,6 +998,59 @@ def create_app(registry: DetectorRegistry) -> Flask:
             return jsonify({"total": totals, "unlabeled": unlabeled})
         return jsonify(totals)
 
+    # ── Rats (rat re-id Phase 2b catalog) ──────────────────────────────
+    @app.get("/api/rats")
+    def api_rats():
+        """Distinct rats seen on ?camera=<id> within the last ?since_hours=N.
+
+            {"rats": [{id, first_seen, last_seen, alert_count, primary_camera,
+                       sample_snapshot, window_alert_count, window_last_ts}]}
+
+        Reads `alerts.rat_id` + `rats` populated by the nightly clusterer
+        (src/clusterer) — a **materialized identity column**, so this is
+        a plain GROUP BY, no ML at query time. `sample_snapshot` is the
+        rat's first alert's snapshot URL; smart picking is Phase 2c.
+        Retired rats are hidden unless ?include_retired=1.
+
+        503 (not 500) when the `rats` table doesn't exist yet: that table
+        is created by the clusterer's own schema step (pgvector dep), so
+        a fresh stack that has never run the clusterer is a known,
+        recoverable state — fail loud at the boundary, don't 500."""
+        from psycopg import errors as pg_errors
+
+        camera = (request.args.get("camera") or "").strip() or None
+        since_hours: float | None = None
+        raw = request.args.get("since_hours")
+        if raw:
+            try:
+                since_hours = max(0.0, float(raw))
+            except ValueError:
+                return jsonify({"error": "since_hours must be a number"}), 400
+        include_retired = request.args.get("include_retired") == "1"
+        try:
+            rows = _state.list_rats(camera_id=camera, since_hours=since_hours,
+                                    include_retired=include_retired)
+        except pg_errors.UndefinedTable:
+            return jsonify({
+                "rats": [],
+                "error": "rats table missing — the clusterer has not run yet "
+                         "(docker compose up -d clusterer-timer)",
+            }), 503
+        def _iso(v):
+            return v.isoformat() if hasattr(v, "isoformat") else v
+        rats = [{
+            "id":                 r["id"],
+            "first_seen":         _iso(r["first_seen"]),
+            "last_seen":          _iso(r["last_seen"]),
+            "alert_count":        r["alert_count"],
+            "primary_camera":     r["primary_camera"],
+            "retired_at":         _iso(r["retired_at"]),
+            "sample_snapshot":    f"/snapshots/{r['sample_snapshot']}" if r.get("sample_snapshot") else None,
+            "window_alert_count": r["window_alert_count"],
+            "window_last_ts":     r["window_last_ts"],
+        } for r in rows]
+        return jsonify({"rats": rats, "camera": camera, "since_hours": since_hours})
+
     # ── Counts SSE — push, not poll ───────────────────────────────────
     # Server-side polls the DB every _COUNTS_POLL_INTERVAL_S and fans
     # out to N subscribers over one persistent SSE connection each.

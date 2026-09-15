@@ -133,6 +133,14 @@ class StateDB:
             # falls back to red-outline recovery for those
             # (src/embedder/crop.py).
             "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS bbox          JSONB",
+            # Rat re-id Phase 2b: stable individual id assigned by the
+            # nightly clusterer (src/clusterer). Nullable, NOT an FK to
+            # `rats` — retire/merge must never cascade into alerts. The
+            # web sidecar reads it (/api/rats), so the column is co-owned
+            # here and in src/clusterer/schema.py (byte-identical, same
+            # startup-ordering rationale as bbox). The `rats` table itself
+            # needs pgvector and lives ONLY in the clusterer's schema.
+            "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS rat_id        BIGINT",
         ]:
             self._exec(col_ddl)
         # Indexes — one DDL statement each so a partial failure logs
@@ -395,6 +403,53 @@ class StateDB:
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(f"SELECT COUNT(*) FROM alerts{where}", params)
             return int(cur.fetchone()[0])
+
+    def list_rats(
+        self,
+        camera_id: str | None = None,
+        since_hours: float | None = None,
+        include_retired: bool = False,
+    ) -> list[dict]:
+        """Rats (Phase 2b catalog) with at least one member alert matching
+        the filter — "how many distinct rats crossed <camera> in the last
+        N hours" straight from SQL, no ML at query time.
+
+        Per rat: catalog columns (first_seen / last_seen / alert_count /
+        primary_camera are GLOBAL, across all cameras and all time) plus
+        `window_alert_count` / `window_last_ts` scoped to the filter, and
+        `sample_snapshot` = the rat's FIRST alert's snapshot path (smart
+        picking is a Phase 2c concern).
+
+        Raises psycopg.errors.UndefinedTable if the clusterer has never
+        run (the `rats` table is created by src/clusterer/schema.py, not
+        here) — callers translate that into a 503.
+        """
+        clauses = ["a.rat_id IS NOT NULL"]
+        params: list = []
+        if camera_id:
+            clauses.append("a.camera_id = %s")
+            params.append(camera_id)
+        if since_hours is not None:
+            clauses.append("a.ts >= %s")
+            params.append(time.time() - float(since_hours) * 3600.0)
+        if not include_retired:
+            clauses.append("r.retired_at IS NULL")
+        sql = f"""
+            SELECT r.id, r.first_seen, r.last_seen, r.alert_count, r.primary_camera, r.retired_at,
+                   COUNT(*)  AS window_alert_count,
+                   MAX(a.ts) AS window_last_ts,
+                   (SELECT s.snapshot FROM alerts s
+                     WHERE s.rat_id = r.id AND s.snapshot IS NOT NULL
+                     ORDER BY s.ts ASC LIMIT 1) AS sample_snapshot
+            FROM rats r
+            JOIN alerts a ON a.rat_id = r.id
+            WHERE {' AND '.join(clauses)}
+            GROUP BY r.id
+            ORDER BY window_last_ts DESC, r.id
+        """  # noqa: S608 -- clauses are compile-time constants
+        with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(sql, params)
+            return [dict(row) for row in cur.fetchall()]
 
     def latest_alert(self) -> dict | None:
         with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
