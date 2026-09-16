@@ -48,6 +48,9 @@ export function GlobalHeader({ right }: GlobalHeaderProps) {
           className={linkCls("/alerts")}
           cameras={cameras.length > 0 ? cameras : undefined}
         />
+        <Link to="/rats" className={linkCls("/rats")}>
+          Rats
+        </Link>
         <Link to="/drops" className={linkCls("/drops")}>
           Drops
         </Link>

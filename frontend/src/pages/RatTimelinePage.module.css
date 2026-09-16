@@ -1,0 +1,240 @@
+.wrap {
+  margin: 0;
+  background: var(--bg-0);
+  color: var(--text-hi);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+}
+
+.selectBtn {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 4px 10px;
+  border-radius: var(--r-md);
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  text-decoration: none;
+}
+.selectBtn:hover {
+  border-color: var(--accent-blue);
+}
+
+.error {
+  padding: var(--sp-2) var(--sp-4);
+  color: var(--accent-err);
+  font-size: 12px;
+}
+
+.empty {
+  padding: 40px;
+  text-align: center;
+  color: var(--text-lo);
+  font-size: 14px;
+}
+
+/* ── Header block: identity + stats on the left, camera share on the right ── */
+.head {
+  display: flex;
+  gap: var(--sp-5);
+  padding: var(--sp-4);
+  border-bottom: 1px solid var(--border-2);
+  background: var(--bg-1);
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.headRetired {
+  opacity: 0.7;
+  border-bottom-style: dashed;
+}
+.headMain {
+  flex: 1 1 360px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.headChart {
+  flex: 0 1 480px;
+  min-width: 260px;
+}
+.chartTitle {
+  color: var(--text-md);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: var(--sp-2);
+}
+
+.nameRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.idTag {
+  color: var(--text-lo);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.retiredTag {
+  background: var(--bg-2);
+  color: var(--text-md);
+  border: 1px dashed var(--border-3);
+  border-radius: var(--r-md);
+  padding: 2px 8px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.statsRow {
+  display: flex;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  color: var(--text-md);
+  font-size: 12px;
+}
+.statsRow b {
+  color: var(--text-hi);
+  font-variant-numeric: tabular-nums;
+}
+
+.actions {
+  display: flex;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-top: var(--sp-1);
+}
+.actionBtn {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 5px 12px;
+  border-radius: var(--r-md);
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.actionBtn:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+}
+.actionBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ── Alert thread ── */
+.listHead {
+  padding: var(--sp-2) var(--sp-4);
+  color: var(--text-md);
+  font-size: 12px;
+}
+.listHead b {
+  color: var(--text-hi);
+}
+.dim {
+  color: var(--text-lo);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.thead {
+  position: sticky;
+  top: 0;
+  background: var(--bg-3);
+  border-bottom: 1px solid var(--border-2);
+}
+.th {
+  padding: var(--sp-2) var(--sp-3);
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-md);
+  font-size: 12px;
+}
+.thSnap {
+  padding: var(--sp-2) var(--sp-3);
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-md);
+  font-size: 12px;
+  width: 104px;
+}
+
+.row {
+  border-bottom: 1px solid #1e1e24;
+}
+.row:hover {
+  background: #191921;
+}
+.rowClickable {
+  cursor: pointer;
+}
+
+.thumbCell {
+  padding: var(--sp-1) var(--sp-3);
+  width: 104px;
+}
+.thumbBtn {
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: zoom-in;
+  display: block;
+}
+.thumb {
+  width: 80px;
+  height: auto;
+  display: block;
+  border-radius: var(--r-sm);
+}
+.noSnapshot {
+  color: var(--text-lo);
+  font-size: 11px;
+}
+
+.ts {
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-md);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.rel {
+  color: var(--text-lo);
+  font-size: 11px;
+  margin-left: var(--sp-1);
+}
+
+.cell {
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.species {
+  padding: var(--sp-2) var(--sp-3);
+  font-weight: 600;
+}
+.speciesRodent {
+  color: var(--accent-rodent);
+}
+.speciesOther {
+  color: var(--accent-other);
+}
+
+.conf {
+  padding: var(--sp-2) var(--sp-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.desc {
+  padding: var(--sp-2) var(--sp-3);
+  color: #bbc;
+  max-width: 560px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

@@ -436,6 +436,7 @@ class StateDB:
             clauses.append("r.retired_at IS NULL")
         sql = f"""
             SELECT r.id, r.first_seen, r.last_seen, r.alert_count, r.primary_camera, r.retired_at,
+                   r.notes,
                    COUNT(*)  AS window_alert_count,
                    MAX(a.ts) AS window_last_ts,
                    (SELECT s.snapshot FROM alerts s
@@ -450,6 +451,162 @@ class StateDB:
         with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             cur.execute(sql, params)
             return [dict(row) for row in cur.fetchall()]
+
+    # Columns the operator UI needs from a `rats` row. `centroid` is
+    # deliberately excluded — 512 floats the browser never reads, and the
+    # web image doesn't register the pgvector adapter.
+    _RAT_COLS = "id, first_seen, last_seen, alert_count, primary_camera, retired_at, notes"
+    # `r.`-qualified variant for statements with a FROM-subquery whose
+    # aliases collide (merge_rats's `agg.primary_camera` made a bare
+    # RETURNING primary_camera ambiguous → 500 on the first live merge).
+    _RAT_COLS_R = ", ".join(f"r.{c}" for c in _RAT_COLS.split(", "))
+
+    def get_rat(self, rat_id: int, alerts_limit: int = 500) -> dict | None:
+        """One rat + its per-camera alert distribution + newest-first
+        member alerts (Phase 2c timeline). `camera_frequency` is a
+        percentage over ALL member alerts, not just the capped page, so
+        the histogram stays honest for a 1,000-alert rat viewed at 500.
+
+        Returns None when the rat does not exist. Raises
+        psycopg.errors.UndefinedTable before the clusterer's first run
+        (callers map that to 503, same as list_rats).
+        """
+        with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(f"SELECT {self._RAT_COLS} FROM rats WHERE id = %s", (int(rat_id),))
+            rat = cur.fetchone()
+            if rat is None:
+                return None
+            cur.execute(
+                "SELECT camera_id, COUNT(*) AS n FROM alerts WHERE rat_id = %s "
+                "GROUP BY camera_id ORDER BY n DESC, camera_id",
+                (int(rat_id),),
+            )
+            per_cam = [(r["camera_id"], int(r["n"])) for r in cur.fetchall()]
+            cur.execute(
+                "SELECT id, ts, camera_id, species, confidence, is_rodent, historical, "
+                "description, snapshot, track_id, label_verdict, label_species "
+                "FROM alerts WHERE rat_id = %s ORDER BY ts DESC, id DESC LIMIT %s",
+                (int(rat_id), int(alerts_limit)),
+            )
+            alerts = [self._normalize(r) for r in cur.fetchall()]
+        total = sum(n for _, n in per_cam)
+        out = dict(rat)
+        out["camera_frequency"] = {
+            cam: round(100.0 * n / total, 1) for cam, n in per_cam
+        } if total else {}
+        out["alerts"] = alerts
+        out["alerts_total"] = total
+        return out
+
+    def rename_rat(self, rat_id: int, name: str | None) -> dict | None:
+        """Set the operator-facing name (stored in `rats.notes` — the one
+        free-text column the clusterer never recomputes). Empty/whitespace
+        → NULL so the UI falls back to "Rat #<id>". Returns the updated
+        row, or None if the rat does not exist."""
+        clean = (name or "").strip() or None
+        with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                f"UPDATE rats SET notes = %s, updated_at = now() WHERE id = %s "
+                f"RETURNING {self._RAT_COLS}",
+                (clean, int(rat_id)),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def merge_rats(self, source_id: int, target_id: int) -> dict:
+        """Operator escape hatch for clusterer over-splits: fold `source`
+        into `target`. ONE transaction (the pool's connection context —
+        commit on clean exit, rollback on any exception), so a crash
+        mid-merge leaves both rats exactly as they were:
+
+            SELECT ... FOR UPDATE         both rows, ascending id — a fixed
+                                          lock order so two concurrent
+                                          merges can't deadlock
+            UPDATE alerts SET rat_id      source → target
+            UPDATE rats (source)          retired_at = now(), alert_count = 0
+                                          (derived state; truth is 0 members)
+            UPDATE rats (target)          first/last_seen, alert_count,
+                                          primary_camera RECOMPUTED from the
+                                          merged member set — same "derived,
+                                          never incremented" rule as the
+                                          clusterer's refresh_rat_stats
+            INSERT rat_cluster_runs       audit row, algo='operator_merge'
+
+        Durability across the nightly re-cluster: every moved alert now
+        carries rat_id = target, and the linker's member vote (step 0)
+        inherits the majority prior id — so the next run re-links that
+        cluster to `target`, not back to the retired `source`. The
+        target's `centroid` is NOT touched here (no pgvector adapter in
+        the web image); the nightly refresh recomputes it from members.
+
+        Idempotency: a retired source (already merged) → ValueError, so a
+        double-submitted merge is a 400, not a silent no-op that moves
+        zero rows and re-stamps retired_at. Returns
+        {source_id, target_id, moved, target: <row>}.
+
+        Raises LookupError (404) if either rat is missing, ValueError
+        (400) for source == target, retired source, or retired target.
+        """
+        source_id, target_id = int(source_id), int(target_id)
+        if source_id == target_id:
+            raise ValueError("cannot merge a rat into itself")
+        with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                f"SELECT {self._RAT_COLS} FROM rats WHERE id = ANY(%s) ORDER BY id FOR UPDATE",
+                ([source_id, target_id],),
+            )
+            rows = {int(r["id"]): dict(r) for r in cur.fetchall()}
+            if source_id not in rows:
+                raise LookupError(f"source rat {source_id} not found")
+            if target_id not in rows:
+                raise LookupError(f"target rat {target_id} not found")
+            if rows[source_id]["retired_at"] is not None:
+                raise ValueError(f"rat {source_id} is already retired — was it merged already?")
+            if rows[target_id]["retired_at"] is not None:
+                raise ValueError(f"target rat {target_id} is retired; merge into an active rat")
+
+            cur.execute("UPDATE alerts SET rat_id = %s WHERE rat_id = %s", (target_id, source_id))
+            moved = cur.rowcount
+            cur.execute(
+                "UPDATE rats SET retired_at = now(), alert_count = 0, updated_at = now() WHERE id = %s",
+                (source_id,),
+            )
+            cur.execute(
+                f"""
+                UPDATE rats r SET
+                    first_seen     = to_timestamp(agg.first_ts),
+                    last_seen      = to_timestamp(agg.last_ts),
+                    alert_count    = agg.n,
+                    primary_camera = agg.primary_camera,
+                    updated_at     = now()
+                FROM (
+                    SELECT MIN(ts) AS first_ts, MAX(ts) AS last_ts, COUNT(*) AS n,
+                           MODE() WITHIN GROUP (ORDER BY camera_id) AS primary_camera
+                    FROM alerts WHERE rat_id = %s
+                ) agg
+                WHERE r.id = %s
+                RETURNING {self._RAT_COLS_R}
+                """,
+                (target_id, target_id),
+            )
+            target = cur.fetchone()
+            cur.execute(
+                """INSERT INTO rat_cluster_runs
+                     (algo, params, window_start, window_end, rats_active, rats_new, rats_retired, notes)
+                   VALUES ('operator_merge', %s, now(), now(),
+                           (SELECT COUNT(*) FROM rats WHERE retired_at IS NULL), 0, 1, %s)""",
+                (
+                    Jsonb({"source_rat_id": source_id, "target_rat_id": target_id}),
+                    f"operator merge: rat {source_id} → rat {target_id}, {moved} alerts moved"
+                    + (f" (source name: {rows[source_id]['notes']!r})" if rows[source_id]["notes"] else ""),
+                ),
+            )
+        return {
+            "source_id": source_id,
+            "target_id": target_id,
+            "moved": int(moved),
+            "target": dict(target) if target else None,
+        }
 
     def latest_alert(self) -> dict | None:
         with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
