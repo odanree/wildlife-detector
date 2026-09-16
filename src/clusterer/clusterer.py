@@ -133,6 +133,11 @@ from src.clusterer.linker import (
     summarize_clusters,
 )
 from src.clusterer.schema import EMBEDDING_DIM
+from src.clusterer.temporal_rescue import (
+    DEFAULT_BURST_MIN_SIZE,
+    DEFAULT_BURST_WINDOW_S,
+    rescue_bursts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +184,10 @@ class ClusterParams:
     labeled_only: bool = True               # label_verdict = 'correct' only
     model_version: str = DEFAULT_MODEL_VERSION
     precomputed_max_n: int = PRECOMPUTED_MAX_N
+    # Hybrid density-locality: promote same-camera noise bursts into
+    # synthetic clusters so the linker sees them. 0 disables the rescue.
+    burst_window_s: float = DEFAULT_BURST_WINDOW_S
+    burst_min_size: int = DEFAULT_BURST_MIN_SIZE
 
     def to_json(self) -> dict:
         d = asdict(self)
@@ -209,6 +218,7 @@ class RunResult:
     n_alerts: int = 0
     n_clusters: int = 0
     n_noise: int = 0
+    n_temporal_rescued: int = 0    # alerts recovered from HDBSCAN noise via burst rescue
     n_assigned: int = 0
     rats_new: int = 0
     rats_linked: int = 0
@@ -227,6 +237,7 @@ class RunResult:
         return (
             f"window {self.window_start.date()}→{self.window_end.date()} "
             f"alerts={self.n_alerts} clusters={self.n_clusters} noise={self.n_noise} "
+            f"rescued={self.n_temporal_rescued} "
             f"assigned={self.n_assigned} rats_new={self.rats_new} linked={self.rats_linked} "
             f"(by_vote={self.rats_linked_by_vote}) merged_in_run={self.rats_merged_in_run} "
             f"retired={self.rats_retired} orphaned={self.rats_orphaned} "
@@ -429,17 +440,43 @@ class RatClusterer:
                     JOIN alert_embeddings e ON e.alert_id = a.id AND e.model_version = %s
                     WHERE a.rat_id = ANY(%s)
                     GROUP BY a.rat_id
+                ),
+                -- Body-size proxy: median bbox_area/frame_area over
+                -- primary-camera members. Cross-camera bbox area is not
+                -- comparable (distance-to-lens dominates), so the median
+                -- is scoped to the rat's primary_camera; other cameras'
+                -- members feed centroid & counts but not size.
+                size AS (
+                    SELECT a.rat_id,
+                           percentile_cont(0.5) WITHIN GROUP (
+                             ORDER BY (
+                               ((e.crop_bbox->>'x2')::int - (e.crop_bbox->>'x1')::int)::double precision *
+                               ((e.crop_bbox->>'y2')::int - (e.crop_bbox->>'y1')::int)::double precision
+                             ) / NULLIF(
+                               (e.crop_bbox->>'frame_w')::int::double precision *
+                               (e.crop_bbox->>'frame_h')::int::double precision, 0)
+                           ) AS med_frac
+                    FROM alerts a
+                    JOIN alert_embeddings e ON e.alert_id = a.id AND e.model_version = %s
+                    JOIN agg ON agg.rat_id = a.rat_id
+                    WHERE a.rat_id = ANY(%s)
+                      AND e.crop_bbox IS NOT NULL
+                      AND a.camera_id = agg.primary_camera
+                    GROUP BY a.rat_id
                 )
                 UPDATE rats r SET
-                    first_seen     = to_timestamp(agg.first_ts),
-                    last_seen      = to_timestamp(agg.last_ts),
-                    alert_count    = agg.n,
-                    primary_camera = agg.primary_camera,
-                    centroid       = l2_normalize(agg.mean_vec),
-                    updated_at     = now()
-                FROM agg WHERE agg.rat_id = r.id
+                    first_seen             = to_timestamp(agg.first_ts),
+                    last_seen              = to_timestamp(agg.last_ts),
+                    alert_count            = agg.n,
+                    primary_camera         = agg.primary_camera,
+                    centroid               = l2_normalize(agg.mean_vec),
+                    body_size_frac_median  = size.med_frac,
+                    updated_at             = now()
+                FROM agg
+                LEFT JOIN size ON size.rat_id = agg.rat_id
+                WHERE agg.rat_id = r.id
                 """,
-                (model_version, rat_ids),
+                (model_version, rat_ids, model_version, rat_ids),
             )
             cur.execute(
                 """
@@ -486,6 +523,14 @@ class RatClusterer:
             data = self.load_window(conn, window_start, window_end)
             res.n_alerts = data.n
             labels = self.cluster(data.vectors)
+            # Noise-recovery via spatiotemporal-locality prior. Runs
+            # BEFORE summarize so rescued bursts get real centroids and
+            # feed the linker like any other cluster.
+            if p.burst_min_size >= 2 and p.burst_window_s > 0 and data.n:
+                labels, res.n_temporal_rescued = rescue_bursts(
+                    labels, data.camera_ids, data.ts,
+                    burst_window_s=p.burst_window_s, burst_min_size=p.burst_min_size,
+                )
             res.n_noise = int((labels == -1).sum())
             clusters = summarize_clusters(labels, data.alert_ids, data.vectors)
             res.n_clusters = len(clusters)
@@ -554,7 +599,8 @@ class RatClusterer:
                         json.dumps({
                             "note": notes,
                             "n_alerts": res.n_alerts, "n_clusters": res.n_clusters,
-                            "n_noise": res.n_noise, "n_assigned": res.n_assigned,
+                            "n_noise": res.n_noise, "n_temporal_rescued": res.n_temporal_rescued,
+                            "n_assigned": res.n_assigned,
                             "rats_linked": res.rats_linked, "rats_linked_by_vote": res.rats_linked_by_vote,
                             "rats_merged_in_run": res.rats_merged_in_run, "rats_orphaned": res.rats_orphaned,
                             "spillover": res.spillover,

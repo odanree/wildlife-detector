@@ -118,6 +118,12 @@ DDL = [
         updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
     )
     """,
+    # Body-size proxy — median (bbox_area / frame_area) over member alerts
+    # on primary_camera. Cross-camera bbox comparison is meaningless (a big
+    # rat 15 ft up looks smaller than a juvenile 4 ft under the yard cam),
+    # so callers bucket adult/juvenile per-camera. Nullable: rats without a
+    # primary_camera or without bbox-carrying embeddings stay NULL.
+    "ALTER TABLE rats ADD COLUMN IF NOT EXISTS body_size_frac_median DOUBLE PRECISION",
     "CREATE INDEX IF NOT EXISTS idx_rats_active ON rats(last_seen DESC) WHERE retired_at IS NULL",
     """
     CREATE TABLE IF NOT EXISTS rat_cluster_runs (
