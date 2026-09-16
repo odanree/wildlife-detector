@@ -1045,11 +1045,114 @@ def create_app(registry: DetectorRegistry) -> Flask:
             "alert_count":        r["alert_count"],
             "primary_camera":     r["primary_camera"],
             "retired_at":         _iso(r["retired_at"]),
+            "name":               r.get("notes"),
             "sample_snapshot":    f"/snapshots/{r['sample_snapshot']}" if r.get("sample_snapshot") else None,
             "window_alert_count": r["window_alert_count"],
             "window_last_ts":     r["window_last_ts"],
         } for r in rows]
         return jsonify({"rats": rats, "camera": camera, "since_hours": since_hours})
+
+    # ── Rat detail + operator corrections (Phase 2c) ──────────────────
+    # The clusterer is a nightly batch with no ground truth; these three
+    # endpoints are the operator's HITL correction surface: rename (cold-
+    # start naming), merge (undo an over-split). `rats.notes` doubles as
+    # the display name — it is the one column the clusterer never
+    # recomputes, so a name survives every re-run.
+    _RATS_MISSING = {
+        "error": "rats table missing — the clusterer has not run yet "
+                 "(docker compose up -d clusterer-timer)",
+    }
+
+    def _rat_json(r: dict) -> dict:
+        def _iso(v):
+            return v.isoformat() if hasattr(v, "isoformat") else v
+        return {
+            "id":             r["id"],
+            "name":           r.get("notes"),
+            "first_seen":     _iso(r["first_seen"]),
+            "last_seen":      _iso(r["last_seen"]),
+            "alert_count":    r["alert_count"],
+            "primary_camera": r["primary_camera"],
+            "retired_at":     _iso(r["retired_at"]),
+        }
+
+    @app.get("/api/rats/<int:rat_id>")
+    def api_rat_detail(rat_id: int):
+        """Full detail for the timeline page:
+            {id, name, first_seen, last_seen, alert_count, primary_camera,
+             retired_at, camera_frequency: {camera_id: pct},
+             alerts: [<AlertRow>...] newest-first (≤ ?limit, default 500,
+             max 2000), alerts_total}
+        Alert rows use the same shape as /api/alerts so the existing
+        lightbox + row components render them unchanged."""
+        from psycopg import errors as pg_errors
+
+        try:
+            limit = min(2000, max(1, int(request.args.get("limit", 500))))
+        except ValueError:
+            return jsonify({"error": "limit must be an integer"}), 400
+        try:
+            rat = _state.get_rat(rat_id, alerts_limit=limit)
+        except pg_errors.UndefinedTable:
+            return jsonify(_RATS_MISSING), 503
+        if rat is None:
+            return jsonify({"error": f"rat {rat_id} not found"}), 404
+        out = _rat_json(rat)
+        out["camera_frequency"] = rat["camera_frequency"]
+        out["alerts"] = rat["alerts"]
+        out["alerts_total"] = rat["alerts_total"]
+        out["alerts_capped"] = rat["alerts_total"] > len(rat["alerts"])
+        return jsonify(out)
+
+    @app.patch("/api/rats/<int:rat_id>")
+    def api_rat_patch(rat_id: int):
+        """Body {"name": "Scar"} — empty / null clears the name (UI falls
+        back to "Rat #<id>"). Returns the updated row."""
+        from psycopg import errors as pg_errors
+
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or "name" not in payload:
+            return jsonify({"error": "body must be JSON with a 'name' field"}), 400
+        name = payload["name"]
+        if name is not None and not isinstance(name, str):
+            return jsonify({"error": "name must be a string or null"}), 400
+        try:
+            row = _state.rename_rat(rat_id, name)
+        except pg_errors.UndefinedTable:
+            return jsonify(_RATS_MISSING), 503
+        if row is None:
+            return jsonify({"error": f"rat {rat_id} not found"}), 404
+        return jsonify(_rat_json(row))
+
+    @app.post("/api/rats/<int:rat_id>/merge")
+    def api_rat_merge(rat_id: int):
+        """Body {"target_rat_id": N}. Moves every alert from rat_id →
+        target, retires rat_id, recomputes the target's stats — one
+        transaction (see StateDB.merge_rats for the crash + nightly-
+        re-cluster story). Idempotent-safe: re-posting the same merge
+        finds the source already retired and returns 400."""
+        from psycopg import errors as pg_errors
+
+        payload = request.get_json(silent=True) or {}
+        target = payload.get("target_rat_id")
+        if not isinstance(target, int) or isinstance(target, bool):
+            return jsonify({"error": "target_rat_id must be an integer"}), 400
+        try:
+            res = _state.merge_rats(rat_id, target)
+        except pg_errors.UndefinedTable:
+            return jsonify(_RATS_MISSING), 503
+        except LookupError as e:
+            return jsonify({"error": str(e)}), 404
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        logger.info("operator merge: rat %d → rat %d (%d alerts)", rat_id, target, res["moved"])
+        return jsonify({
+            "ok": True,
+            "source_rat_id": res["source_id"],
+            "target_rat_id": res["target_id"],
+            "moved": res["moved"],
+            "target": _rat_json(res["target"]) if res["target"] else None,
+        })
 
     # ── Counts SSE — push, not poll ───────────────────────────────────
     # Server-side polls the DB every _COUNTS_POLL_INTERVAL_S and fans

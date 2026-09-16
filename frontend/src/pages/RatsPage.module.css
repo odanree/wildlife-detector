@@ -1,0 +1,83 @@
+.wrap {
+  margin: 0;
+  background: var(--bg-0);
+  color: var(--text-hi);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.stat {
+  color: var(--text-md);
+  font-size: 12px;
+}
+.b {
+  color: var(--text-hi);
+  margin-left: var(--sp-1);
+}
+.dim {
+  color: var(--text-lo);
+}
+
+.label {
+  color: var(--text-md);
+  font-size: 12px;
+  display: inline-flex;
+  gap: var(--sp-1);
+  align-items: center;
+}
+
+.select {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 4px 10px;
+  border-radius: var(--r-md);
+  font-size: 12px;
+}
+
+.selectBtn {
+  background: var(--bg-2);
+  color: var(--text-hi);
+  border: 1px solid var(--border-3);
+  padding: 4px 10px;
+  border-radius: var(--r-md);
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.selectBtn:hover {
+  border-color: var(--accent-blue);
+}
+
+.error {
+  padding: var(--sp-2) var(--sp-4);
+  color: var(--accent-err);
+  font-size: 12px;
+}
+
+.empty {
+  padding: 40px;
+  text-align: center;
+  color: var(--text-lo);
+  font-size: 14px;
+}
+
+/* ~200px-wide cards, auto-filling; 4-6 columns on a desktop, 2 on a phone. */
+.grid {
+  flex: 1;
+  padding: var(--sp-3);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: var(--sp-3);
+  align-content: start;
+}
+
+.footer {
+  padding: var(--sp-2) var(--sp-4);
+  font-size: 12px;
+  color: var(--text-lo);
+  border-top: 1px solid var(--border-2);
+  text-align: center;
+}
