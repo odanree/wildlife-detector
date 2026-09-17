@@ -969,14 +969,29 @@ services:
       INPUT_WIDTH: "2048"
       INPUT_HEIGHT: "1152"
       MIN_MOTION_BBOX_PX: "30"
-      VLM_INTERVAL_S: "3"
+      # 2026-09-16: 3 → 5 to relieve VLM queue pressure. Observed 2
+      # stale-drops per 3-min window at 12s/24s queue ages during evening
+      # motion cascade. 5s halves per-track VLM call rate; a rat dwelling
+      # 20-60s still gets 4-12 VLM calls per visit.
+      VLM_INTERVAL_S: "5"
+      # 2026-09-16: added explicit 60s ceiling (default is 20). Ollama
+      # NUM_PARALLEL was bumped 4 → 8 on the host so bursts drain faster,
+      # but this indoor scene bursts hardest — 60s gives queued frames
+      # more time to reach VLM before being aged out.
+      VLM_MAX_ALERT_AGE_S: "60"
       # Per-camera rodent-alert debounce (wall clock). Observed 1485
       # alerts in 3h during initial deployment; notifier's 120s cooldown
       # only gates the webhook, so the DB and alerts page still flooded.
       # 10s = 360 alerts/hr ceiling; parity with yard. Tuned
       # 10s → 15s → 20s → 15s → 10s after operator judgement —
       # keeps enough granularity to separate rapid multi-visit events.
-      ALERT_DEBOUNCE_S: "10"
+      # 2026-09-16: 10 → 5 after diagnosing "missing a lot of rats" —
+      # crawlspace-inside's up-into-joists framing makes qwen2.5vl:7b
+      # confidently reject a lot of real rat crops as species=none, and
+      # the VLM-reject 'other' overrides that DO fire were being eaten by
+      # a 10s debounce window during multi-track same-visit events. 5s
+      # halves the loss while still coalescing rapid track-fragment noise.
+      ALERT_DEBOUNCE_S: "5"
       # Post-VLM classifier: shadow mode. No labeled data for this
       # framing yet — mirror the sibling's rooftop-style hold pattern.
       CLASSIFIER_MODE: shadow
@@ -1022,6 +1037,102 @@ services:
       retries: 3
       start_period: 30s
 
+  # Sixth camera (2026-09-16). Sideyard vent-adjacent — Amcrest IP8M-2493EW-AI-V3
+  # at .112, 4K H.264 main stream (codec flipped from H.265 earlier this session
+  # to unblock NVR mux + generic RTSP playback). Live feed routed through
+  # Amcrest NVR ch1 realmonitor relay for the same reason detector-crawlspace
+  # uses ch7 relay: single upstream RTSP consumer on the camera keeps its
+  # concurrent-session cap from bottlenecking the detector when the operator
+  # opens VLC. Amcrest NVR fans out to (detector + Annke NVR + web-preview)
+  # internally without hitting the camera again.
+  detector-sideyard:
+    <<: *detector-common
+    container_name: wildlife-detector-sideyard
+    environment:
+      CAMERA_ID: sideyard
+      ZONE_KEY: sideyard_zone
+      # Amcrest NVR ch1 relay — bypasses the camera's session cap. See the
+      # header block above and detector-crawlspace's PR discussion for the
+      # trade-off rationale (300ms first-frame latency + NVR becomes a hard
+      # live-detection dep; both accepted).
+      # 12-factor: creds and host resolved from AMCREST_* in .env at container
+      # start. Fail-fast if any is unset — no silent fallback to a real
+      # password (matches the POSTGRES_PASSWORD shape at the DB service block).
+      RTSP_URL: rtsp://${AMCREST_USER:?}:${AMCREST_PASS:?}@${AMCREST_HOST:?}:554/cam/realmonitor?channel=1&subtype=0
+      BASELINE_PATH: data/baseline_sideyard.jpg
+      # Outdoor scene with a real sun cycle — leave DAY_NIGHT threshold at
+      # the default (unlike the crawlspaces which force-night via 255).
+      # Zone polygon still follows sun elevation.
+      ZONE_POLYGON_MODE_SOURCE: sun
+      SUN_LAT: "${SUN_LAT:-33.7455}"
+      SUN_LON: "${SUN_LON:--117.8677}"
+      SKIP_DAYTIME_DETECTION: "0"
+      TZ: America/Los_Angeles
+      # 3840x2160 source → downsample to the shared 2048x1152 target so YOLO
+      # sees rats at the same pixel scale as siblings (~40-80 px close range).
+      INPUT_WIDTH: "2048"
+      INPUT_HEIGHT: "1152"
+      # Rats near vent = close range, sharp silhouettes. 30 px matches
+      # crawlspace's floor; may need to bump up if IR speckle on stucco
+      # produces sub-30px false tracks.
+      MIN_MOTION_BBOX_PX: "30"
+      # Start with crawlspace's cadence (12MP-equivalent load, 4K source
+      # here). Watch for VLM stale-drops in first 24h and drop to 3s if the
+      # queue is quiet, or bump toward 12s if bursts saturate Ollama.
+      VLM_INTERVAL_S: "8"
+      # 3s alert dedup — same shape as crawlspace. Rat visits at vent
+      # tend to be dwell events; light dedup keeps event granularity.
+      ALERT_DEBOUNCE_S: "3"
+      # Ollama default parallel = 4; matching keeps the queue sane when
+      # multiple detectors fire at once during motion cascade.
+      VLM_WORKERS: "4"
+      VLM_MAX_INFLIGHT: "4"
+      # No labeled sideyard data yet — shadow mode until ≥ 500 verdicts.
+      CLASSIFIER_MODE: shadow
+      # Outdoor IR at night has moths near the wall-mounted light above the
+      # vent. Start at crawlspace's post-.105-cutover value; will tune once
+      # first week's FP profile is visible.
+      NIGHT_INSECT_BRIGHTNESS_MIN: "150"
+      INSECT_MEAN_UNCAP_SIZE: "1"
+      MOTION_MERGE_DIST_PX: "40"
+      MOTION_MERGE_MAX_CLUSTER: "5"
+      ALERT_ANNOTATE_HISTORY_FRAMES: "15"
+      MOTION_BACKEND: mog2
+      MOTION_HISTORY: "400"
+      # Matches crawlspace-post-tuning (18 → 30 was too aggressive; 22
+      # kept sensitivity).
+      MOTION_VAR_THRESHOLD: "22"
+      MOTION_MIN_AREA: "80"
+      MOTION_DETECT_SHADOWS: "0"
+      # Start at crawlspace-outdoor's value (0.10, tuned after 12MP cutover
+      # produced too many baseline hits). Sideyard is 4K not 12MP, so 0.10
+      # may be conservative — watch VLM queue depth in first day, drop to
+      # 0.06 if the pipeline is under-firing.
+      BASELINE_DIFF_THRESHOLD: "0.10"
+      DAY_BASELINE_DIFF_THRESHOLD: "0.18"
+      VLM_MAX_ALERT_AGE_S: "40"
+      VLM_REJECT_OVERRIDE_ONLY_IF_HEDGED: "1"
+      DAYTIME_RODENT_MIN_CONF: "0.55"
+      EXCLUSION_MIN_CONF: "0.90"
+      VLM_BACKEND: ollama
+      OLLAMA_MODEL: qwen2.5vl:7b
+      CLAUDE_MODEL: claude-sonnet-5
+      CASCADE_CONFIRM_MODEL: claude-sonnet-5
+      OLLAMA_URL: http://host.docker.internal:11434
+      DETECTOR_INTERNAL_HOST: 0.0.0.0
+      # Sixth detector port — yard=8101, rooftop=8102, backyard=8103,
+      # crawlspace=8104, crawlspace-inside=8105, sideyard=8106.
+      DETECTOR_INTERNAL_PORT: 8106
+      # No PTZ — sideyard cam is fixed mount.
+    expose:
+      - "8106"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8106/internal/health', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
   web:
     build:
       context: .
@@ -1033,7 +1144,7 @@ services:
     environment:
       # Comma-separated so the sidecar can fan-out /status + fan-in /api/alerts.
       # Order defines display order in the UI.
-      DETECTOR_URLS: http://detector-yard:8101,http://detector-rooftop:8102,http://detector-backyard:8103,http://detector-crawlspace:8104,http://detector-crawlspace-inside:8105
+      DETECTOR_URLS: http://detector-yard:8101,http://detector-rooftop:8102,http://detector-backyard:8103,http://detector-crawlspace:8104,http://detector-crawlspace-inside:8105,http://detector-sideyard:8106
       # Back-compat: legacy single-detector consumers read this one.
       DETECTOR_INTERNAL_URL: http://detector-yard:8101
       PREVIEW_HOST: 0.0.0.0
@@ -1092,6 +1203,9 @@ services:
       # than the earlier Annke/AgentDVR arrangement). No per-camera NVR
       # overrides needed — inherits fleet-wide AMCREST_HOST/USER/PASS.
       NVR_CHANNEL_CRAWLSPACE_INSIDE: "3"
+      # 2026-09-16: sideyard cam (.112) newly adopted on Amcrest ch1.
+      # No per-camera NVR host override — inherits Amcrest fleet default.
+      NVR_CHANNEL_SIDEYARD: "1"
     volumes:
       - ./data:/app/data
       - ./snapshots:/app/snapshots:ro
@@ -1199,6 +1313,9 @@ services:
       # matching note in the web env block above. Standard NVR dispatch,
       # no AgentDVR bind mount, no per-camera host overrides.
       NVR_CHANNEL_CRAWLSPACE_INSIDE: "3"
+      # 2026-09-16: sideyard (.112) adopted on Amcrest ch1 — see web env
+      # block above. Inherits Amcrest fleet default.
+      NVR_CHANNEL_SIDEYARD: "1"
     volumes:
       - ./clips:/app/clips
       - ./logs:/app/logs
