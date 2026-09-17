@@ -30,13 +30,13 @@ class TestDahuaDefault:
     def test_uses_amcrest_env_and_cam_playback_shape(self, monkeypatch):
         monkeypatch.setenv("AMCREST_HOST", "192.168.1.148")
         monkeypatch.setenv("AMCREST_USER", "admin")
-        monkeypatch.setenv("AMCREST_PASS", "[SCRUBBED]")
+        monkeypatch.setenv("AMCREST_PASS", "test-pass-12345")
 
         url = build_nvr_playback_url(
             timestamp=ALERT_TS, pre_roll_seconds=15, nvr_channel=5,
         )
 
-        assert "rtsp://admin:[SCRUBBED]@192.168.1.148:554" in url
+        assert "rtsp://admin:test-pass-12345@192.168.1.148:554" in url
         assert "/cam/playback?" in url
         assert "channel=5" in url
         assert "subtype=0" in url
@@ -50,11 +50,11 @@ class TestHikvisionFamily:
     def test_uses_streaming_tracks_shape_and_local_time(self, monkeypatch):
         monkeypatch.setenv("AMCREST_HOST", "192.168.1.148")
         monkeypatch.setenv("AMCREST_USER", "admin")
-        monkeypatch.setenv("AMCREST_PASS", "[SCRUBBED]")
+        monkeypatch.setenv("AMCREST_PASS", "test-pass-12345")
         # Per-camera Annke overrides for this camera
         monkeypatch.setenv("NVR_HOST_CRAWLSPACE_INSIDE", "192.168.1.130")
         monkeypatch.setenv("NVR_USER_CRAWLSPACE_INSIDE", "admin")
-        monkeypatch.setenv("NVR_PASS_CRAWLSPACE_INSIDE", "[SCRUBBED]")
+        monkeypatch.setenv("NVR_PASS_CRAWLSPACE_INSIDE", "test-annke-6789")
         monkeypatch.setenv("NVR_FAMILY_CRAWLSPACE_INSIDE", "hikvision")
 
         url = build_nvr_playback_url(
@@ -62,7 +62,7 @@ class TestHikvisionFamily:
             camera_id="crawlspace_inside",
         )
 
-        assert "rtsp://admin:[SCRUBBED]@192.168.1.130:554" in url
+        assert "rtsp://admin:test-annke-6789@192.168.1.130:554" in url
         assert "/Streaming/tracks/101/" in url
         # ALERT_TS = 2026-09-11 15:30 UTC = 08:30 Pacific (PDT, UTC-7).
         # Hikvision's `Z` suffix is a fake UTC marker — the device treats
@@ -90,20 +90,20 @@ class TestPerCameraOverride:
     def test_missing_override_falls_back_to_amcrest(self, monkeypatch):
         monkeypatch.setenv("AMCREST_HOST", "192.168.1.148")
         monkeypatch.setenv("AMCREST_USER", "admin")
-        monkeypatch.setenv("AMCREST_PASS", "[SCRUBBED]")
+        monkeypatch.setenv("AMCREST_PASS", "test-pass-12345")
         # No NVR_HOST_YARD — yard should ride the fleet default.
 
         url = build_nvr_playback_url(
             timestamp=ALERT_TS, nvr_channel=5, camera_id="yard",
         )
         assert "192.168.1.148" in url
-        assert "[SCRUBBED]" in url
+        assert "test-pass-12345" in url
 
     def test_partial_override_only_replaces_named_keys(self, monkeypatch):
         """A camera can override just HOST while inheriting AMCREST creds."""
         monkeypatch.setenv("AMCREST_HOST", "192.168.1.148")
         monkeypatch.setenv("AMCREST_USER", "admin")
-        monkeypatch.setenv("AMCREST_PASS", "[SCRUBBED]")
+        monkeypatch.setenv("AMCREST_PASS", "test-[SCRUBBED]-42")
         monkeypatch.setenv("NVR_HOST_SPECIAL", "192.168.1.200")
         # No NVR_USER_SPECIAL / NVR_PASS_SPECIAL — inherit fleet creds.
 
@@ -111,7 +111,7 @@ class TestPerCameraOverride:
             timestamp=ALERT_TS, nvr_channel=1, camera_id="special",
         )
         assert "192.168.1.200" in url
-        assert "admin:[SCRUBBED]" in url
+        assert "admin:test-[SCRUBBED]-42" in url
 
     def test_empty_camera_id_uses_amcrest_only(self, monkeypatch):
         """No camera_id → no per-camera lookup attempted at all."""
