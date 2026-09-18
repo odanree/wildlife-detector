@@ -64,9 +64,17 @@ def _load_env_from_dotenv() -> None:
 
 _load_env_from_dotenv()
 
-NVR_HOST = os.getenv("AMCREST_HOST", "192.168.1.148")
-NVR_USER = os.getenv("AMCREST_USER", "admin")
-NVR_PASS = os.getenv("AMCREST_PASSWORD", "[SCRUBBED]")
+# No silent fallback to a real password — fail fast at the trust boundary
+# so a sandbox run against a mis-loaded .env raises instead of leaking the
+# fleet default via error messages / stack traces.
+NVR_HOST = os.getenv("AMCREST_HOST") or "192.168.1.148"
+NVR_USER = os.getenv("AMCREST_USER") or "admin"
+NVR_PASS = os.getenv("AMCREST_PASSWORD")
+if not NVR_PASS:
+    raise SystemExit(
+        "AMCREST_PASSWORD env not set. Set it in .env (see .env.example) or "
+        "the shell before running this script — no cleartext fallback."
+    )
 NVR_CHANNEL_BY_CAMERA = {
     # channel numbers per the NVR mapping — verify against RTSP_URL_* in .env
     "rooftop": 6,
