@@ -32,6 +32,7 @@ const NVR_CHANNELS: Record<"amcrest" | "annke", readonly number[]> = {
 // web container). Only three channels are mapped today; the rest show
 // as "channel N" so the operator can still reach them.
 const CHANNEL_LABEL: Record<number, string> = {
+  1: "1 (sideyard)",
   3: "3 (crawlspace int)",
   5: "5 (yard)",
   6: "6 (rooftop)",
@@ -53,7 +54,7 @@ const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "annke", Record<number, string>> 
     4: "4 (backyard)",
     5: "5 (frontyard)",
     6: "6 (sideyard)",
-    7: "7 (side path)",
+    7: "7 (corner)",
     8: "8 (plant pathway)",
   },
 };
@@ -61,14 +62,20 @@ const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "annke", Record<number, string>> 
 // Alerts-page deep-link camera_id → (channel, NVR) mapping. The alerts
 // page hands us ?camera=<id> and we preselect the picker so the operator
 // lands on the right NVR + channel for THAT camera's recording home.
-// After PR #220, rooftop + backyard playback lives on the Annke NVR, not
-// Amcrest. Yard and the two crawlspace cams stay on Amcrest.
+//
+// Rooftop and backyard reverted to Amcrest 2026-09-16 after Annke's RTSP
+// serving pipe wedged post-firmware config surgery — the recordings still
+// land on Annke's disk but generic RTSP pulls stall. Cameras dual-stream
+// to Amcrest anyway, and Amcrest handles 4K fine. Both stayed on Annke
+// originally (PR #220) to gain 12MP handling; neither camera is >4K so
+// that reason no longer applies.
 const CAMERA_TO_CHANNEL: Record<string, { channel: number; nvr: "amcrest" | "annke" }> = {
   yard: { channel: 5, nvr: "amcrest" },
-  rooftop: { channel: 2, nvr: "annke" },
-  backyard: { channel: 4, nvr: "annke" },
+  rooftop: { channel: 6, nvr: "amcrest" },
+  backyard: { channel: 8, nvr: "amcrest" },
   crawlspace: { channel: 7, nvr: "amcrest" },
   crawlspace_inside: { channel: 3, nvr: "amcrest" },
+  sideyard: { channel: 1, nvr: "amcrest" },
 };
 
 const DURATION_OPTIONS: readonly { label: string; seconds: number }[] = [
