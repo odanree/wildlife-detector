@@ -415,6 +415,21 @@ DETECTOR_ENV_FIXED = {
     "ALERT_WEBHOOK_URL": "",
     "REPLAY_EXIT_ON_EOF": "1",
     "VLM_MAX_ALERT_AGE_S": "600",
+    # Override the operator pause file-sentinel so the sandbox never
+    # inherits a UI pause from the live detector. Live detectors and the
+    # backfill sandbox share ./config: without this, pausing "crawlspace"
+    # in the UI would silently zero out every backfill run's detection
+    # (motion.detect() never runs → 0 motion_events → 0 verdicts).
+    # /dev/null-style unreachable path — os.path.exists() is False → gate
+    # never fires. Backfill is orthogonal to live pause state.
+    "OPERATOR_PAUSE_FLAG_PATH": "/tmp/__replay_never_pause__",
+    # Saturate the Ollama VLM pool during backfill. Live detectors are
+    # tuned to VLM_MAX_INFLIGHT=4 to leave room for peers on the shared
+    # Ollama instance; a backfill sandbox has no such neighbor obligation
+    # — 8 matches Ollama's NUM_PARALLEL cap and cuts detection wall-clock
+    # ~30-40% on VLM-bound chunks. Any live detector still running shares
+    # the lanes fairly (Ollama round-robins requests).
+    "VLM_MAX_INFLIGHT": "8",
 }
 # Env seeded per target unless the operator overrides via --detector-env.
 # CAMERA_ID/ZONE_KEY keyed on the target label mean: no OSD mask, an
