@@ -202,7 +202,12 @@ def _pull_chunk(url: str, out_path: Path, timeout_s: int, ffmpeg: str) -> tuple[
         "-i", url,
         "-c:v", "copy", "-c:a", "aac", "-b:a", "96k",
         "-movflags", "+faststart",
-        "-t", str(CHUNK_SECONDS_MAX + 5),  # small tolerance past the chunk edge
+        # Stop just BEFORE the URL's endtime, not after. Hikvision playback
+        # sessions don't send a clean EOS at the window edge; if ffmpeg keeps
+        # reading past endtime it sits waiting until our subprocess timeout
+        # fires (~180s per chunk, kills the whole backfill). Dahua doesn't
+        # care either way. -2s gives a small margin for encoder GOP variance.
+        "-t", str(CHUNK_SECONDS_MAX - 2),
         "-y", str(out_path),
     ]
     try:
@@ -451,6 +456,7 @@ def run_camera(
     detection_timeout_s: int,
     delta_time_window_s: float,
     delta_iou_threshold: float,
+    speed: int = 1,
 ) -> CameraReport:
     """Run the replay for one camera end-to-end. Called once per --camera
     on the CLI so the top-level loop stays flat."""
@@ -487,6 +493,7 @@ def run_camera(
                 camera_id=camera,
                 nvr_channel=int(nvr_channel_env) if nvr_channel_env else None,
                 pre_roll_seconds=0,
+                speed=speed,
             )
         except Exception as e:  # noqa: BLE001
             logger.error("[%s %d/%d] URL build failed: %s", camera, idx, len(chunks), e)
@@ -581,6 +588,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--end", required=True, help="window end (ISO8601, TZ-aware)")
     ap.add_argument("--chunk-seconds", type=int, default=CHUNK_SECONDS_MAX,
                     help=f"chunk length (max {CHUNK_SECONDS_MAX}, NVR playback URL cap)")
+    ap.add_argument("--speed", type=int, default=1, choices=[1, 2, 4, 8],
+                    help="Dahua/Amcrest playback speed multiplier (1|2|4|8). "
+                         "Hikvision ignores this — its RTSP has no speed knob.")
     ap.add_argument("--out-dir", required=True, help="output directory root")
     ap.add_argument("--database-url", default=os.getenv("DATABASE_URL"))
     ap.add_argument("--pull-timeout-seconds", type=int, default=180)
@@ -635,6 +645,7 @@ def main(argv: list[str] | None = None) -> int:
             detection_timeout_s=args.detection_timeout_seconds,
             delta_time_window_s=args.delta_time_window_seconds,
             delta_iou_threshold=args.delta_iou_threshold,
+            speed=args.speed,
         )
 
     all_reports: list[CameraReport] = []
