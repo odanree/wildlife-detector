@@ -450,7 +450,8 @@ export function AlertLightbox({
           <div className={styles.desc}>{current.description ?? ""}</div>
           <div className={styles.hintLine}>
             keys: Y correct · N incorrect · U unclear · ← / → nav · Esc close
-            {zoom > 1 && ` · zoom ${zoom.toFixed(2)}× (double-click, middle-click, or "0" to reset)`}
+            {zoom > 1 &&
+              ` · zoom ${zoom.toFixed(2)}× (double-click, middle-click, or "0" to reset)`}
           </div>
           <div className={styles.hintLine}>
             species (correct only): R rodent · C cat · D dog · A raccoon · S squirrel · B bird · P
