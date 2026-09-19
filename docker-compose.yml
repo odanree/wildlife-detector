@@ -847,8 +847,14 @@ services:
       # just queue inside Ollama and don't drain faster. VLM_MAX_ALERT_AGE_S
       # 20 → 40 absorbs the burst instead. If host Ollama is confirmed
       # running with OLLAMA_NUM_PARALLEL≥8, bump these back to 8.
-      VLM_WORKERS: "4"
-      VLM_MAX_INFLIGHT: "4"
+      # 2026-09-19: bumped 4 → 6 after tonight's ROI backfill showed live
+      # under-catching by ~4-5x during peak rat activity. Host Ollama now
+      # runs NUM_PARALLEL=12 with 8K context + flash attention (100% GPU
+      # residency verified via `ollama ps` under load). 6 × 3 priority
+      # detectors = 18 demand vs 12 supply = 1.5x contention (was 6x at
+      # NUM_PARALLEL=1 default, which was tonight's root cause finding).
+      VLM_WORKERS: "6"
+      VLM_MAX_INFLIGHT: "6"
       # Post-VLM classifier: shadow mode (default). No labeled crawlspace
       # data yet — collect ≥ 500 labeled rows before evaluating agreement
       # and flipping to active. Mirrors the rooftop hold pattern.
@@ -980,6 +986,12 @@ services:
       # but this indoor scene bursts hardest — 60s gives queued frames
       # more time to reach VLM before being aged out.
       VLM_MAX_ALERT_AGE_S: "60"
+      # 2026-09-19: match the sibling detector-crawlspace bump. See its
+      # rationale block for the full context; Ollama NUM_PARALLEL=12 on
+      # the host is the paired change that lets these extra workers
+      # actually drain in parallel rather than just queuing.
+      VLM_WORKERS: "6"
+      VLM_MAX_INFLIGHT: "6"
       # Per-camera rodent-alert debounce (wall clock). Observed 1485
       # alerts in 3h during initial deployment; notifier's 120s cooldown
       # only gates the webhook, so the DB and alerts page still flooded.
@@ -1086,8 +1098,14 @@ services:
       ALERT_DEBOUNCE_S: "3"
       # Ollama default parallel = 4; matching keeps the queue sane when
       # multiple detectors fire at once during motion cascade.
-      VLM_WORKERS: "4"
-      VLM_MAX_INFLIGHT: "4"
+      # 2026-09-19: bumped 4 → 6 alongside the sibling crawlspace pair
+      # now that host Ollama runs NUM_PARALLEL=12. See detector-crawlspace's
+      # matching block for the full rationale — sideyard is one of the
+      # 3 priority boundary cameras that stays active overnight and
+      # benefits directly from the extra concurrency during return-home
+      # peak (03:00-05:00 PT).
+      VLM_WORKERS: "6"
+      VLM_MAX_INFLIGHT: "6"
       # No labeled sideyard data yet — shadow mode until ≥ 500 verdicts.
       CLASSIFIER_MODE: shadow
       # Outdoor IR at night has moths near the wall-mounted light above the
