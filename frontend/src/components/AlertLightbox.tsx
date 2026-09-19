@@ -165,11 +165,21 @@ export function AlertLightbox({
 
   const onImgMouseDown = useCallback(
     (e: ReactMouseEvent<HTMLImageElement>) => {
+      // Middle-click resets zoom — joins the double-click / "0" key
+      // resets so the operator can flick the wheel to zoom in, then
+      // middle-click without moving the cursor to snap back. Handled
+      // in onMouseDown (not onAuxClick) so we can preventDefault the
+      // browser's autoscroll-cursor gesture before it fires.
+      if (e.button === 1) {
+        e.preventDefault();
+        resetZoom();
+        return;
+      }
       if (zoom <= 1) return; // no pan at rest scale
       e.preventDefault();
       dragStartRef.current = { mouseX: e.clientX, mouseY: e.clientY, panX: pan.x, panY: pan.y };
     },
-    [zoom, pan.x, pan.y],
+    [zoom, pan.x, pan.y, resetZoom],
   );
 
   useEffect(() => {
@@ -440,7 +450,8 @@ export function AlertLightbox({
           <div className={styles.desc}>{current.description ?? ""}</div>
           <div className={styles.hintLine}>
             keys: Y correct · N incorrect · U unclear · ← / → nav · Esc close
-            {zoom > 1 && ` · zoom ${zoom.toFixed(2)}× (double-click or "0" to reset)`}
+            {zoom > 1 &&
+              ` · zoom ${zoom.toFixed(2)}× (double-click, middle-click, or "0" to reset)`}
           </div>
           <div className={styles.hintLine}>
             species (correct only): R rodent · C cat · D dog · A raccoon · S squirrel · B bird · P

@@ -18,7 +18,7 @@ import styles from "./PlaybackUrlPage.module.css";
  * common "same channel, another moment" flow doesn't re-input every time.
  */
 
-const CHANNELS: readonly number[] = [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+const CHANNELS: readonly number[] = [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
 
 // Per-NVR valid channel sets. Annke N98PBK physically has 8 channels;
 // Amcrest holds the rest of the fleet. Direct-mode picker still shows
@@ -41,6 +41,7 @@ const CHANNEL_LABEL: Record<number, string> = {
   11: "11 (Annke plant pathway — direct only)",
   12: "12 (Annke side path .125 — direct only)",
   13: "13 (Annke sideyard .112 — direct only)",
+  14: "14 (front corner .104 — direct only)",
 };
 
 // Per-NVR channel labels — same channel number can mean different cameras
@@ -76,6 +77,7 @@ const CAMERA_TO_CHANNEL: Record<string, { channel: number; nvr: "amcrest" | "ann
   crawlspace: { channel: 7, nvr: "amcrest" },
   crawlspace_inside: { channel: 3, nvr: "amcrest" },
   sideyard: { channel: 1, nvr: "amcrest" },
+  frontcorner: { channel: 14, nvr: "amcrest" },
 };
 
 const DURATION_OPTIONS: readonly { label: string; seconds: number }[] = [
