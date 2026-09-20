@@ -24,6 +24,12 @@ COPY frontend/package.json frontend/bun.lock* ./
 # yet (early-development scenario).
 RUN if [ -f bun.lock ]; then bun install --frozen-lockfile; else bun install; fi
 COPY frontend/ ./
+# Vite VITE_* build args flow through as build-time env; the Playback
+# URL page reads VITE_FRIGATE_URL to decide whether to show the Frigate
+# option in the NVR picker + which host to deep-link into. Unset = the
+# option is hidden (safe default when no Frigate deployment is reachable).
+ARG VITE_FRIGATE_URL=""
+ENV VITE_FRIGATE_URL=${VITE_FRIGATE_URL}
 RUN bun run build
 
 # ── Stage 2: Flask sidecar with the built bundle copied in ─────────────────
