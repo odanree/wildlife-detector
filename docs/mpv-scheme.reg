@@ -1,0 +1,18 @@
+Windows Registry Editor Version 5.00
+
+; Register the `mpv://` URL scheme so browsers hand off to MPV Player.
+; Edit the `command` path below to match wherever you saved
+; mpv-scheme-open.bat (default: C:\Tools\mpv-scheme-open.bat).
+;
+; See docs/mpv-scheme-setup.md for the full setup walkthrough.
+
+[HKEY_CLASSES_ROOT\mpv]
+@="URL:MPV Protocol"
+"URL Protocol"=""
+
+[HKEY_CLASSES_ROOT\mpv\shell]
+
+[HKEY_CLASSES_ROOT\mpv\shell\open]
+
+[HKEY_CLASSES_ROOT\mpv\shell\open\command]
+@="\"C:\\Tools\\mpv-scheme-open.bat\" \"%1\""
