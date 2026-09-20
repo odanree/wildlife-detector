@@ -50,13 +50,15 @@ export function ReplayButton({ alertId, size = "sm" }: ReplayButtonProps) {
         alert(`Playback URL fetch failed: HTTP ${r.status}`);
         return;
       }
-      const j = (await r.json()) as { url: string; note?: string };
-      // Belt: try to launch the OS rtsp:// handler (VLC/mpv on Windows/Mac
-      // register themselves as handlers by default). Suspenders: also copy
-      // to clipboard so operator can paste into VLC → "Open Network Stream"
-      // if the handler isn't registered.
+      const j = (await r.json()) as { url: string; note?: string; source_label?: string };
+      // Belt: try to launch the OS rtsp:// / mpv:// handler. Suspenders:
+      // also copy to clipboard so the operator can paste into VLC / MPV
+      // manually if the handler isn't registered. Strip the mpv:// wrapper
+      // on the clipboard copy so the pasted URL is directly openable in
+      // MPV (Ctrl+V into the Open URL dialog).
+      const clipboardUrl = j.url.replace(/^mpv:\/\//, "");
       try {
-        await navigator.clipboard.writeText(j.url);
+        await navigator.clipboard.writeText(clipboardUrl);
       } catch {
         /* clipboard blocked in insecure context — non-fatal */
       }
@@ -66,9 +68,16 @@ export function ReplayButton({ alertId, size = "sm" }: ReplayButtonProps) {
         // Popup blocked → fall back to same-tab navigation (old behavior).
         window.location.href = j.url;
       }
-      if (j.note) {
-        // Slight delay so the navigation is already dispatched.
-        setTimeout(() => alert(`Playback URL copied to clipboard.\n${j.note}`), 200);
+      // Show which source the URL was routed through — Local clip / Frigate /
+      // NVR. Operator sees whether Frigate saved them from a flaky Amcrest
+      // playback path, or whether they're on the fast-path local clip, etc.
+      // Combined with the note (if present) into a single toast to avoid
+      // stacking dialogs when both are set.
+      const parts: string[] = [];
+      if (j.source_label) parts.push(`Opening via ${j.source_label}`);
+      if (j.note) parts.push(j.note);
+      if (parts.length > 0) {
+        setTimeout(() => alert(parts.join("\n\n")), 200);
       }
     } catch (e) {
       newTab?.close();

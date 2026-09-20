@@ -299,6 +299,24 @@ class DetectorRegistry:
 
 _SNAPSHOT_DIR = Path(os.getenv("SNAPSHOT_DIR", "snapshots")).resolve()
 _CLIPS_DIR = Path(os.getenv("CLIPS_DIR", "clips")).resolve()
+
+# wildlife-detector camera_id → Frigate config-YAML camera name.
+# Keep in sync with the Beelink Frigate compose (docs/frigate-beelink).
+# Cameras absent from Frigate (crawlspace_inside, rooftop) are omitted
+# — the api_alert_playback Frigate branch skips them and falls through
+# to the NVR RTSP path.
+_FRIGATE_CAMERAS: dict[str, str] = {
+    "yard":           "yard",
+    "sideyard":       "sideyard",
+    "crawlspace":     "crawlspace_ext",
+    "crawlspace_ext": "crawlspace_ext",
+    "backyard":       "backyard",
+    "plant_pathway":  "plant_pathway",
+    "corner":         "corner",
+    "frontcorner":    "front_corner",
+    "front_corner":   "front_corner",
+    "garage_ptz":     "garage_ptz",
+}
 # Pre-VLM drop crops — same dir the detector's PreVlmDropSink writes
 # to via PRE_VLM_DROP_CROP_DIR. Read-only bind mount in the web
 # container's compose block. Serves at /drops/<path> for the labeling
@@ -1568,6 +1586,7 @@ def create_app(registry: DetectorRegistry) -> Flask:
                     "channel":          channel,
                     "pre_roll_seconds": pre_roll,
                     "source":           "local",
+                    "source_label":     "Local clip (archiver)",
                     "note":             note,
                 })
 
@@ -1620,6 +1639,43 @@ def create_app(registry: DetectorRegistry) -> Flask:
                 "note":             reason or "archiver marked this alert unrecoverable",
             }), 404
 
+        # Frigate branch: preferred playback source ONLY for cameras
+        # without an NVR channel (plant_pathway / corner / front_corner —
+        # direct-RTSP cams with no NVR home). For Amcrest-NVR cameras,
+        # NVR playback wins because Frigate on the Beelink currently
+        # records those from the sub-stream (720p ~1 Mbps) to fit the
+        # 419 GB local disk budget, while the Amcrest NVR is holding
+        # the main-stream (4K/5MP). Once the 4 TB drive lands + Frigate
+        # is upgraded to main-stream recording across the board (see
+        # docs/frigate-beelink), consider promoting Frigate above NVR
+        # for all cams — the trigger will be dropping this
+        # `not env_channel and channel_override == 0` guard.
+        frigate_url = os.getenv("FRIGATE_URL", "").strip().rstrip("/")
+        frigate_cam = _FRIGATE_CAMERAS.get(camera_id.lower())
+        no_nvr_channel = not env_channel and channel_override == 0
+        if frigate_url and frigate_cam and no_nvr_channel:
+            frigate_pre_roll = pre_roll
+            # Same duration as the archiver's default clip window — enough
+            # to see the event with pre-roll context, not so much that
+            # Frigate has to concatenate multiple recording chunks.
+            frigate_duration = int(os.environ.get("ARCHIVE_CLIP_DURATION_SECONDS") or "45")
+            start_ts = int(ts - frigate_pre_roll)
+            end_ts = start_ts + frigate_duration
+            http_clip = (
+                f"{frigate_url}/api/{frigate_cam}"
+                f"/start/{start_ts}/end/{end_ts}/clip.mp4"
+            )
+            return jsonify({
+                "url":              f"mpv://{http_clip}",
+                "camera_id":        camera_id,
+                "ts":               ts,
+                "channel":          channel,
+                "pre_roll_seconds": frigate_pre_roll,
+                "source":           "frigate-clip",
+                "source_label":     "Frigate (Beelink)",
+                "note":             note,
+            })
+
         from src.stream.rtsp_handler import build_nvr_playback_url
         try:
             url = build_nvr_playback_url(
@@ -1639,6 +1695,7 @@ def create_app(registry: DetectorRegistry) -> Flask:
             "channel":          channel,
             "pre_roll_seconds": pre_roll,
             "source":           "nvr-rtsp",
+            "source_label":     "NVR (Amcrest)",
             "note":             note,
         })
 
