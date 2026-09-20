@@ -339,19 +339,32 @@ export function PlaybackUrlPage() {
             missing.push(ch);
             continue;
           }
-          // Frigate 0.16+ moved to a browser-router (no `#` hash) and
-          // renamed the history page to "review". The review route
-          // accepts `camera`, `startTime`, `endTime` (unix seconds) —
-          // filters the timeline to that camera and centers on the
-          // window. `endTime` = start + duration so the review lands
-          // on the exact clip rather than the full day, which shows
-          // "all cameras + live" behavior instead.
+          // Frigate 0.16+ client-side routes are limited: /live, /review,
+          // /explore, /settings, /exports. No deep-linkable "recording
+          // browser" URL — the recording view lives inside /review's
+          // right-side timeline scrubber, and there's no way to
+          // programmatically seek it to a URL-provided timestamp.
+          //
+          // Instead, hit Frigate's backend clip endpoint directly:
+          //   /api/<camera>/start/<start>/end/<end>/clip.mp4
+          // which returns a real MP4 the browser plays inline via the
+          // built-in video player. Loses the Frigate chrome (sidebar,
+          // camera switcher, timeline nav) but gives the operator the
+          // exact clip at the exact window with zero clicks — which
+          // is what they actually want when clicking "Open in Frigate"
+          // for a wildlife-detector alert.
+          //
+          // MPV wrapper: prefix with `mpv://` so Windows' registered
+          // mpv:// URL handler (see docs/mpv-scheme-setup.md) launches
+          // MPV Player instead of playing inline in the browser tab.
+          // Same OS-handler-hands-off pattern as the RTSP flow the
+          // /playback picker already uses for Amcrest / Annke. When
+          // the scheme isn't registered, Windows shows its usual
+          // "no app associated" dialog — falls back gracefully to
+          // Copy URL (which strips the mpv:// prefix — see below).
           const endTs = startTs + durationSec;
-          const url =
-            `${FRIGATE_URL.replace(/\/+$/, "")}` +
-            `/review?camera=${encodeURIComponent(cam)}` +
-            `&startTime=${startTs}` +
-            `&endTime=${endTs}`;
+          const httpUrl = `${FRIGATE_URL.replace(/\/+$/, "")}/api/${encodeURIComponent(cam)}/start/${startTs}/end/${endTs}/clip.mp4`;
+          const url = `mpv://${httpUrl}`;
           built.push({ url, channel: ch, camera: cam, start: startStr, end: endStr });
         }
         if (built.length === 0) {
@@ -365,7 +378,13 @@ export function PlaybackUrlPage() {
         setResults(built);
         setStatus(missing.length > 0 ? "err" : "ok");
         try {
-          await navigator.clipboard.writeText(built.map((r) => r.url as string).join("\n"));
+          // Copy the raw http:// URL to clipboard (strip the mpv:// wrapper).
+          // MPV accepts an http URL directly via its "Open URL" dialog (Ctrl+V
+          // paste) or as a command-line arg — pasting the mpv:// prefix would
+          // fail since MPV doesn't recognize its own scheme wrapper.
+          await navigator.clipboard.writeText(
+            built.map((r) => (r.url as string).replace(/^mpv:\/\//, "")).join("\n"),
+          );
         } catch {
           /* clipboard blocked — non-fatal */
         }
