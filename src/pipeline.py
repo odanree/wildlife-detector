@@ -1942,8 +1942,31 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         _snap_ref = str(snap_path.relative_to(snap_path.parent.parent)).replace('\\', '/')
                     except Exception:
                         _snap_ref = snap_path.name
+                # Bbox-size species override: Sonnet VLM confuses rat vs
+                # mouse on small-bbox nighttime IR shots — the "mouse 80%"
+                # label on frames of genuine rats is a recurring failure
+                # mode (validated 2026-09-19 + 2026-09-20 via retro-labeled
+                # alerts). Adult Norway rats at any credible camera framing
+                # produce bboxes wider than ADULT_RAT_MIN_BBOX_PX (default
+                # 100px); anything above that with species='mouse' is
+                # almost certainly a rat. Force the class to keep the
+                # ratID pipeline + downstream label-consistent instead of
+                # relying on VLM re-training to shift the boundary.
+                _adult_rat_min = int(os.environ.get("ADULT_RAT_MIN_BBOX_PX") or "100")
+                _vlm_species = str(result.get("species", "unknown"))
+                _bbox_max_side = 0
+                if bbox is not None:
+                    _bbox_max_side = max(int(bbox[2]) - int(bbox[0]),
+                                         int(bbox[3]) - int(bbox[1]))
+                if _vlm_species == "mouse" and _bbox_max_side > _adult_rat_min:
+                    logger.info(
+                        "VLM species override: track=%d mouse -> rat "
+                        "(bbox %dpx > %dpx threshold)",
+                        tid, _bbox_max_side, _adult_rat_min,
+                    )
+                    _vlm_species = "rat"
                 _preview_stats.record_alert(
-                    species=str(result.get("species", "unknown")),
+                    species=_vlm_species,
                     confidence=float(result.get("confidence", 0.0)),
                     description=str(result.get("description", ""))[:200],
                     snapshot=_snap_ref,
