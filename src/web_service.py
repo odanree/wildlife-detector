@@ -302,6 +302,16 @@ def _local_clip_path_for(alert_id: int, alert_ts: float) -> Path:
     return _CLIPS_DIR / day / f"{alert_id}.mp4"
 
 
+def _local_failure_path_for(alert_id: int, alert_ts: float) -> Path:
+    """Mirror of ClipArchiver.failure_path — the `.failed` tombstone
+    sentinel the archiver drops when it determines a clip is permanently
+    unrecoverable (NVR FIFO'd the source footage, AgentDVR outage gap,
+    etc.). Same sync contract as _local_clip_path_for."""
+    from datetime import datetime, timezone as _tz
+    day = datetime.fromtimestamp(alert_ts, tz=_tz.utc).strftime("%Y-%m-%d")
+    return _CLIPS_DIR / day / f"{alert_id}.failed"
+
+
 # ── SSE counts pub-sub ─────────────────────────────────────────────────
 # Server-side polls the DB at _COUNTS_POLL_INTERVAL_S and pushes to N
 # subscribers over persistent SSE connections. Client tabs no longer
@@ -1526,6 +1536,31 @@ def create_app(registry: DetectorRegistry) -> Flask:
                     f"bind-mounted on the web container, not the archiver)."
                 ),
             })
+
+        # Tombstone gate: the archiver drops a `.failed` sentinel when it
+        # determines a clip is permanently unrecoverable (NVR FIFO'd the
+        # source footage → DESCRIBE 404). Handing back an rtsp:// URL for
+        # a tombstoned alert means MPV/VLC opens, fails DESCRIBE, and
+        # closes silently — the operator sees a blank window and can't
+        # tell whether the handler is broken or the recording is gone.
+        # Short-circuit with a specific error so the UI can badge it as
+        # "no recording available" instead of "URL fetch failed".
+        failure_path = _local_failure_path_for(alert_id, ts)
+        if failure_path.exists():
+            try:
+                reason = failure_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                reason = "archiver marked this alert unrecoverable"
+            return jsonify({
+                "url":              None,
+                "camera_id":        camera_id,
+                "ts":               ts,
+                "channel":          channel,
+                "pre_roll_seconds": pre_roll,
+                "source":           "nvr-no-recording",
+                "error":            "no_recording",
+                "note":             reason or "archiver marked this alert unrecoverable",
+            }), 404
 
         from src.stream.rtsp_handler import build_nvr_playback_url
         try:

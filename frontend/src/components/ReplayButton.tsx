@@ -32,6 +32,21 @@ export function ReplayButton({ alertId, size = "sm" }: ReplayButtonProps) {
       const r = await fetch(`/api/alerts/${alertId}/playback-url`);
       if (!r.ok) {
         newTab?.close();
+        // 404 + error:"no_recording" = archiver dropped a tombstone
+        // (NVR FIFO'd the source footage). Show the archiver's reason
+        // instead of a bare "HTTP 404" so the operator knows this
+        // isn't a broken URL — the recording is genuinely gone.
+        if (r.status === 404) {
+          try {
+            const j = (await r.json()) as { error?: string; note?: string };
+            if (j.error === "no_recording") {
+              alert(`No recording available for this alert.\n\n${j.note ?? ""}`.trim());
+              return;
+            }
+          } catch {
+            /* body wasn't JSON — fall through to generic message */
+          }
+        }
         alert(`Playback URL fetch failed: HTTP ${r.status}`);
         return;
       }
