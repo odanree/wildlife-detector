@@ -229,6 +229,59 @@ class DetectorRegistry:
             return self._clients[camera_id]
         return self._clients[self._default_id]  # type: ignore[index]
 
+    def refresh_stale(self) -> int:
+        """Re-probe every client whose current mapping is a positional
+        fallback (`cam0`, `cam1`, ...) — these are the entries that
+        failed to answer their /internal/status probe at web startup.
+        Fixes the "wildlife-web didn't recognize <new_detector>, showed
+        cam4" pattern operators hit whenever a detector container is
+        started after web is already running (docker compose up -d
+        <detector>) or came up too slowly for the exponential-backoff
+        window at startup.
+
+        Called lazily from /api/cameras and /status handlers — cheap
+        when nothing needs updating (fast dict-key sweep + skip), only
+        fires the HTTP probe cost when there's actual work to do.
+
+        Returns count of entries that were successfully re-mapped.
+        """
+        stale = [(cam_id, self._clients[cam_id])
+                 for cam_id in list(self._clients.keys())
+                 if cam_id.startswith("cam")]
+        if not stale:
+            return 0
+        remapped = 0
+        for old_id, client in stale:
+            real_id = self._probe_camera_id_once(client)
+            if not real_id or real_id == old_id or real_id in self._clients:
+                # Probe still failing, unchanged, or would collide with an
+                # already-registered client — leave alone. Collision case:
+                # a legit `cam0` positional stays if another entry already
+                # occupies the real camera_id (shouldn't happen but be safe).
+                continue
+            url = self._url_by_id.pop(old_id)
+            self._clients.pop(old_id).close()
+            self._clients[real_id] = client
+            self._url_by_id[real_id] = url
+            if self._default_id == old_id:
+                self._default_id = real_id
+            logger.info(
+                "DetectorRegistry: lazy re-probe re-mapped %s → '%s' (was '%s')",
+                url, real_id, old_id,
+            )
+            remapped += 1
+        return remapped
+
+    @staticmethod
+    def _probe_camera_id_once(client: DetectorClient) -> str | None:
+        """Single-shot probe — no retries. Used by refresh_stale() where
+        the caller is a hot request path and can't afford the ~31s
+        exponential-backoff wait that startup probing uses."""
+        try:
+            return client.status().get("camera_id") or None
+        except Exception:
+            return None
+
     @property
     def camera_ids(self) -> list[str]:
         return list(self._clients.keys())
@@ -636,6 +689,11 @@ def create_app(registry: DetectorRegistry) -> Flask:
 
     @app.get("/api/cameras")
     def api_cameras():
+        # Lazy re-probe of positional-fallback entries (cam0, cam1, ...) —
+        # cheap when nothing's stale (dict-key sweep skips), and closes
+        # the "web started before detector was ready" race without
+        # requiring a web restart. See DetectorRegistry.refresh_stale.
+        registry.refresh_stale()
         return jsonify({
             "cameras": registry.camera_ids,
             "default": registry.default,
