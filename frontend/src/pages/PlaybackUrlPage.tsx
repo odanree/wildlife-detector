@@ -339,10 +339,19 @@ export function PlaybackUrlPage() {
             missing.push(ch);
             continue;
           }
+          // Frigate 0.16+ moved to a browser-router (no `#` hash) and
+          // renamed the history page to "review". The review route
+          // accepts `camera`, `startTime`, `endTime` (unix seconds) —
+          // filters the timeline to that camera and centers on the
+          // window. `endTime` = start + duration so the review lands
+          // on the exact clip rather than the full day, which shows
+          // "all cameras + live" behavior instead.
+          const endTs = startTs + durationSec;
           const url =
             `${FRIGATE_URL.replace(/\/+$/, "")}` +
-            `/#history?camera=${encodeURIComponent(cam)}` +
-            `&startTime=${startTs}`;
+            `/review?camera=${encodeURIComponent(cam)}` +
+            `&startTime=${startTs}` +
+            `&endTime=${endTs}`;
           built.push({ url, channel: ch, camera: cam, start: startStr, end: endStr });
         }
         if (built.length === 0) {
@@ -459,7 +468,7 @@ export function PlaybackUrlPage() {
         for (const t of targetTabs) t?.close();
       }
     },
-    [channels, source, startStr, endStr, nvr],
+    [channels, source, startStr, endStr, nvr, durationSec],
   );
 
   return (
