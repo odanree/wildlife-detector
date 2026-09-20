@@ -20,12 +20,44 @@ import styles from "./PlaybackUrlPage.module.css";
 
 const CHANNELS: readonly number[] = [1, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14];
 
+// Frigate host — build-time env for the frontend. When unset, the
+// Frigate option is hidden from the NVR picker (no host = no target).
+// Frigate's history/recording browser accepts a unix-seconds `startTime`
+// and positions the timeline scrubber at that moment for the given
+// camera. Same URL shape whether the source cam is Amcrest-hosted or
+// direct-RTSP — Frigate always addresses cameras by their config name,
+// not by channel number, so the picker translates channel → camera at
+// URL-build time via FRIGATE_CAMERA_BY_CHANNEL below.
+const FRIGATE_URL: string | undefined = (import.meta as unknown as { env?: Record<string, string> })
+  .env?.VITE_FRIGATE_URL;
+
 // Per-NVR valid channel sets. Annke N98PBK physically has 8 channels;
-// Amcrest holds the rest of the fleet. Direct-mode picker still shows
-// every CAMERA_RTSP_<N> slot regardless of NVR (no NVR involved).
-const NVR_CHANNELS: Record<"amcrest" | "annke", readonly number[]> = {
+// Amcrest holds the rest of the fleet. Frigate covers a curated subset
+// mirroring the Beelink Frigate compose (2026-09-20 fleet trim):
+// Amcrest-NVR cams via sub-stream + direct-RTSP cams via main-stream.
+// Cameras that live only in wildlife-detector (crawlspace_inside, rooftop)
+// are absent from Frigate to keep the box's iGPU + disk within budget.
+// Direct-mode picker still shows every CAMERA_RTSP_<N> slot regardless
+// of NVR (no NVR involved).
+const NVR_CHANNELS: Record<"amcrest" | "annke" | "frigate", readonly number[]> = {
   amcrest: [1, 3, 4, 5, 6, 7, 8],
   annke: [1, 2, 3, 4, 5, 6, 7, 8],
+  frigate: [1, 4, 5, 7, 8, 10, 12, 14],
+};
+
+// Frigate addresses cameras by their config-YAML name, not by NVR channel.
+// This map translates the picker's channel number → Frigate camera name.
+// Kept in sync manually with the Beelink Frigate compose (any camera
+// added there needs an entry here so the picker can route to it).
+const FRIGATE_CAMERA_BY_CHANNEL: Record<number, string> = {
+  1: "sideyard",
+  4: "garage_ptz",
+  5: "yard",
+  7: "crawlspace_ext",
+  8: "backyard",
+  10: "plant_pathway",
+  12: "corner",
+  14: "front_corner",
 };
 
 // Known channel → camera-name mapping (from NVR_CHANNEL_* env on the
@@ -48,7 +80,7 @@ const CHANNEL_LABEL: Record<number, string> = {
 
 // Per-NVR channel labels — same channel number can mean different cameras
 // on Amcrest vs Annke, so the label context matters.
-const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "annke", Record<number, string>> = {
+const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "annke" | "frigate", Record<number, string>> = {
   amcrest: CHANNEL_LABEL,
   annke: {
     1: "1 (crawlspace int)",
@@ -59,6 +91,16 @@ const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "annke", Record<number, string>> 
     6: "6 (sideyard)",
     7: "7 (corner)",
     8: "8 (plant pathway)",
+  },
+  frigate: {
+    1: "1 (sideyard)",
+    4: "4 (garage PTZ)",
+    5: "5 (yard)",
+    7: "7 (crawlspace ext)",
+    8: "8 (backyard)",
+    10: "10 (plant pathway)",
+    12: "12 (corner)",
+    14: "14 (front corner)",
   },
 };
 
@@ -175,14 +217,16 @@ export function PlaybackUrlPage() {
   // default; Annke (Hikvision family) holds a separate camera set with a
   // different URL shape (/Streaming/tracks/… + Pacific-as-fake-Z). See
   // src/web_service.py::api_playback_url for the vendor branch.
-  const [nvr, setNvrRaw] = useState<"amcrest" | "annke">(() => {
+  const [nvr, setNvrRaw] = useState<"amcrest" | "annke" | "frigate">(() => {
     // Deep-link overrides sticky NVR — same rationale as the channel
     // reset above (align the picker to the alert's playback home).
     if (paramPreset != null) return paramPreset.nvr;
     const saved = localStorage.getItem("playbackUrlNvr");
-    return saved === "annke" ? "annke" : "amcrest";
+    if (saved === "annke") return "annke";
+    if (saved === "frigate" && FRIGATE_URL) return "frigate";
+    return "amcrest";
   });
-  const setNvr = useCallback((n: "amcrest" | "annke") => {
+  const setNvr = useCallback((n: "amcrest" | "annke" | "frigate") => {
     setNvrRaw(n);
     localStorage.setItem("playbackUrlNvr", n);
   }, []);
@@ -265,6 +309,77 @@ export function PlaybackUrlPage() {
       const targetTabs: (Window | null)[] = openInVlc
         ? channels.map(() => window.open("about:blank", "_blank"))
         : [];
+
+      // Frigate mode: Frigate's history browser deep-links are pure
+      // client-side — no backend rtsp:// build needed. Compose the URL
+      // per channel from FRIGATE_CAMERA_BY_CHANNEL + FRIGATE_URL and
+      // short-circuit the fetch loop. Output opens in a browser tab
+      // (not an RTSP handler), so "Open in VLC" reads as "open Frigate
+      // tab" when this NVR is picked. Copy URL still works — puts the
+      // Frigate history URL on the clipboard.
+      if (source === "nvr" && nvr === "frigate") {
+        if (!FRIGATE_URL) {
+          setStatus("err");
+          setStatusMsg("VITE_FRIGATE_URL not configured on the web container");
+          for (const t of targetTabs) t?.close();
+          return;
+        }
+        const startTs = Math.floor(new Date(startStr).getTime() / 1000);
+        if (!Number.isFinite(startTs)) {
+          setStatus("err");
+          setStatusMsg("start time invalid");
+          for (const t of targetTabs) t?.close();
+          return;
+        }
+        const built: PlaybackUrlResponse[] = [];
+        const missing: number[] = [];
+        for (const ch of channels) {
+          const cam = FRIGATE_CAMERA_BY_CHANNEL[ch];
+          if (!cam) {
+            missing.push(ch);
+            continue;
+          }
+          const url =
+            `${FRIGATE_URL.replace(/\/+$/, "")}` +
+            `/#history?camera=${encodeURIComponent(cam)}` +
+            `&startTime=${startTs}`;
+          built.push({ url, channel: ch, camera: cam, start: startStr, end: endStr });
+        }
+        if (built.length === 0) {
+          setStatus("err");
+          setStatusMsg(
+            `no Frigate cameras for channel(s) ${missing.join(", ")} — add to FRIGATE_CAMERA_BY_CHANNEL`,
+          );
+          for (const t of targetTabs) t?.close();
+          return;
+        }
+        setResults(built);
+        setStatus(missing.length > 0 ? "err" : "ok");
+        try {
+          await navigator.clipboard.writeText(built.map((r) => r.url as string).join("\n"));
+        } catch {
+          /* clipboard blocked — non-fatal */
+        }
+        setStatusMsg(
+          missing.length > 0
+            ? `${built.length}/${channels.length} Frigate URLs — ${missing.length} not covered`
+            : built.length > 1
+              ? `${built.length} Frigate URLs copied to clipboard`
+              : "Frigate URL copied to clipboard",
+        );
+        if (openInVlc) {
+          for (let i = 0; i < channels.length; i++) {
+            const tab = targetTabs[i];
+            const match = built.find((r) => r.channel === channels[i]);
+            if (tab && match?.url) {
+              tab.location.href = match.url;
+            } else if (tab) {
+              tab.close();
+            }
+          }
+        }
+        return;
+      }
 
       try {
         // Fan-out: one API request per channel, all in parallel. Same
@@ -377,11 +492,12 @@ export function PlaybackUrlPage() {
               <select
                 className={styles.select}
                 value={nvr}
-                onChange={(e) => setNvr(e.target.value as "amcrest" | "annke")}
-                title="amcrest = Dahua /cam/playback + local wallclock; annke = Hikvision /Streaming/tracks + Pacific-as-fake-Z"
+                onChange={(e) => setNvr(e.target.value as "amcrest" | "annke" | "frigate")}
+                title="amcrest = Dahua /cam/playback + local wallclock; annke = Hikvision /Streaming/tracks + Pacific-as-fake-Z; frigate = beelink NVR history browser (opens in browser tab, not VLC)"
               >
                 <option value="amcrest">Amcrest (.148)</option>
                 <option value="annke">Annke (.130)</option>
+                {FRIGATE_URL && <option value="frigate">Frigate (Beelink)</option>}
               </select>
             </label>
           )}
@@ -467,9 +583,13 @@ export function PlaybackUrlPage() {
           >
             {status === "loading"
               ? "Building…"
-              : channels.length > 1
-                ? `▶ Open ${channels.length} in VLC`
-                : "▶ Open in VLC"}
+              : source === "nvr" && nvr === "frigate"
+                ? channels.length > 1
+                  ? `▶ Open ${channels.length} in Frigate`
+                  : "▶ Open in Frigate"
+                : channels.length > 1
+                  ? `▶ Open ${channels.length} in VLC`
+                  : "▶ Open in VLC"}
           </button>
           <button
             type="button"
