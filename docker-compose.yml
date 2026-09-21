@@ -61,6 +61,16 @@ x-detector-common: &detector-common
     # without a copy step.
     - ./models:/app/models-host:ro
     - ./config:/app/config
+  # GPU passthrough — hands the RTX 3090 to every detector so YOLO runs
+  # on CUDA instead of the CPU's 3-4 cores. src/detection/object_detector.py
+  # auto-picks 'cuda:0' when torch.cuda.is_available(); falls back to CPU
+  # if the host has no NVIDIA runtime. Set YOLO_DEVICE=cpu on a specific
+  # detector to force it off the GPU (e.g. during Ollama VRAM squeeze).
+  # NVIDIA_VISIBLE_DEVICES + NVIDIA_DRIVER_CAPABILITIES live in .env so the
+  # anchor's env_file: .env passes them through — a per-service environment
+  # block here would be clobbered by CAMERA_ID overrides (YAML anchor merge
+  # semantics, see the note on x-detector-common above).
+  runtime: nvidia
 
 # Rat re-id clusterer (Phase 2b) — shared by the `clusterer` (one-shot /
 # backfill, profile `tools`) and `clusterer-timer` (nightly loop) services.
