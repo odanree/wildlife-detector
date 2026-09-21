@@ -42,7 +42,7 @@ const FRIGATE_URL: string | undefined = (import.meta as unknown as { env?: Recor
 const NVR_CHANNELS: Record<"amcrest" | "annke" | "frigate", readonly number[]> = {
   amcrest: [1, 3, 4, 5, 6, 7, 8],
   annke: [1, 2, 3, 4, 5, 6, 7, 8],
-  frigate: [1, 2, 3, 4, 5, 7, 8, 10, 12, 14],
+  frigate: [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14],
 };
 
 // Frigate addresses cameras by their config-YAML name, not by NVR channel.
@@ -55,6 +55,7 @@ const FRIGATE_CAMERA_BY_CHANNEL: Record<number, string> = {
   3: "crawlspace_inside",
   4: "garage_ptz",
   5: "yard",
+  6: "rooftop",
   7: "crawlspace_ext",
   8: "backyard",
   10: "plant_pathway",
@@ -101,6 +102,7 @@ const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "annke" | "frigate", Record<numbe
     3: "3 (crawlspace int)",
     4: "4 (garage PTZ)",
     5: "5 (yard)",
+    6: "6 (rooftop)",
     7: "7 (crawlspace ext)",
     8: "8 (backyard)",
     10: "10 (plant pathway)",
