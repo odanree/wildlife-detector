@@ -316,6 +316,7 @@ _FRIGATE_CAMERAS: dict[str, str] = {
     "frontcorner":    "front_corner",
     "front_corner":   "front_corner",
     "garage_ptz":     "garage_ptz",
+    "frontyard":      "frontyard",
 }
 # Pre-VLM drop crops — same dir the detector's PreVlmDropSink writes
 # to via PRE_VLM_DROP_CROP_DIR. Read-only bind mount in the web
