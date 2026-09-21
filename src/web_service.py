@@ -948,14 +948,56 @@ def create_app(registry: DetectorRegistry) -> Flask:
 
     @app.get("/stream")
     def stream():
-        """MJPEG that pulls fresh frames from the detector via long-poll."""
+        """MJPEG that pulls fresh frames from the detector via long-poll.
+
+        Detector unreachable = 503 up-front instead of a mid-stream Flask
+        traceback. Preview page currently fetches /stream once per camera
+        on load — one stopped detector was blowing up the whole page
+        render with an uncaught httpcore.ConnectError (2026-09-21 06:55).
+        Mirrors the /status handler's offline sentinel pattern.
+        """
         detector = _pick(request)
         boundary = b"--frame"
 
+        # Probe once BEFORE returning the streaming Response — catches
+        # "detector-name not found in DNS" (stopped container) up-front
+        # so the client gets a clean 503 instead of a mid-stream traceback.
+        # Cheap: same call the generator does, just once with a shorter
+        # timeout since the loop can absorb one slow frame but the initial
+        # probe can't.
+        try:
+            _initial_jpeg, _initial_status, _initial_ver = detector.frame(
+                since=-1, timeout=2.0,
+            )
+        except Exception as e:
+            logger.info("Detector unreachable on /stream: %s", e)
+            return jsonify({
+                "error": "detector offline",
+                "detail": f"{type(e).__name__}",
+            }), 503
+
         def generate():
+            # Emit the initial frame we already fetched (unless it was
+            # empty because the detector's frame slot was fresh but the
+            # probe raced the writer — in that case the loop below picks
+            # up whatever's next).
             last_seen = -1
+            if _initial_jpeg:
+                yield boundary + b"\r\n" \
+                      b"Content-Type: image/jpeg\r\n" \
+                      b"Content-Length: " + str(len(_initial_jpeg)).encode() + b"\r\n\r\n" \
+                      + _initial_jpeg + b"\r\n"
+                last_seen = _initial_ver
             while True:
-                jpeg, http_status, ver = detector.frame(since=last_seen, timeout=5.0)
+                try:
+                    jpeg, http_status, ver = detector.frame(since=last_seen, timeout=5.0)
+                except Exception as e:
+                    # Detector went away mid-stream (container restart, network
+                    # hiccup) — end the stream cleanly so the client's <img>
+                    # element stops, instead of the connection dangling with
+                    # an uncaught exception in the werkzeug thread.
+                    logger.info("Detector dropped mid-/stream: %s", e)
+                    return
                 if not jpeg:
                     continue
                 last_seen = ver
