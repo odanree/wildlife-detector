@@ -839,6 +839,18 @@ services:
       # be the dominant FP source in this scene (no daytime moth stream,
       # no fence reflections, but plenty of IR speckle on textured walls).
       MIN_MOTION_BBOX_PX: "30"
+      # 2026-09-21: raised from 220 default to 255 to disable the max-pixel
+      # insect gate for this camera. Operator added an obstacle+trap at the
+      # main crawlspace entrance last night; its metal surfaces reflect IR
+      # light and produce max=255 pixels inside every motion bbox nearby.
+      # Every rat crossing that area was being classified insect (verified
+      # 2026-09-21 00:00-02:40 PT: 0 VLM invocations, 6 insect-filter
+      # rejections all at bbox (430, 817-848) — the reflective trap zone).
+      # Mean-brightness gate (NIGHT_INSECT_BRIGHTNESS_MIN) + elongation
+      # gate remain active — moths still get filtered via those paths.
+      # Revert this once the reflective surface is physically covered
+      # (matte tape / black paint on the trap's shiny bits).
+      NIGHT_INSECT_MAX_BRIGHTNESS_MIN: "255"
       # 2026-09-12: bumped 3 → 8 after cutover to 12MP .105 source
       # caused 79% VLM stale-drops (98 dropped / 26 fired in 1h). Larger
       # crops from HEVC 3840x2880 saturated Ollama's queue at 3s cadence.
