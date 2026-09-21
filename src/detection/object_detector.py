@@ -88,6 +88,25 @@ class ObjectDetector:
     ) -> None:
         self._model = YOLO(model_path)
         self._model_path = model_path
+        # Move YOLO to CUDA if available and the operator hasn't forced CPU.
+        # Container needs GPU passthrough (docker-compose runtime: nvidia +
+        # NVIDIA_VISIBLE_DEVICES) — see PR #262. Falls back cleanly to CPU
+        # when the GPU isn't present or torch's cuda build isn't installed.
+        # YOLO_DEVICE=cpu forces CPU even on a GPU host (useful for a
+        # single-detector CPU fallback if the GPU is saturated by other
+        # workloads like Ollama).
+        _yolo_device = os.getenv("YOLO_DEVICE", "").strip().lower()
+        if _yolo_device == "cpu":
+            self._device = "cpu"
+        else:
+            try:
+                import torch
+                self._device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            except Exception:
+                self._device = "cpu"
+        if self._device.startswith("cuda"):
+            self._model.to(self._device)
+        logger.info("YOLO device: %s (model=%s)", self._device, model_path)
         # Separate, lazily-loaded model for stateless single-frame localization
         # (see localize_person). Kept distinct from self._model so a one-off
         # predict() never disturbs the persistent ByteTrack/BoT-SORT state that
@@ -146,6 +165,7 @@ class ObjectDetector:
             classes=self._class_ids(),
             verbose=False,
             imgsz=self._yolo_imgsz,
+            device=self._device,
         )
 
         detections: list[Detection] = []
@@ -253,7 +273,12 @@ class ObjectDetector:
         """
         if self._loc_model is None:
             self._loc_model = YOLO(self._model_path)
-            logger.info("Localizer model loaded (%s) for hi-res re-detection", self._model_path)
+            if self._device.startswith("cuda"):
+                self._loc_model.to(self._device)
+            logger.info(
+                "Localizer model loaded (%s) for hi-res re-detection on %s",
+                self._model_path, self._device,
+            )
 
         h, w = frame.shape[:2]
         ox, oy = 0, 0
@@ -278,6 +303,7 @@ class ObjectDetector:
             classes=[person_id],
             imgsz=imgsz,
             verbose=False,
+            device=self._device,
         )
         boxes = results[0].boxes
         if boxes is None or len(boxes) == 0:
