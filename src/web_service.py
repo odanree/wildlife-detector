@@ -311,6 +311,7 @@ _FRIGATE_CAMERAS: dict[str, str] = {
     "crawlspace":     "crawlspace_ext",
     "crawlspace_ext": "crawlspace_ext",
     "crawlspace_inside": "crawlspace_inside",
+    "rooftop":        "rooftop",
     "backyard":       "backyard",
     "plant_pathway":  "plant_pathway",
     "corner":         "corner",
