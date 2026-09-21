@@ -18,7 +18,7 @@ import styles from "./PlaybackUrlPage.module.css";
  * common "same channel, another moment" flow doesn't re-input every time.
  */
 
-const CHANNELS: readonly number[] = [1, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14];
+const CHANNELS: readonly number[] = [1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14];
 
 // Frigate host — build-time env for the frontend. When unset, the
 // Frigate option is hidden from the NVR picker (no host = no target).
@@ -42,7 +42,7 @@ const FRIGATE_URL: string | undefined = (import.meta as unknown as { env?: Recor
 const NVR_CHANNELS: Record<"amcrest" | "annke" | "frigate", readonly number[]> = {
   amcrest: [1, 3, 4, 5, 6, 7, 8],
   annke: [1, 2, 3, 4, 5, 6, 7, 8],
-  frigate: [1, 4, 5, 7, 8, 10, 12, 14],
+  frigate: [1, 2, 4, 5, 7, 8, 10, 12, 14],
 };
 
 // Frigate addresses cameras by their config-YAML name, not by NVR channel.
@@ -51,6 +51,7 @@ const NVR_CHANNELS: Record<"amcrest" | "annke" | "frigate", readonly number[]> =
 // added there needs an entry here so the picker can route to it).
 const FRIGATE_CAMERA_BY_CHANNEL: Record<number, string> = {
   1: "sideyard",
+  2: "frontyard",
   4: "garage_ptz",
   5: "yard",
   7: "crawlspace_ext",
@@ -65,6 +66,7 @@ const FRIGATE_CAMERA_BY_CHANNEL: Record<number, string> = {
 // as "channel N" so the operator can still reach them.
 const CHANNEL_LABEL: Record<number, string> = {
   1: "1 (sideyard)",
+  2: "2 (frontyard .142 — direct only)",
   3: "3 (crawlspace int)",
   4: "4 (garage PTZ)",
   5: "5 (yard)",
@@ -94,6 +96,7 @@ const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "annke" | "frigate", Record<numbe
   },
   frigate: {
     1: "1 (sideyard)",
+    2: "2 (frontyard)",
     4: "4 (garage PTZ)",
     5: "5 (yard)",
     7: "7 (crawlspace ext)",
