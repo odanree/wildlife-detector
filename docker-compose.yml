@@ -1215,18 +1215,10 @@ services:
       # Two-NVR shape wired via NVR_HOST_/USER_/PASS_/FAMILY_<CAM>. See
       # src/stream/playback_url.py::_nvr_env for the resolution order.
       NVR_CHANNEL_YARD: "5"
-      # Rooftop was Amcrest ch6, now Annke ch2 after 2026-09-13 reorg.
-      NVR_CHANNEL_ROOFTOP: "2"
-      NVR_HOST_ROOFTOP: "${ANNKE_HOST:?}"
-      NVR_USER_ROOFTOP: "${ANNKE_USER:?}"
-      NVR_PASS_ROOFTOP: "${ANNKE_PASS:?}"
-      NVR_FAMILY_ROOFTOP: "hikvision"
-      # Backyard was Amcrest ch8, now Annke ch4.
-      NVR_CHANNEL_BACKYARD: "4"
-      NVR_HOST_BACKYARD: "${ANNKE_HOST:?}"
-      NVR_USER_BACKYARD: "${ANNKE_USER:?}"
-      NVR_PASS_BACKYARD: "${ANNKE_PASS:?}"
-      NVR_FAMILY_BACKYARD: "hikvision"
+      # 2026-09-21: Annke decommissioned. Both back on Amcrest —
+      # rooftop ch6, backyard ch8 — no per-camera overrides.
+      NVR_CHANNEL_ROOFTOP: "6"
+      NVR_CHANNEL_BACKYARD: "8"
       # 2026-09-10: connected 192.168.1.229 to Amcrest NVR channel 1 as
       # a proper recording source. Archiver switched from the AgentDVR
       # local-chunk path back to the standard NVR RTSP path to match
@@ -1236,16 +1228,11 @@ services:
       # of three.
       # 2026-09-12: cutover from .229 (Amcrest ch1) to the YHD912-P at
       # .105 on Amcrest ch7. RTSP_URL on detector-crawlspace updated too.
-      # 2026-09-15: playback routed through Annke ch3. Amcrest chokes on
-      # 12MP playback (operator's original reason for buying the Annke);
-      # .105 is already adopted on both NVRs, so we hit Annke for
-      # playback and keep Amcrest for live recording. Live-feed relay
-      # (detector's RTSP_URL) stays on Amcrest — see PR discussion.
-      NVR_CHANNEL_CRAWLSPACE: "3"
-      NVR_HOST_CRAWLSPACE: "${ANNKE_HOST:?}"
-      NVR_USER_CRAWLSPACE: "${ANNKE_USER:?}"
-      NVR_PASS_CRAWLSPACE: "${ANNKE_PASS:?}"
-      NVR_FAMILY_CRAWLSPACE: "hikvision"
+      # 2026-09-21: Annke decommissioned. Playback back on Amcrest ch7
+      # (2304x1296 HEVC — not the old 12MP main-stream that used to
+      # choke the Amcrest NVR). No per-camera NVR overrides — inherits
+      # fleet-wide AMCREST_HOST/USER/PASS.
+      NVR_CHANNEL_CRAWLSPACE: "7"
       # 2026-09-11: .86 moved to the Amcrest at .148 channel 3 (simpler
       # than the earlier Annke/AgentDVR arrangement). No per-camera NVR
       # overrides needed — inherits fleet-wide AMCREST_HOST/USER/PASS.
@@ -1330,16 +1317,9 @@ services:
       # Rooftop + backyard route through the Annke NVR at .130 (hikvision
       # family). See web env block above for the two-NVR rationale.
       NVR_CHANNEL_YARD: "5"
-      NVR_CHANNEL_ROOFTOP: "2"
-      NVR_HOST_ROOFTOP: "${ANNKE_HOST:?}"
-      NVR_USER_ROOFTOP: "${ANNKE_USER:?}"
-      NVR_PASS_ROOFTOP: "${ANNKE_PASS:?}"
-      NVR_FAMILY_ROOFTOP: "hikvision"
-      NVR_CHANNEL_BACKYARD: "4"
-      NVR_HOST_BACKYARD: "${ANNKE_HOST:?}"
-      NVR_USER_BACKYARD: "${ANNKE_USER:?}"
-      NVR_PASS_BACKYARD: "${ANNKE_PASS:?}"
-      NVR_FAMILY_BACKYARD: "hikvision"
+      # 2026-09-21: Annke decommissioned — both on Amcrest, no overrides.
+      NVR_CHANNEL_ROOFTOP: "6"
+      NVR_CHANNEL_BACKYARD: "8"
       # 2026-09-10: connected 192.168.1.229 to Amcrest NVR channel 1.
       # Retired the AgentDVR bind mount + AGENTDVR_DIR_CRAWLSPACE env —
       # archiver now dispatches to the standard NVR RTSP playback URL
@@ -1350,12 +1330,9 @@ services:
       # likely has footage for windows AgentDVR missed.
       # 2026-09-12: cutover from .229 (Amcrest ch1) to the YHD912-P at
       # .105 on Amcrest ch7. RTSP_URL on detector-crawlspace updated too.
-      # 2026-09-15: playback via Annke ch3 (see web env block above).
-      NVR_CHANNEL_CRAWLSPACE: "3"
-      NVR_HOST_CRAWLSPACE: "${ANNKE_HOST:?}"
-      NVR_USER_CRAWLSPACE: "${ANNKE_USER:?}"
-      NVR_PASS_CRAWLSPACE: "${ANNKE_PASS:?}"
-      NVR_FAMILY_CRAWLSPACE: "hikvision"
+      # 2026-09-21: Annke decommissioned — playback back on Amcrest ch7
+      # (see web env block above for detail). No per-camera overrides.
+      NVR_CHANNEL_CRAWLSPACE: "7"
       # 2026-09-11: .86 moved to the Amcrest at .148 channel 3 — see
       # matching note in the web env block above. Standard NVR dispatch,
       # no AgentDVR bind mount, no per-camera host overrides.

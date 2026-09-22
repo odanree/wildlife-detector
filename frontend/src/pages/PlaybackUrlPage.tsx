@@ -18,7 +18,7 @@ import styles from "./PlaybackUrlPage.module.css";
  * common "same channel, another moment" flow doesn't re-input every time.
  */
 
-const CHANNELS: readonly number[] = [1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14];
+const CHANNELS: readonly number[] = [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14];
 
 // Frigate host — build-time env for the frontend. When unset, the
 // Frigate option is hidden from the NVR picker (no host = no target).
@@ -31,17 +31,22 @@ const CHANNELS: readonly number[] = [1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14]
 const FRIGATE_URL: string | undefined = (import.meta as unknown as { env?: Record<string, string> })
   .env?.VITE_FRIGATE_URL;
 
-// Per-NVR valid channel sets. Annke N98PBK physically has 8 channels;
-// Amcrest holds the rest of the fleet. Frigate covers a curated subset
-// mirroring the Beelink Frigate compose (2026-09-20 fleet trim):
+// Windows has the `mpv://` URL scheme registered (docs/mpv-scheme-setup.md).
+// macOS/Linux don't by default, and clicks silently fail. On non-Windows,
+// serve plain http:// clip.mp4 URLs so the browser tab inline-plays them
+// via its built-in video element — no external player needed.
+const IS_WINDOWS =
+  typeof navigator !== "undefined" &&
+  (navigator.platform?.startsWith("Win") || navigator.userAgent?.includes("Windows"));
+
+// Per-NVR valid channel sets. Amcrest is the single physical NVR after
+// Annke was decommissioned 2026-09-21 (4TB HDD extracted → Beelink Frigate
+// storage). Frigate covers a curated subset mirroring the Beelink compose:
 // Amcrest-NVR cams via sub-stream + direct-RTSP cams via main-stream.
-// Cameras that live only in wildlife-detector (crawlspace_inside, rooftop)
-// are absent from Frigate to keep the box's iGPU + disk within budget.
 // Direct-mode picker still shows every CAMERA_RTSP_<N> slot regardless
 // of NVR (no NVR involved).
-const NVR_CHANNELS: Record<"amcrest" | "annke" | "frigate", readonly number[]> = {
+const NVR_CHANNELS: Record<"amcrest" | "frigate", readonly number[]> = {
   amcrest: [1, 3, 4, 5, 6, 7, 8],
-  annke: [1, 2, 3, 4, 5, 6, 7, 8],
   frigate: [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14],
 };
 
@@ -76,26 +81,15 @@ const CHANNEL_LABEL: Record<number, string> = {
   7: "7 (crawlspace ext)",
   8: "8 (backyard)",
   10: "10 (plant pathway .105 — direct only)",
-  11: "11 (plant pathway via Annke ch 8 — direct only)",
   12: "12 (corner .125 — direct only)",
   13: "13 (sideyard .112 — direct only)",
   14: "14 (front corner .104 — direct only)",
 };
 
-// Per-NVR channel labels — same channel number can mean different cameras
-// on Amcrest vs Annke, so the label context matters.
-const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "annke" | "frigate", Record<number, string>> = {
+// Per-NVR channel labels — Frigate uses camera-config-name lookup, so its
+// channel→label mapping is separate from the Amcrest channel numbering.
+const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "frigate", Record<number, string>> = {
   amcrest: CHANNEL_LABEL,
-  annke: {
-    1: "1 (crawlspace int)",
-    2: "2 (rooftop)",
-    3: "3 (crawlspace ext)",
-    4: "4 (backyard)",
-    5: "5 (frontyard)",
-    6: "6 (sideyard)",
-    7: "7 (corner)",
-    8: "8 (plant pathway)",
-  },
   frigate: {
     1: "1 (sideyard)",
     2: "2 (frontyard)",
@@ -114,14 +108,8 @@ const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "annke" | "frigate", Record<numbe
 // Alerts-page deep-link camera_id → (channel, NVR) mapping. The alerts
 // page hands us ?camera=<id> and we preselect the picker so the operator
 // lands on the right NVR + channel for THAT camera's recording home.
-//
-// Rooftop and backyard reverted to Amcrest 2026-09-16 after Annke's RTSP
-// serving pipe wedged post-firmware config surgery — the recordings still
-// land on Annke's disk but generic RTSP pulls stall. Cameras dual-stream
-// to Amcrest anyway, and Amcrest handles 4K fine. Both stayed on Annke
-// originally (PR #220) to gain 12MP handling; neither camera is >4K so
-// that reason no longer applies.
-const CAMERA_TO_CHANNEL: Record<string, { channel: number; nvr: "amcrest" | "annke" }> = {
+// All cameras land on Amcrest after the 2026-09-21 Annke decommission.
+const CAMERA_TO_CHANNEL: Record<string, { channel: number; nvr: "amcrest" }> = {
   yard: { channel: 5, nvr: "amcrest" },
   rooftop: { channel: 6, nvr: "amcrest" },
   backyard: { channel: 8, nvr: "amcrest" },
@@ -220,28 +208,38 @@ export function PlaybackUrlPage() {
     localStorage.setItem("playbackUrlSource", s);
   }, []);
 
-  // Which NVR to route source=nvr playback through. Amcrest is the fleet
-  // default; Annke (Hikvision family) holds a separate camera set with a
-  // different URL shape (/Streaming/tracks/… + Pacific-as-fake-Z). See
-  // src/web_service.py::api_playback_url for the vendor branch.
-  const [nvr, setNvrRaw] = useState<"amcrest" | "annke" | "frigate">(() => {
+  // Which NVR to route source=nvr playback through. Amcrest is the sole
+  // physical NVR after Annke was decommissioned 2026-09-21. Frigate is
+  // the software alt (Beelink, records a curated subset in main-stream).
+  const [nvr, setNvrRaw] = useState<"amcrest" | "frigate">(() => {
     // Deep-link overrides sticky NVR — same rationale as the channel
     // reset above (align the picker to the alert's playback home).
-    if (paramPreset != null) return paramPreset.nvr;
+    // On macOS/Linux the deep-link preset (which is always "amcrest"
+    // after the Annke decommission) is silently upgraded to "frigate"
+    // when available, because rtsp:// URLs won't launch a player without
+    // an OS handler while Frigate's http:// clip URLs inline-play in
+    // the browser tab.
+    if (paramPreset != null) {
+      if (!IS_WINDOWS && FRIGATE_URL && paramPreset.nvr === "amcrest") return "frigate";
+      return paramPreset.nvr;
+    }
     const saved = localStorage.getItem("playbackUrlNvr");
-    if (saved === "annke") return "annke";
     if (saved === "frigate" && FRIGATE_URL) return "frigate";
+    if (saved === "amcrest") return "amcrest";
+    // No sticky preference. Windows defaults to Amcrest (native rtsp
+    // handler); everyone else defaults to Frigate when available.
+    if (!IS_WINDOWS && FRIGATE_URL) return "frigate";
     return "amcrest";
   });
-  const setNvr = useCallback((n: "amcrest" | "annke" | "frigate") => {
+  const setNvr = useCallback((n: "amcrest" | "frigate") => {
     setNvrRaw(n);
     localStorage.setItem("playbackUrlNvr", n);
   }, []);
 
   // When the operator flips NVR (or source) and the sticky channel is
-  // not valid on the new NVR (e.g. Amcrest ch11 does not exist on Annke's
-  // 8-channel N98PBK), snap the picker to the first valid channel so the
-  // URL builder cannot produce an invalid /Streaming/tracks/1101/ path.
+  // not valid on the new NVR (e.g. Amcrest ch10 does not exist on Frigate's
+  // curated set), snap the picker to the first valid channel so the URL
+  // builder never produces an invalid path.
   useEffect(() => {
     if (source !== "nvr") return;
     const valid = NVR_CHANNELS[nvr];
@@ -365,13 +363,20 @@ export function PlaybackUrlPage() {
           // mpv:// URL handler (see docs/mpv-scheme-setup.md) launches
           // MPV Player instead of playing inline in the browser tab.
           // Same OS-handler-hands-off pattern as the RTSP flow the
-          // /playback picker already uses for Amcrest / Annke. When
+          // /playback picker already uses for Amcrest. When
           // the scheme isn't registered, Windows shows its usual
           // "no app associated" dialog — falls back gracefully to
           // Copy URL (which strips the mpv:// prefix — see below).
+          //
+          // macOS/Linux don't have a default `mpv://` handler (macOS
+          // Chrome shows "There is no application set to open the URL"
+          // and does nothing). Skip the wrapper on non-Windows so the
+          // raw http:// URL opens in the browser tab and inline-plays
+          // the MP4 via the built-in video element. Operators who
+          // want MPV can still Copy URL and paste into MPV → Open URL.
           const endTs = startTs + durationSec;
           const httpUrl = `${FRIGATE_URL.replace(/\/+$/, "")}/api/${encodeURIComponent(cam)}/start/${startTs}/end/${endTs}/clip.mp4`;
-          const url = `mpv://${httpUrl}`;
+          const url = IS_WINDOWS ? `mpv://${httpUrl}` : httpUrl;
           built.push({ url, channel: ch, camera: cam, start: startStr, end: endStr });
         }
         if (built.length === 0) {
@@ -527,11 +532,10 @@ export function PlaybackUrlPage() {
               <select
                 className={styles.select}
                 value={nvr}
-                onChange={(e) => setNvr(e.target.value as "amcrest" | "annke" | "frigate")}
-                title="amcrest = Dahua /cam/playback + local wallclock; annke = Hikvision /Streaming/tracks + Pacific-as-fake-Z; frigate = beelink NVR history browser (opens in browser tab, not VLC)"
+                onChange={(e) => setNvr(e.target.value as "amcrest" | "frigate")}
+                title="amcrest = Dahua /cam/playback + local wallclock; frigate = beelink Frigate clip.mp4 endpoint (opens in MPV via mpv:// scheme)"
               >
                 <option value="amcrest">Amcrest (.148)</option>
-                <option value="annke">Annke (.130)</option>
                 {FRIGATE_URL && <option value="frigate">Frigate (Beelink)</option>}
               </select>
             </label>

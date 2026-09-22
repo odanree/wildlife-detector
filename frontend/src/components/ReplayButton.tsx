@@ -28,8 +28,18 @@ export function ReplayButton({ alertId, size = "sm" }: ReplayButtonProps) {
     // mp4 clips, the browser opened them in a bare viewer with no back
     // button, forcing operators to browser-back to return to labeling.
     const newTab = window.open("about:blank", "_blank");
+    // Windows has an mpv:// URL scheme handler (docs/mpv-scheme-setup.md)
+    // AND typically a rtsp:// handler (VLC or MPV). macOS/Linux browsers
+    // usually have neither — clicking mpv:// or rtsp:// silently fails.
+    // Ask the backend for the Frigate http:// clip URL instead, which
+    // opens inline in a browser tab. Backend falls back to rtsp:// if
+    // the camera has no Frigate mapping.
+    const isWindows =
+      typeof navigator !== "undefined" &&
+      (navigator.platform?.startsWith("Win") || navigator.userAgent?.includes("Windows"));
+    const query = isWindows ? "" : "?prefer=frigate";
     try {
-      const r = await fetch(`/api/alerts/${alertId}/playback-url`);
+      const r = await fetch(`/api/alerts/${alertId}/playback-url${query}`);
       if (!r.ok) {
         newTab?.close();
         // 404 + error:"no_recording" = archiver dropped a tombstone
@@ -62,11 +72,17 @@ export function ReplayButton({ alertId, size = "sm" }: ReplayButtonProps) {
       } catch {
         /* clipboard blocked in insecure context — non-fatal */
       }
+      // macOS/Linux don't have a registered mpv:// handler, so opening
+      // the wrapped URL silently no-ops. Strip the wrapper on non-Windows
+      // so the raw http:// URL opens in a browser tab and inline-plays
+      // the MP4 via the built-in video element. (Reuses the isWindows
+      // computed above for the ?prefer=frigate query.)
+      const navUrl = isWindows ? j.url : clipboardUrl;
       if (newTab) {
-        newTab.location.href = j.url;
+        newTab.location.href = navUrl;
       } else {
         // Popup blocked → fall back to same-tab navigation (old behavior).
-        window.location.href = j.url;
+        window.location.href = navUrl;
       }
       // Show which source the URL was routed through — Local clip / Frigate /
       // NVR. Operator sees whether Frigate saved them from a flaky Amcrest

@@ -1698,7 +1698,13 @@ def create_app(registry: DetectorRegistry) -> Flask:
         frigate_url = os.getenv("FRIGATE_URL", "").strip().rstrip("/")
         frigate_cam = _FRIGATE_CAMERAS.get(camera_id.lower())
         no_nvr_channel = not env_channel and channel_override == 0
-        if frigate_url and frigate_cam and no_nvr_channel:
+        # macOS/Linux browsers can't launch the rtsp:// scheme without a
+        # registered handler; Frigate's http:// clip URL opens inline in
+        # a browser tab. Frontend passes ?prefer=frigate on non-Windows
+        # clients (see ReplayButton.tsx) to force the Frigate branch even
+        # when an NVR channel is configured for the camera.
+        prefer_frigate = (request.args.get("prefer") or "").strip().lower() == "frigate"
+        if frigate_url and frigate_cam and (no_nvr_channel or prefer_frigate):
             frigate_pre_roll = pre_roll
             # Same duration as the archiver's default clip window — enough
             # to see the event with pre-roll context, not so much that
