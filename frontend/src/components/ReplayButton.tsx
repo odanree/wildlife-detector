@@ -84,17 +84,14 @@ export function ReplayButton({ alertId, size = "sm" }: ReplayButtonProps) {
         // Popup blocked → fall back to same-tab navigation (old behavior).
         window.location.href = navUrl;
       }
-      // Show which source the URL was routed through — Local clip / Frigate /
-      // NVR. Operator sees whether Frigate saved them from a flaky Amcrest
-      // playback path, or whether they're on the fast-path local clip, etc.
-      // Combined with the note (if present) into a single toast to avoid
-      // stacking dialogs when both are set.
-      const parts: string[] = [];
-      if (j.source_label) parts.push(`Opening via ${j.source_label}`);
-      if (j.note) parts.push(j.note);
-      if (parts.length > 0) {
-        setTimeout(() => alert(parts.join("\n\n")), 200);
-      }
+      // Silent toast — the source_label used to fire a browser alert()
+      // to surface routing (Frigate / NVR / local clip), but the dialog
+      // interrupts every playback click. Log to console for debugging;
+      // notes surface only when they carry actionable info (they don't
+      // right now — the archiver's tombstone message is the sole caller
+      // and that path already alerts on the 404 branch above).
+      if (j.source_label) console.log(`[playback] via ${j.source_label}`);
+      if (j.note) console.log(`[playback] note: ${j.note}`);
     } catch (e) {
       newTab?.close();
       alert(`Playback URL error: ${e instanceof Error ? e.message : String(e)}`);

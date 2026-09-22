@@ -225,9 +225,14 @@ export function PlaybackUrlPage() {
     }
     const saved = localStorage.getItem("playbackUrlNvr");
     if (saved === "frigate" && FRIGATE_URL) return "frigate";
-    if (saved === "amcrest") return "amcrest";
-    // No sticky preference. Windows defaults to Amcrest (native rtsp
-    // handler); everyone else defaults to Frigate when available.
+    // Only honor an "amcrest" sticky on Windows. On macOS/Linux the
+    // amcrest path yields rtsp:// URLs that need an OS handler the
+    // browser doesn't have — better to migrate the operator to Frigate
+    // silently than respect a stale preference from before tonight's
+    // decommission. They can still pick Amcrest manually if they insist.
+    if (saved === "amcrest" && IS_WINDOWS) return "amcrest";
+    // No usable sticky preference. Windows defaults to Amcrest (native
+    // rtsp handler); everyone else defaults to Frigate when available.
     if (!IS_WINDOWS && FRIGATE_URL) return "frigate";
     return "amcrest";
   });
