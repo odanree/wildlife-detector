@@ -23,8 +23,12 @@ export function ResourceChip({ camera }: ResourceChipProps) {
   if (error) return <Chip label="proc">error</Chip>;
   if (!data) return <Chip label="proc">…</Chip>;
 
+  // Defense in depth: the /status offline-sentinel used to omit `resources`
+  // entirely (crashed the whole tree with "reading 'available' of undefined"
+  // on 2026-09-26 while paused detectors were bouncing). Guard here even
+  // though the sidecar now always includes the sub-object.
   const r = data.resources;
-  if (!r.available) {
+  if (!r || !r.available) {
     return <Chip label="proc">psutil unavailable</Chip>;
   }
   const cpu = r.cpu_pct ?? 0;

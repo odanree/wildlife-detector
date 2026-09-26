@@ -20,7 +20,11 @@ export function GateFunnelChip({ camera }: GateFunnelChipProps) {
   const { data, error } = useStatus(camera);
   if (error) return <Chip label="gate">error</Chip>;
   if (!data) return <Chip label="gate">…</Chip>;
+  // Defense in depth: offline sentinel used to omit `gate_funnel` — same
+  // crash class as ResourceChip on 2026-09-26. Guard even though backend
+  // now always emits the sub-object.
   const g = data.gate_funnel;
+  if (!g) return <Chip label="gate">offline</Chip>;
   const basePassed = Math.max(0, g.zone_events - g.baseline_filtered);
   const velRej = g.motion_velocity_rejected ?? 0;
   const perRej = g.motion_persistence_rejected ?? 0;

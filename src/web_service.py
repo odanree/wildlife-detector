@@ -331,6 +331,61 @@ _DATA_DIR = Path("data")
 _DETECTION_CFG = Path("config/detection.yaml")
 
 
+def offline_status_sentinel() -> dict:
+    """The fallback shape /status returns when the detector's internal
+    HTTP is unreachable (transient during container restarts, or the
+    detector process crashed).
+
+    Contract: this dict's key structure (including all nested sub-object
+    keys) must be a SUPERSET of the happy-path Stats.snapshot() shape.
+    A future addition to Stats.snapshot() that isn't mirrored here will
+    silently omit a key the frontend reads, unmount the React tree, and
+    blank the preview screen (2026-09-26 regression).
+
+    tests/unit/test_status_offline_sentinel.py enforces this contract at
+    CI time — do NOT delete without also removing that test."""
+    return {
+        "fps": 0.0,
+        "last_frame_age_s": None,
+        "alerts_total": 0,
+        "uptime_seconds": 0,
+        "backend": "offline",
+        "camera": "detector unreachable",
+        "camera_id": "unknown",
+        "zone_key": "unknown",
+        "detection_size": [0, 0],
+        "last_alert": None,
+        "gate_funnel": {
+            "motion_velocity_rejected":    0,
+            "motion_persistence_rejected": 0,
+            "motion_events":               0,
+            "zone_events":                 0,
+            "baseline_filtered":           0,
+            "vlm_calls":                   0,
+            "vlm_rejected":                0,
+            "vlm_insect":                  0,
+            "vlm_confirmed":               0,
+        },
+        "vlm_cost": {
+            "tokens_input":        0,
+            "tokens_cache_read":   0,
+            "tokens_cache_create": 0,
+            "tokens_output":       0,
+            "cost_usd":            0.0,
+            "cache_hit_rate":      0.0,
+        },
+        "resources": {
+            "cpu_pct":      0.0,
+            "cpu_peak_pct": 0.0,
+            "num_cpus":     0,
+            "rss_mb":       0.0,
+            "rss_peak_mb":  0.0,
+            "threads":      0,
+            "available":    False,
+        },
+    }
+
+
 def _parse_date_range(
     from_str: str | None, to_str: str | None,
 ) -> tuple[float | None, float | None]:
@@ -1020,17 +1075,12 @@ def create_app(registry: DetectorRegistry) -> Flask:
         try:
             return jsonify(detector.status())
         except Exception:
-            # Detector is down or unreachable — return a sentinel the UI can
-            # render as 'detector offline' without breaking.
-            return jsonify({
-                "fps": 0.0,
-                "alerts_total": 0,
-                "uptime_seconds": 0,
-                "backend": "offline",
-                "camera": "detector unreachable",
-                "detection_size": [0, 0],
-                "last_alert": None,
-            })
+            # Detector is down or unreachable — sentinel is exercised in
+            # tests/unit/test_status_offline_sentinel.py to guarantee its
+            # key set stays a superset of Stats.snapshot()'s, so a future
+            # backend field addition can't silently omit the sub-object
+            # and crash the frontend chips again (2026-09-26 preview blank).
+            return jsonify(offline_status_sentinel())
 
     # ── Alerts (direct SQLite read) ────────────────────────────────────────
 
