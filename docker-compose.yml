@@ -938,13 +938,21 @@ services:
       # the burst without losing rodent+ verdicts; downside is worst-
       # case alert latency now 40s (still tolerable for the labeling flow).
       VLM_MAX_ALERT_AGE_S: "40"
-      # 2026-09-12: gate VLM-REJECT-OVERRIDE on VLM description hedging.
-      # Only fire the 'other' alert if the VLM's rejection description
-      # sounds uncertain ('might', 'possibly', 'unclear', 'could be',
-      # etc.). Confident rejections ('no wildlife, clearly debris') are
-      # trusted and don't produce an override alert. Cuts the 12MP
-      # noise-driven 'other' flood without touching real-rodent recall.
-      VLM_REJECT_OVERRIDE_ONLY_IF_HEDGED: "1"
+      # 2026-09-26: flipped 1 → 0 after the 03:47:47 baby-rat return
+      # miss on this camera. Qwen returned a confident-sounding
+      # rejection ("no wildlife detected") on a 45x39 baby-rat crop
+      # with baseline_diff=0.153 — no hedge words → override
+      # suppressed → miss. Previous 2026-09-12 note claimed "without
+      # touching real-rodent recall" which was wrong; Qwen phrases
+      # confident-but-incorrect rejections identically to genuine
+      # empty-scene rejections when the target is small and IR-lit.
+      # Trade-off: FP volume rises (crawlspace_inside runs at 0 and
+      # produces ~80 REJECT-OVERRIDE 'other' alerts overnight, all
+      # labeled 'incorrect'). Accepted — a review flood is cheaper
+      # than a missed rat cohort exit. Alert-side shadow log
+      # ([pipeline.py] pre-VLM stash) will let us measure whether
+      # the pre-VLM filter can prune this flood without touching TPs.
+      VLM_REJECT_OVERRIDE_ONLY_IF_HEDGED: "0"
       # PTZ command target — camera_id=6 in the slew config maps to
       # these env vars. YHD912-P Hiseeu (Hikvision-family, ONVIF-only)
       # doesn't accept Dahua CGI. Amcrest NVR at .148 also refuses to
