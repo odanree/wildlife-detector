@@ -1515,7 +1515,25 @@ services:
     <<: *clusterer-common
     container_name: wildlife-clusterer-timer
     restart: unless-stopped
-    command: ["python", "-m", "src.clusterer.main", "--every-hours", "24"]
+    # 2026-09-26: tightened from 30d/0.93/30 → 10d/0.85/5 after
+    # empirical review showed the 30-day defaults inflated the active-
+    # rat count (27 identities against a working population of ~10).
+    # `--window-days 10` matches the operational rat-cohort turnover
+    # rhythm — baby rats leave the nest at ~2wk, dispersing individuals
+    # replace parents faster than the 30-day window resolves, and the
+    # trap deployment cadence retires visitors within a week.
+    # `--link-threshold 0.85` merges near-duplicate clusters into
+    # existing rat identities more aggressively — CLIP embeddings on
+    # 4K IR crops don't discriminate finely enough for 0.93 to link
+    # a returning rat that got wet/dry between sightings.
+    # `--retire-days 5` drops rats with no reappearance in 5 days
+    # from the active set — most one-time-visitor identities and
+    # trap-caught rats fall off within that window.
+    command: ["python", "-m", "src.clusterer.main",
+              "--window-days", "10",
+              "--link-threshold", "0.85",
+              "--retire-days", "5",
+              "--every-hours", "24"]
 
   # ── Remote-access tunnel (Cloudflare) ───────────────────────────────
   # Outbound-only tunnel from this host to Cloudflare's edge. Public
