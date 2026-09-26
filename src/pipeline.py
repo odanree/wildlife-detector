@@ -2271,11 +2271,22 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 # time, not per-call, so this branch is free when the
                 # filter is disabled.
                 if _pre_vlm_filter.enabled() and _is.area > 0 and det.track_id < MANUAL_TRACK_ID_BASE:
+                    # `trigger` is a categorical feature the pre-VLM filter
+                    # was trained with — it names which insect-gate rule
+                    # fired (mean/max/elong) when it was called from the
+                    # kill path. At THIS call site the insect gate hasn't
+                    # even run yet, so no rule has fired — use the sentinel
+                    # `pre_gate` so LightGBM buckets these into their own
+                    # category (safer than pulling in a stale value from a
+                    # prior loop iteration, which is what caused the
+                    # UnboundLocalError crash on 2026-09-26 that took
+                    # detector-crawlspace out for ~15s per bad frame and
+                    # missed the 03:16:54 baby-rat exit event).
                     _feat = {
                         "mean": _is.mean, "max": _is.max, "ar": _is.aspect_ratio,
                         "bbox_w": _is.w, "bbox_h": _is.h, "area": _is.area,
                         "wide_mean": _is.wide_mean, "wide_max": _is.wide_max,
-                        "camera_id": _camera_id_env, "trigger": _trigger,
+                        "camera_id": _camera_id_env, "trigger": "pre_gate",
                     }
                     _p = _pre_vlm_filter.predict(_feat)
                     if _p is not None:
