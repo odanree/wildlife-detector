@@ -75,6 +75,7 @@ from src.classifier import (
     get_classifier_shadow_log,
     get_pre_vlm_drop_sink,
     get_pre_vlm_filter,
+    get_pre_vlm_filter_alert_shadow_log,
     get_pre_vlm_filter_shadow_log,
 )
 
@@ -680,6 +681,15 @@ def run(stream_url: str | None = None, video_path: str | None = None,
         seam_margin=int(mot_cfg.get("seam_margin", 0)),
     )
 
+    # Optional MQTT motion gate — skips per-frame MOG/YOLO/VLM inference
+    # when a subscribed MQTT topic reports the camera scene as motion-
+    # clear. Signal source is pluggable (PIR sensor stations via ESPHome,
+    # Frigate motion, HA automation) — see src/detection/mqtt_motion_gate.py
+    # for the fail-open contract + env vars. Off unless MQTT_MOTION_GATE_ENABLED=1
+    # (or the legacy FRIGATE_MOTION_GATE_ENABLED=1 for the Sep-24 prototype).
+    from src.detection.mqtt_motion_gate import get_gate as _get_motion_gate
+    _frigate_gate = _get_motion_gate()  # var name kept for pipeline compat; class is now generic
+
     # Now that det_w/det_h are known, scale polygon (works for either format).
     zone_polygon = _scale_polygon(_raw_polygon, det_w, det_h)
     zone_filter = ZoneFilter(zones={zone_key: zone_polygon})
@@ -901,11 +911,20 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     _PRE_VLM_FILTER_THRESHOLD = float(os.getenv("PRE_VLM_FILTER_THRESHOLD", "0.5"))
     _pre_vlm_filter = get_pre_vlm_filter()
     _pre_vlm_filter_shadow_log = get_pre_vlm_filter_shadow_log()
+    _pre_vlm_filter_alert_shadow_log = get_pre_vlm_filter_alert_shadow_log()
+    # Per-track stash of the pre-VLM filter's verdict at the moment of
+    # frame submission — retrieved at alert-emit time so the alert-side
+    # shadow log can join to `alerts.id`. Bounded via bulk prune below.
+    # Track_id reuse is possible (motion tracker resets after N idle
+    # frames); the LATEST verdict per tid is always correct because the
+    # alert we're about to emit corresponds to the latest submitted frame.
+    _pre_vlm_prob_by_track: dict[int, tuple[float, bool, dict]] = {}
     if _pre_vlm_filter.enabled():
         logger.info(
-            "Pre-VLM filter loaded (shadow mode) threshold=%.2f shadow_log=%s",
+            "Pre-VLM filter loaded (shadow mode) threshold=%.2f shadow_log=%s alert_shadow_log=%s",
             _PRE_VLM_FILTER_THRESHOLD,
             "on" if _pre_vlm_filter_shadow_log.enabled() else "off",
+            "on" if _pre_vlm_filter_alert_shadow_log.enabled() else "off",
         )
     if _classifier is not None and _classifier.enabled():
         logger.info(
@@ -1201,6 +1220,30 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             # calls, no baseline update. Camera settles within
             # transition_pause_s (default 2 s, ~40 frames at 20 fps).
             if _self_slew_in_transition():
+                continue
+
+            # MQTT motion gate — skip inference when the subscribed topic
+            # reports the camera scene as motion-clear. Topic source is
+            # pluggable (PIR sensor via ESPHome, Frigate motion, etc.);
+            # this branch only sees the boolean gate.should_run(). Fail-
+            # open: broker down or never-connected → should_run() returns
+            # True so this skip never fires (identical behavior to gate
+            # disabled). See src/detection/mqtt_motion_gate.py.
+            #
+            # Ordering: after self-slew (motion is meaningless during PTZ
+            # transitions) but before operator-pause + daytime-skip so a
+            # motion-clear preview still shows the reason. This gate is
+            # the outermost external-signal skip — everything below it
+            # assumes there's something worth analyzing.
+            if _frigate_gate is not None and not _frigate_gate.should_run():
+                _frame_count += 1
+                if _frame_count % PREVIEW_EVERY_N == 0:
+                    _publish_paused_frame(
+                        frame,
+                        "detection paused (MQTT gate: no motion)",
+                        font_scale=0.55,
+                        color=(200, 200, 200),
+                    )
                 continue
 
             # Operator pause (global) — file-sentinel toggled from web UI.
@@ -1965,7 +2008,7 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                         tid, _bbox_max_side, _adult_rat_min,
                     )
                     _vlm_species = "rat"
-                _preview_stats.record_alert(
+                _alert_id = _preview_stats.record_alert(
                     species=_vlm_species,
                     confidence=float(result.get("confidence", 0.0)),
                     description=str(result.get("description", ""))[:200],
@@ -1984,6 +2027,30 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     bbox=tuple(int(v) for v in bbox) if bbox is not None else None,
                     frame_size=(sw, sh),
                 )
+                # Alert-side pre-VLM filter shadow row. The stash was
+                # populated when the frame that led to this alert was
+                # scored (see line ~2227). Retrieve by track_id + write
+                # with alert_id so downstream analysis can join by id to
+                # alerts.label_verdict for a real miss-rate on the
+                # promote-from-shadow decision. See
+                # [classifier.py]::PreVlmFilterAlertShadowLog docstring.
+                if (
+                    _alert_id is not None
+                    and _pre_vlm_filter_alert_shadow_log.enabled()
+                ):
+                    _stashed = _pre_vlm_prob_by_track.pop(int(tid), None)
+                    if _stashed is not None:
+                        _p, _sup, _feat = _stashed
+                        _pre_vlm_filter_alert_shadow_log.record(
+                            alert_id=_alert_id,
+                            camera_id=_camera_id_env,
+                            track_id=int(tid),
+                            species=_vlm_species,
+                            prob=_p,
+                            would_suppress=_sup,
+                            threshold=_PRE_VLM_FILTER_THRESHOLD,
+                            **_feat,
+                        )
                 # Manual dets: release submission entry now that the alert
                 # has fired, so the in-flight lookup dict stays bounded.
                 if tid >= MANUAL_TRACK_ID_BASE:
@@ -2192,6 +2259,37 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 # NOT a moth. Without this guard, cats/raccoons at overhead
                 # angle get silently rejected (see Aug 8 02:23 cat incident).
                 _is = _bbox_signature(frame, det.bbox)
+                # Stash the pre-VLM filter's verdict for THIS candidate,
+                # regardless of whether the insect gate kills it or it
+                # proceeds to VLM. Purpose: at alert-emit time (line ~2001,
+                # a later frame after VLM callback), retrieve by track_id
+                # and write to the alert-side shadow log with alert_id so
+                # the promote-decision join to `alerts.label_verdict` is
+                # exact. See [classifier.py]::PreVlmFilterAlertShadowLog.
+                # Runs unconditionally on every candidate (bounded by
+                # motion volume) — the sink is a JSONL append at write
+                # time, not per-call, so this branch is free when the
+                # filter is disabled.
+                if _pre_vlm_filter.enabled() and _is.area > 0 and det.track_id < MANUAL_TRACK_ID_BASE:
+                    _feat = {
+                        "mean": _is.mean, "max": _is.max, "ar": _is.aspect_ratio,
+                        "bbox_w": _is.w, "bbox_h": _is.h, "area": _is.area,
+                        "wide_mean": _is.wide_mean, "wide_max": _is.wide_max,
+                        "camera_id": _camera_id_env, "trigger": _trigger,
+                    }
+                    _p = _pre_vlm_filter.predict(_feat)
+                    if _p is not None:
+                        _pre_vlm_prob_by_track[det.track_id] = (
+                            _p, _p < _PRE_VLM_FILTER_THRESHOLD, _feat,
+                        )
+                        # Cap stash size — evict oldest inserted key if we
+                        # somehow accumulate more than 4x MOG max clusters
+                        # (~20-40 in practice). Prevents pathological growth
+                        # if the tracker leaks track_ids under load.
+                        if len(_pre_vlm_prob_by_track) > 200:
+                            _pre_vlm_prob_by_track.pop(
+                                next(iter(_pre_vlm_prob_by_track))
+                            )
                 # Skip insect pre-filter for operator-drawn manual bboxes.
                 # Human eyeballed the target already; re-litigating with
                 # mean/max/AR gates would just reject the exact case

@@ -1,4 +1,11 @@
 ultralytics>=8.0.0
+# Pinned explicitly — Ultralytics >=8.3 requires lap for its ByteTrack
+# tracker but doesn't declare it as a hard dep, so its AutoUpdate installs
+# it on first `.track()` call at container boot (~6s + pip warning).
+# Pinning here moves the install into image-build time so cold-start stays
+# fast and the deep healthcheck ([detector_api.py]/internal/health/deep)
+# doesn't false-alarm during warmup.
+lap>=0.5.12
 opencv-python-headless>=4.9.0
 numpy>=1.24
 anthropic>=0.30.0
@@ -32,3 +39,8 @@ pandas>=2.2.0
 # from (SUN_LAT, SUN_LON) each frame. Timezone-independent: the solar
 # elevation at (lat, lon) is a pure function of the UTC instant.
 astral>=3.2
+# MQTT client for Frigate motion-gate integration (Option B offload plan).
+# Detectors subscribe to `frigate/<cam>/motion` and skip YOLO+VLM cascade
+# when Frigate reports the camera as motion-clear. Opt-in per detector
+# via FRIGATE_MOTION_GATE_ENABLED — see src/detection/frigate_motion_gate.py.
+paho-mqtt>=2.1.0

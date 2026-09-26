@@ -214,6 +214,23 @@ services:
       # Explicit zone_key so the yaml default doesn't accidentally get shared
       # if we later rename the default.
       ZONE_KEY: yard_zone
+      # 2026-09-25: Frigate motion gate prototype reverted. Reason:
+      # outdoor cams at night see continuous motion from IR-attracted
+      # insects; indoor crawlspace has mosquitoes. Every camera has an
+      # inherent optical-motion noise floor that keeps the topic
+      # perpetually ON → gate stayed fail-open → no CPU reduction.
+      #
+      # 2026-09-25 (later): rewired the gate to be signal-source-agnostic
+      # via MQTT_MOTION_TOPIC. Follow-on plan is PIR sensor stations
+      # (HC-SR501 + ESP32 + ESPHome) mounted at each cam location —
+      # warm-body-only IR detection immune to insect + wind noise. Once
+      # a PIR station is live for yard, set:
+      #
+      #   MQTT_MOTION_GATE_ENABLED: "1"
+      #   MQTT_MOTION_TOPIC: "pir/yard/binary_sensor/pir_yard/state"
+      #
+      # See src/detection/mqtt_motion_gate.py for the fail-open contract.
+      MQTT_MOTION_GATE_ENABLED: "0"
       # RTSP source. 2026-08-09: replaced the original 1080p H.264
       # cam at .86 with a Reolink 4K HEVC (same physical mount, same
       # NVR channel 5). 2026-08-26: IP re-assigned .104 → .100.
@@ -780,6 +797,11 @@ services:
   detector-crawlspace:
     <<: *detector-common
     container_name: wildlife-detector-crawlspace
+    # 2026-09-26: opted into autoheal because this service's healthcheck
+    # now hits /internal/health/deep (see the healthcheck block below).
+    # Extend to sibling detectors as their healthchecks also deepen.
+    labels:
+      autoheal: "true"
     environment:
       CAMERA_ID: crawlspace
       ZONE_KEY: crawlspace_zone
@@ -958,12 +980,21 @@ services:
       # No PTZ — fixed cam, no self-slew, no position monitor.
     expose:
       - "8104"
+    # 2026-09-26: deep-healthcheck pilot (template for other detectors).
+    # Old shallow /internal/health returned 200 even when the RTSP reader
+    # was stalled — crawlspace_ext went 7h with no alerts on 2026-09-25
+    # while docker ps showed 'healthy'. /internal/health/deep observes the
+    # actual work pipeline (last_frame_age_s) and returns 503 when it
+    # stalls, so `docker inspect --format {{.State.Health.Status}}` flips
+    # to unhealthy and any autoheal sidecar (or the operator's
+    # off-box liveness check) can restart. Bumped start_period to 90s to
+    # cover cold-start ffmpeg handshake + YOLO warmup on the RTX 3090.
     healthcheck:
-      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8104/internal/health', timeout=2)"]
+      test: ["CMD", "python", "-c", "import httpx, sys; r = httpx.get('http://localhost:8104/internal/health/deep', timeout=3); sys.exit(0 if r.status_code == 200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 90s
 
   # Fifth camera (2026-09-11). Second interior view — the .86 Hiseeu freed
   # up when yard cut over to the Reolink at .100. Sibling to
@@ -1073,27 +1104,25 @@ services:
       start_period: 30s
 
   # Sixth camera (2026-09-16). Sideyard vent-adjacent — Amcrest IP8M-2493EW-AI-V3
-  # at .112, 4K H.264 main stream (codec flipped from H.265 earlier this session
-  # to unblock NVR mux + generic RTSP playback). Live feed routed through
-  # Amcrest NVR ch1 realmonitor relay for the same reason detector-crawlspace
-  # uses ch7 relay: single upstream RTSP consumer on the camera keeps its
-  # concurrent-session cap from bottlenecking the detector when the operator
-  # opens VLC. Amcrest NVR fans out to (detector + Annke NVR + web-preview)
-  # internally without hitting the camera again.
+  # at .112, 4K HEVC main stream. Direct-IP since 2026-09-26 (was Amcrest NVR
+  # ch1 relay for concurrent-session-cap protection; cut over when Frigate on
+  # the Beelink also went direct-IP, making the NVR fan-out moot). Camera's
+  # ONVIF user credential store is separate from its admin user — the ONVIF
+  # flavor (?unicast=true&proto=Onvif) authenticates against admin/windows98
+  # while the plain flavor requires the (unknown) admin-user password.
+  # Concurrent RTSP consumers on the camera now: Frigate + this detector +
+  # Annke NVR + preview = well under the Amcrest ~20-session cap.
   detector-sideyard:
     <<: *detector-common
     container_name: wildlife-detector-sideyard
     environment:
       CAMERA_ID: sideyard
       ZONE_KEY: sideyard_zone
-      # Amcrest NVR ch1 relay — bypasses the camera's session cap. See the
-      # header block above and detector-crawlspace's PR discussion for the
-      # trade-off rationale (300ms first-frame latency + NVR becomes a hard
-      # live-detection dep; both accepted).
-      # 12-factor: creds and host resolved from AMCREST_* in .env at container
-      # start. Fail-fast if any is unset — no silent fallback to a real
-      # password (matches the POSTGRES_PASSWORD shape at the DB service block).
-      RTSP_URL: rtsp://${AMCREST_USER:?}:${AMCREST_PASS:?}@${AMCREST_HOST:?}:554/cam/realmonitor?channel=1&subtype=0
+      # Direct-IP RTSP (ONVIF flavor) — matches Frigate's post-cutover URL on
+      # this camera. 12-factor: creds/host resolved from CAM_*_SIDEYARD in
+      # .env at container start; fail-fast if unset (matches the
+      # POSTGRES_PASSWORD shape at the DB service block).
+      RTSP_URL: rtsp://${CAM_USER_SIDEYARD:?}:${CAM_PASS_SIDEYARD:?}@${CAM_HOST_SIDEYARD:?}:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif
       BASELINE_PATH: data/baseline_sideyard.jpg
       # Outdoor scene with a real sun cycle — leave DAY_NIGHT threshold at
       # the default (unlike the crawlspaces which force-night via 255).
@@ -1215,9 +1244,11 @@ services:
       # Two-NVR shape wired via NVR_HOST_/USER_/PASS_/FAMILY_<CAM>. See
       # src/stream/playback_url.py::_nvr_env for the resolution order.
       NVR_CHANNEL_YARD: "5"
-      # 2026-09-21: Annke decommissioned. Both back on Amcrest —
-      # rooftop ch6, backyard ch8 — no per-camera overrides.
-      NVR_CHANNEL_ROOFTOP: "6"
+      # 2026-09-21: Annke decommissioned; both back on Amcrest.
+      # 2026-09-23: Amcrest NVR ch6 broke after IP shuffle post-outage;
+      # rooftop now recorded direct-IP via Frigate at 192.168.1.145.
+      # NVR_CHANNEL_ROOFTOP intentionally unset so alert_playback falls
+      # through to the Frigate branch. Restore "6" if NVR ch6 is fixed.
       NVR_CHANNEL_BACKYARD: "8"
       # 2026-09-10: connected 192.168.1.229 to Amcrest NVR channel 1 as
       # a proper recording source. Archiver switched from the AgentDVR
@@ -1237,9 +1268,11 @@ services:
       # than the earlier Annke/AgentDVR arrangement). No per-camera NVR
       # overrides needed — inherits fleet-wide AMCREST_HOST/USER/PASS.
       NVR_CHANNEL_CRAWLSPACE_INSIDE: "3"
-      # 2026-09-16: sideyard cam (.112) newly adopted on Amcrest ch1.
-      # No per-camera NVR host override — inherits Amcrest fleet default.
-      NVR_CHANNEL_SIDEYARD: "1"
+      # 2026-09-26: sideyard cut off Amcrest NVR to direct-IP .112. No NVR
+      # channel binding — the playback branch at web_service.py:1707 falls
+      # through to Frigate (which now records sideyard direct on the Beelink).
+      # Strangler-fig migration: this is the first camera whose playback
+      # store moved NVR → Frigate; others follow as each cam goes direct-IP.
     volumes:
       - ./data:/app/data
       - ./snapshots:/app/snapshots:ro
@@ -1317,8 +1350,9 @@ services:
       # Rooftop + backyard route through the Annke NVR at .130 (hikvision
       # family). See web env block above for the two-NVR rationale.
       NVR_CHANNEL_YARD: "5"
-      # 2026-09-21: Annke decommissioned — both on Amcrest, no overrides.
-      NVR_CHANNEL_ROOFTOP: "6"
+      # 2026-09-21: Annke decommissioned — backyard on Amcrest.
+      # 2026-09-23: rooftop routes through Frigate (Amcrest ch6 broke
+      # post-outage — see web env block above).
       NVR_CHANNEL_BACKYARD: "8"
       # 2026-09-10: connected 192.168.1.229 to Amcrest NVR channel 1.
       # Retired the AgentDVR bind mount + AGENTDVR_DIR_CRAWLSPACE env —
@@ -1337,9 +1371,8 @@ services:
       # matching note in the web env block above. Standard NVR dispatch,
       # no AgentDVR bind mount, no per-camera host overrides.
       NVR_CHANNEL_CRAWLSPACE_INSIDE: "3"
-      # 2026-09-16: sideyard (.112) adopted on Amcrest ch1 — see web env
-      # block above. Inherits Amcrest fleet default.
-      NVR_CHANNEL_SIDEYARD: "1"
+      # 2026-09-26: sideyard cut off Amcrest NVR — playback routes to
+      # Frigate via web_service.py:1707 branch. See web env block above.
     volumes:
       - ./clips:/app/clips
       - ./logs:/app/logs
@@ -1514,6 +1547,38 @@ services:
     depends_on:
       web:
         condition: service_healthy
+
+  # Auto-remediation sidecar (2026-09-26). Docker's healthcheck flips a
+  # container's Health.Status to 'unhealthy' but does NOT restart it —
+  # `restart: unless-stopped` only reacts to process exit, not health flags.
+  # willfarrell/autoheal closes that gap: watches for Health.Status ==
+  # unhealthy on containers labeled autoheal=true and issues a restart.
+  #
+  # Only containers with a DEEP healthcheck get the label — shallow /health
+  # endpoints never flip to unhealthy on pipeline stalls, so the label
+  # would be a no-op. Add the label to a service the moment its
+  # healthcheck moves to /internal/health/deep (see detector-crawlspace's
+  # 2026-09-26 pilot for the template).
+  #
+  # AUTOHEAL_CONTAINER_LABEL restricts scope to labeled containers only,
+  # so other compose stacks on this host aren't affected. Docker socket
+  # is mounted read-write because the daemon API doesn't expose restart
+  # over a read-only mount — accepted risk for a single-host homelab.
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: wildlife-autoheal
+    restart: unless-stopped
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      # Slow poll — deep healthcheck already runs every 30s + 3 retries,
+      # so unhealthy is 2min+ old by the time it registers. No point polling faster.
+      AUTOHEAL_INTERVAL: "30"
+      # Grace after restart before the next unhealthy triggers another
+      # restart — prevents a restart storm if the deep check keeps failing.
+      AUTOHEAL_START_PERIOD: "120"
+      TZ: America/Los_Angeles
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
 volumes:
   # Bind-mounts on ./data, ./snapshots, ./logs, ./clips live in the

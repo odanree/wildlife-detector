@@ -366,6 +366,60 @@ def create_app() -> Flask:
         this to know if the detector is up."""
         return jsonify({"ok": True, "uptime_s": int(time.time() - preview._stats._start_ts)})
 
+    @app.get("/internal/health/deep")
+    def health_deep():
+        """Deep liveness — observes the actual work pipeline, not just the HTTP
+        surface. Returns 503 when the RTSP reader has stalled (no new frames in
+        the last window). Fixes the 2026-09-25 blind-spot where crawlspace_ext
+        went 7h without alerts while /internal/health kept saying OK.
+
+        Signals used:
+          - last_frame_age_s: seconds since Stats.record_frame() was last
+            called. Grows monotonically the moment the reader thread stops
+            appending — the earliest observable failure signal in the pipeline.
+          - uptime_seconds: gate the check during boot; a fresh container
+            hasn't started reading yet, so we allow a grace window before
+            failing on missing frames.
+
+        Env knobs (all optional, sane defaults):
+          HEALTH_DEEP_MAX_FRAME_AGE_S  reader-stall threshold (default 30)
+          HEALTH_DEEP_BOOT_GRACE_S     ignore missing frames during boot (default 90 —
+                                       covers Ultralytics AutoUpdate on cold start)
+        """
+        snap = preview._stats.snapshot()
+        uptime_s = snap["uptime_seconds"]
+        last_frame_age_s = snap.get("last_frame_age_s")
+        max_frame_age_s = float(os.getenv("HEALTH_DEEP_MAX_FRAME_AGE_S", "30"))
+        boot_grace_s = float(os.getenv("HEALTH_DEEP_BOOT_GRACE_S", "90"))
+
+        # During boot grace, don't fail on missing frames — the RTSP reader
+        # hasn't finished ffmpeg handshake yet. Docker's start_period covers
+        # the container-level restart-on-unhealthy path; this guards against
+        # in-container false-alarm during warmup.
+        if uptime_s < boot_grace_s:
+            return jsonify({
+                "ok": True, "state": "warming", "uptime_s": uptime_s,
+                "last_frame_age_s": last_frame_age_s,
+            })
+
+        # Post-grace: require at least one frame ever, and require the last
+        # frame within max_frame_age_s.
+        if last_frame_age_s is None:
+            return jsonify({
+                "ok": False, "state": "no_frames_ever", "uptime_s": uptime_s,
+                "last_frame_age_s": None,
+            }), 503
+        if last_frame_age_s > max_frame_age_s:
+            return jsonify({
+                "ok": False, "state": "reader_stalled", "uptime_s": uptime_s,
+                "last_frame_age_s": last_frame_age_s,
+                "max_frame_age_s": max_frame_age_s,
+            }), 503
+        return jsonify({
+            "ok": True, "state": "healthy", "uptime_s": uptime_s,
+            "last_frame_age_s": last_frame_age_s,
+        })
+
     return app
 
 

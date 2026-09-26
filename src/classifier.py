@@ -508,3 +508,72 @@ def get_pre_vlm_filter_shadow_log() -> PreVlmFilterShadowLog:
         path = os.getenv("PRE_VLM_FILTER_SHADOW_LOG_PATH", "")
         _pre_vlm_filter_shadow_log = PreVlmFilterShadowLog(path)
     return _pre_vlm_filter_shadow_log
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Alert-side pre-VLM filter shadow log (2026-09-26).
+#
+# The original PreVlmFilterShadowLog above records the filter's verdict
+# on candidates the hand-tuned INSECT brightness gate KILLED before VLM
+# — none of those become alerts, so joining that log to the alerts
+# table yields ~3% matches (coincidental track_id reuse only) and can't
+# produce a real miss-rate for a promote decision.
+#
+# This second sink records the filter's verdict on candidates that
+# BECAME alerts, keyed by `alert_id`. Two populations, two logs, clean
+# join semantics:
+#
+#   pre_vlm_filter_shadow.jsonl       — one row per insect-gate drop
+#   pre_vlm_filter_alert_shadow.jsonl — one row per emitted alert
+#
+# Downstream analysis joins the alert-side log to `alerts.label_verdict`
+# by `alert_id` to compute:
+#   - miss_rate   = P(would_suppress | label_verdict='correct')
+#   - fp_kill_rate = P(would_suppress | label_verdict='incorrect')
+# — the two numbers needed to decide whether to promote the filter from
+# shadow to enforce on a per-camera basis.
+# ─────────────────────────────────────────────────────────────────────
+class PreVlmFilterAlertShadowLog:
+    """JSONL sink that records the pre-VLM filter's verdict on candidates
+    that made it all the way to an alerts row insert. Same fail-open
+    shape as [[PreVlmFilterShadowLog]] — a write failure never breaks
+    the alert path."""
+
+    def __init__(self, path: str):
+        self._path = Path(path) if path else None
+        self._fh = None
+        self._warned = False
+        if self._path:
+            try:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                self._fh = self._path.open("a", buffering=1, encoding="utf-8")
+                logger.info("Pre-VLM filter alert shadow log open at %s", self._path)
+            except Exception:
+                logger.exception("Failed to open pre-VLM filter alert shadow log %s", self._path)
+
+    def enabled(self) -> bool:
+        return self._fh is not None
+
+    def record(self, **fields: Any) -> None:
+        if self._fh is None:
+            return
+        row = {"ts": time.time(), **fields}
+        try:
+            self._fh.write(json.dumps(row, default=str) + "\n")
+        except Exception:
+            if not self._warned:
+                logger.exception(
+                    "Pre-VLM filter alert shadow log write failed (further errors suppressed)",
+                )
+                self._warned = True
+
+
+_pre_vlm_filter_alert_shadow_log: PreVlmFilterAlertShadowLog | None = None
+
+
+def get_pre_vlm_filter_alert_shadow_log() -> PreVlmFilterAlertShadowLog:
+    global _pre_vlm_filter_alert_shadow_log
+    if _pre_vlm_filter_alert_shadow_log is None:
+        path = os.getenv("PRE_VLM_FILTER_ALERT_SHADOW_LOG_PATH", "")
+        _pre_vlm_filter_alert_shadow_log = PreVlmFilterAlertShadowLog(path)
+    return _pre_vlm_filter_alert_shadow_log

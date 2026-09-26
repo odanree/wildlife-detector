@@ -474,7 +474,7 @@ class Stats:
                      yolo_conf: float | None = None,
                      ts: float | None = None,
                      bbox: tuple[int, int, int, int] | None = None,
-                     frame_size: tuple[int, int] | None = None) -> None:
+                     frame_size: tuple[int, int] | None = None) -> int | None:
         # bbox / frame_size: detector bbox in the saved snapshot's pixel
         # space + that frame's (w, h). Persisted as alerts.bbox JSONB so
         # the rat re-id embedder can crop the animal out of the annotated
@@ -501,10 +501,13 @@ class Stats:
             }
             camera_id = self._camera_id
         # Also push into the durable ring buffer for /alerts.
-        _alerts.append(species, confidence, description,
-                       snapshot=snapshot, track_id=track_id, yolo_conf=yolo_conf,
-                       camera_id=camera_id, ts=alert_ts,
-                       bbox=bbox, frame_size=frame_size)
+        # Returned alert_id lets the caller wire the pre-VLM filter alert
+        # shadow log to the exact alerts row (see [classifier.py] +
+        # [pipeline.py] instrumentation of the promote-decision loop).
+        return _alerts.append(species, confidence, description,
+                              snapshot=snapshot, track_id=track_id, yolo_conf=yolo_conf,
+                              camera_id=camera_id, ts=alert_ts,
+                              bbox=bbox, frame_size=frame_size)
 
     def set_backend(self, backend: str) -> None:
         with self._lock:
@@ -576,14 +579,23 @@ class Stats:
                 span = self._frame_ts[-1] - self._frame_ts[0]
                 if span > 0:
                     fps = (len(self._frame_ts) - 1) / span
+            # Seconds since the last frame the RTSP reader appended.
+            # Deep-healthcheck ([detector_api.py]/internal/health/deep) uses
+            # this as the pipeline liveness signal — fps stays stale if the
+            # deque is full and no new frames arrive, but this value grows
+            # monotonically the moment the reader stalls.
+            last_frame_age_s: float | None = None
+            if self._frame_ts:
+                last_frame_age_s = round(time.monotonic() - self._frame_ts[-1], 2)
             if cpu_pct > self._cpu_peak:
                 self._cpu_peak = cpu_pct
             if rss_mb > self._rss_peak_mb:
                 self._rss_peak_mb = rss_mb
             return {
-                "fps":            round(fps, 1),
-                "alerts_total":   self._alerts,
-                "uptime_seconds": int(time.time() - self._start_ts),
+                "fps":              round(fps, 1),
+                "last_frame_age_s": last_frame_age_s,
+                "alerts_total":     self._alerts,
+                "uptime_seconds":   int(time.time() - self._start_ts),
                 "backend":        self._backend,
                 "camera":         self._camera,
                 "camera_id":      self._camera_id,
@@ -672,10 +684,13 @@ class AlertLog:
                camera_id: str = "yard",
                ts: float | None = None,
                bbox: tuple[int, int, int, int] | None = None,
-               frame_size: tuple[int, int] | None = None) -> None:
+               frame_size: tuple[int, int] | None = None) -> int | None:
+        """Returns the newly-inserted alert_id (or None on dedup / state-db unbound).
+        Callers use the id to attach downstream sidecar records (e.g. the
+        pre-VLM filter alert shadow log) to a specific alerts row."""
         if self._state is None:
-            return   # AlertLog wasn't init'd; no-op like before
-        self._state.append_alert(
+            return None   # AlertLog wasn't init'd; no-op like before
+        return self._state.append_alert(
             species=species,
             confidence=confidence,
             description=description,
