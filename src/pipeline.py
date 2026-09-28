@@ -2041,9 +2041,23 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     _stashed = _pre_vlm_prob_by_track.pop(int(tid), None)
                     if _stashed is not None:
                         _p, _sup, _feat = _stashed
+                        # 2026-09-28 fix: _feat already contains camera_id and
+                        # trigger from the stash site upstream (see the
+                        # `_feat = {..., "camera_id": _camera_id_env, ...}`
+                        # dict earlier in the loop). Passing camera_id
+                        # explicitly here duplicated the kwarg → TypeError
+                        # that crashed the pipeline on every confirmed
+                        # rat alert (Qwen catches mouse → alert writes to
+                        # DB → THIS line crashes → force-exit → 15s restart
+                        # → next candidate lost). Second occurrence of the
+                        # same-shape bug as the `_trigger` UnboundLocalError
+                        # crash from 2026-09-26; the underlying anti-pattern
+                        # is passing state both via **_feat and as explicit
+                        # kwargs. Cleanest fix: rely on _feat alone for the
+                        # per-candidate fields, keep only the pipeline-level
+                        # fields (alert_id/species/prob/etc.) explicit.
                         _pre_vlm_filter_alert_shadow_log.record(
                             alert_id=_alert_id,
-                            camera_id=_camera_id_env,
                             track_id=int(tid),
                             species=_vlm_species,
                             prob=_p,
