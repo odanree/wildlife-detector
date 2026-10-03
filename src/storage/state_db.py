@@ -51,6 +51,17 @@ _SCHEMA_VERSION = 1
 # because the detector image doesn't ship that package.
 EMBED_QUEUE_CHANNEL = "embed_queue"
 
+# 2026-10-01: suppress legacy "human_heartbeat" signal from the labeling
+# review surface. It's a human-presence marker emitted by an older
+# pipeline heuristic — rows stay in the DB (useful as a passive activity
+# log + already-labeled historical corpus) but don't surface in the
+# unlabeled queue or badge counts, because labeling them "incorrect" was
+# polluting FP math without flagging an actual VLM mistake. If the
+# heuristic ever gets retired upstream, this clause becomes a no-op and
+# can be removed. Keyed on `species` (what the pipeline emits), not
+# `label_species` (what the operator records).
+_HEARTBEAT_EXCLUDE_CLAUSE = " AND (species IS DISTINCT FROM 'human_heartbeat')"
+
 
 class StateDB:
     """Postgres wrapper for the wildlife detector's persistent state.
@@ -694,6 +705,13 @@ class StateDB:
     ) -> list[dict]:
         query = "SELECT * FROM alerts WHERE label_ts IS NULL"
         params: list[Any] = []
+        # 2026-10-01: hide legacy "human_heartbeat" signal from the
+        # labeling queue. It's a human-presence marker, not a wildlife
+        # verdict — labeling it "incorrect" was polluting FP math
+        # without being an actual VLM mistake. Rows stay in the DB and
+        # continue to serve as a human-presence log; just removed from
+        # the review surface. See label_species discussion 2026-10-01.
+        query += _HEARTBEAT_EXCLUDE_CLAUSE
         if scope == "historical":
             query += " AND historical = TRUE"
         elif scope == "live":
@@ -754,14 +772,22 @@ class StateDB:
             return int(cur.fetchone()[0])
 
     def unlabeled_alerts(self, camera_id: str | None = None) -> int:
+        # 2026-10-01: badge count mirrors list_unlabeled's filter —
+        # otherwise the amber "N to review" badge would include rows
+        # that never surface in the labeling queue, creating a stuck
+        # ever-non-zero counter.
         with self._pool.connection() as conn, conn.cursor() as cur:
             if camera_id:
                 cur.execute(
-                    "SELECT COUNT(*) FROM alerts WHERE camera_id = %s AND label_verdict IS NULL",
+                    "SELECT COUNT(*) FROM alerts WHERE camera_id = %s AND label_verdict IS NULL"
+                    + _HEARTBEAT_EXCLUDE_CLAUSE,
                     (camera_id,),
                 )
             else:
-                cur.execute("SELECT COUNT(*) FROM alerts WHERE label_verdict IS NULL")
+                cur.execute(
+                    "SELECT COUNT(*) FROM alerts WHERE label_verdict IS NULL"
+                    + _HEARTBEAT_EXCLUDE_CLAUSE
+                )
             return int(cur.fetchone()[0])
 
     def snapshots_present(self) -> set[str]:
