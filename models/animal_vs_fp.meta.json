@@ -1,0 +1,29 @@
+{
+  "features": [
+    "mean",
+    "max",
+    "ar",
+    "bbox_w",
+    "bbox_h",
+    "wide_mean",
+    "wide_max",
+    "conf",
+    "camera_id",
+    "vlm_species"
+  ],
+  "categorical_features": [
+    "camera_id",
+    "vlm_species"
+  ],
+  "metrics": {
+    "n_train": 34163,
+    "n_val": 7180,
+    "n_test": 6752,
+    "roc_auc": 0.9236584763243012,
+    "avg_precision": 0.8367247456052022,
+    "class_balance_train": {
+      "positive": 8604,
+      "negative": 25559
+    }
+  }
+}

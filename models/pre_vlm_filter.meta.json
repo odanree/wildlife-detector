@@ -1,0 +1,42 @@
+{
+  "features": [
+    "mean",
+    "max",
+    "ar",
+    "bbox_w",
+    "bbox_h",
+    "area",
+    "wide_mean",
+    "wide_max",
+    "camera_id",
+    "trigger"
+  ],
+  "categorical_features": [
+    "camera_id",
+    "trigger"
+  ],
+  "target": "real_animal (1) vs moth (0)",
+  "metrics": {
+    "n_train": 149,
+    "n_val": 31,
+    "n_test": 31,
+    "roc_auc": 0.9401709401709402,
+    "avg_precision": 0.8421006344083267,
+    "class_balance_train": {
+      "positive": 62,
+      "negative": 87
+    },
+    "feature_importance_gain": {
+      "camera_id": 153.91320419311523,
+      "wide_mean": 136.65432327985764,
+      "max": 60.772939682006836,
+      "bbox_h": 9.960709571838379,
+      "area": 0.9968263411428779,
+      "mean": 0.7419492938840548,
+      "wide_max": 0.4040060043334961,
+      "ar": 0.3502561936620623,
+      "bbox_w": 0.0,
+      "trigger": 0.0
+    }
+  }
+}
