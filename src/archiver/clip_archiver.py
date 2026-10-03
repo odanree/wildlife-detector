@@ -122,6 +122,14 @@ class ClipArchiver:
         self._inflight_lock = threading.Lock()
         self.clips_dir.mkdir(parents=True, exist_ok=True)
 
+        # Cross-check NVR_CHANNEL_* env against what the Amcrest NVR
+        # actually reports on each slot. Loud WARN on any divergence so
+        # a silent channel reassignment (the 2026-09-28 ch7 incident)
+        # trips a log alert instead of quietly writing wrong-camera
+        # clips against correct alert_ids. Never raises.
+        from src.stream.nvr_channel_map import load_and_verify
+        load_and_verify()
+
     def clip_path(self, alert_id: int, alert_ts: float) -> Path:
         """Derived path — same alert always yields the same path so the
         exists-check is stable across restarts."""

@@ -684,6 +684,14 @@ def create_app(registry: DetectorRegistry) -> Flask:
     _start_counts_poller(_state, lambda: registry.camera_ids)
     logger.info("counts-poller: started (interval=%.1fs)", _COUNTS_POLL_INTERVAL_S)
 
+    # Cross-check NVR_CHANNEL_* env against the Amcrest RemoteDevice map
+    # at startup. Never blocks; emits WARN log lines on divergence so an
+    # ops-side channel reassignment (as happened 2026-09-28 with ch7)
+    # surfaces immediately instead of hiding as split-brain footage on
+    # Replay. See src/stream/nvr_channel_map.py.
+    from src.stream.nvr_channel_map import load_and_verify
+    load_and_verify()
+
     app = Flask(__name__)
 
     def _pick(req) -> DetectorClient:
