@@ -301,6 +301,34 @@ services:
       # scenes while still catching quick-passing rats (typical rat
       # transit ≥ 5s, so one VLM call within that window still fires).
       VLM_INTERVAL_S: "3"
+      # 2026-10-01: added explicit VLM_WORKERS + VLM_MAX_INFLIGHT after
+      # discovering yard was running on the default of 1 worker while
+      # all sibling rodent cams had 6. Baby-opossum event at 02:01-02:02
+      # produced FOUR species=opossum conf=0.85 VLM verdicts, all
+      # stale-dropped post-VLM because queue_age reached 23-58s against
+      # VLM_MAX_ALERT_AGE_S=10. Root cause: at VLM_INTERVAL_S=3 yard
+      # pushes 2-3 calls/sec at peak, single worker drains ~1/sec.
+      # Matches crawlspace / under_adu_ptz / garage_ptz configuration;
+      # Ollama NUM_PARALLEL=12 absorbs the aggregated 6×N demand.
+      VLM_WORKERS: "6"
+      VLM_MAX_INFLIGHT: "6"
+      # Also raised VLM_MAX_ALERT_AGE_S 10 → 40 to match crawlspace's
+      # tuning rationale — gives the slower back-end tier of calls
+      # (post-queue latency) time to still land as alerts instead of
+      # being discarded. Worst-case alert latency becomes 40s which is
+      # fine for the labeling flow.
+      VLM_MAX_ALERT_AGE_S: "40"
+      # 2026-10-01: per-track VLM verdict dedup — shadow mode first,
+      # watching the hourly "VLM dedup 1h summary" log line.
+      # SHADOW mode logs would-have-skipped calls without actually
+      # suppressing, so we can calibrate the backoff values against
+      # real yard traffic before flipping to live. Flip SHADOW_MODE=0
+      # once the summary shows a sane suppression rate (target 60-80%
+      # of submits would be skipped on a well-covered track). See the
+      # dedup section in src/pipeline.py near line 1035 for the full
+      # knob set + rationale.
+      VLM_DEDUP_ENABLED: "1"
+      VLM_DEDUP_SHADOW_MODE: "1"
       # Priority-aware alert debounce (see src/alerts/debounce.py). 10s
       # ceiling ~360 alerts/hr in the pathological case, plenty of
       # granularity for a rat that transits ≥ 5s. Rodent-positive alerts
@@ -444,6 +472,17 @@ services:
   detector-rooftop:
     <<: *detector-common
     container_name: wildlife-detector-rooftop
+    # 2026-09-27: CPU quota added because rooftop's pause_flag skips VLM
+    # but the RTSP reader keeps decoding 4K frames on a background thread
+    # (~313% CPU seen). Cap at 0.5 core frees ~250% for active detectors
+    # while keeping reader + preview alive so unpausing is instant. Remove
+    # this block if rooftop returns to active duty. Same pattern applied
+    # to detector-sideyard.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "1G"
     environment:
       CAMERA_ID: rooftop
       # Per-camera zone polygon key — pipeline picks zones[rooftop_zone] out of
@@ -592,6 +631,12 @@ services:
       VLM_TEMPORAL_ENABLED: "1"
       VLM_TEMPORAL_FRAMES: "4"
       VLM_TEMPORAL_WINDOW_S: "1.0"
+      # 2026-10-01: shadow-mode dedup for fleet calibration — see yard
+      # block for design rationale. Low-signal here (rooftop paused),
+      # but kept on for consistency so the hourly summary covers all
+      # active+paused detectors.
+      VLM_DEDUP_ENABLED: "1"
+      VLM_DEDUP_SHADOW_MODE: "1"
       # Second detector needs its own internal HTTP port — 8102 keeps it
       # outside the 8100/8101 range so port confusion is unlikely.
       OLLAMA_URL: http://host.docker.internal:11434
@@ -621,7 +666,26 @@ services:
       # 4K main stream from the Hikvision path — /stream1 on this cam
       # is only 720x480 sub-stream, insufficient for small-target
       # detection.
-      RTSP_URL: rtsp://${CAM_USER_BACKYARD:?}:${CAM_PASS_BACKYARD:?}@192.168.1.118:554/Streaming/Channels/101
+      # 2026-10-01: physical camera swap — backyard scene now served by
+      # the camera formerly at the deck_steps mount (192.168.1.126,
+      # Hiseeu-flavor on /stream1, different password shape). The
+      # previous Amcrest at .118 is retired from this role. Follow-ups
+      # that MUST land before this detector produces usable alerts:
+      #   1. Update CAM_PASS_BACKYARD in .env to the .126 password
+      #      (previously cctv1234! per CAMERA_RTSP_15 line in .env;
+      #      the previous .118 password cctv123! will NOT auth here).
+      #   2. Recapture data/baseline_backyard.jpg via /react/baselines
+      #      — the old baseline is from the .118 scene geometry.
+      #   3. Redraw backyard_zone polygon in config/detection.yaml via
+      #      /react/preview — framing/FOV differ between the two cams.
+      #   4. Beelink Frigate: backyard camera input still points at
+      #      .118. Either update Beelink's frigate/config.yml to point
+      #      backyard at .126 (and remove the standalone deck_steps
+      #      block since it's the same stream), OR leave as-is and
+      #      rely on the web_service _FRIGATE_CAMERAS remap below so
+      #      backyard alerts' Replay routes through Frigate's
+      #      "deck_steps" camera name (which already points at .126).
+      RTSP_URL: rtsp://${CAM_USER_BACKYARD:?}:${CAM_PASS_BACKYARD:?}@192.168.1.126:554/stream1
       BASELINE_PATH: data/baseline_backyard.jpg
       # Daytime detection: HISTORICALLY skipped wholesale because ground-
       # level shadow FPs dominated the daytime signal. PR #165 shipped
@@ -637,11 +701,18 @@ services:
       # SKIP_DAYTIME_END_HOUR: "19"
       # DAYTIME_SKIP_TRIGGER_MODE: time_only
       TZ: America/Los_Angeles
-      # 4K source → downsample to 2048x928. Same rationale as rooftop:
-      # yard's 1088x612 default would collapse a 30 px rat crop to
-      # ~8 px, below MOG2's discrimination floor.
+      # 2026-10-01: height corrected 928 → 1152 after the .118 → .126
+      # cutover. .118 was downsampled with 2048x928 (2.21:1) which
+      # matched its specific FOV. .126 /stream1 is native 3840x2160
+      # (16:9); 2048x928 vertically squashed the frame, inflating
+      # bbox area by ~69% in the first-hour sample. 1152 matches the
+      # 16:9 aspect exactly (2048 × 2160/3840 = 1152) so bboxes read
+      # true pixel sizes for the insect-filter + classifier gates.
+      # Also: the "/stream1 is 720x480 sub-stream" note that used to
+      # live here is stale — .126's /stream1 IS the 4K main stream;
+      # no main/sub distinction on this cam's firmware.
       INPUT_WIDTH: "2048"
-      INPUT_HEIGHT: "928"
+      INPUT_HEIGHT: "1152"
       # Compromise floor between mouse detection and fence-spot FPs.
       # History: 22 (rodent-scale, inherited from yard) → 50 (PR #93,
       # after 71x26 fence spot fired "mouse 85%") → 30 (08/11, after
@@ -661,6 +732,10 @@ services:
       # because backyard rats are actually SMALLER than the FP overrides
       # (median 1845 vs 2982 px) — priority upgrade is the safe knob.
       ALERT_DEBOUNCE_S: "10"
+      # 2026-10-01: shadow-mode dedup for fleet calibration — see yard
+      # block for design rationale.
+      VLM_DEDUP_ENABLED: "1"
+      VLM_DEDUP_SHADOW_MODE: "1"
       # Post-VLM classifier: backyard active mode (Phase 3 rollout,
       # camera 2/3). Per-camera override of the .env-wide shadow
       # defaults. Agreement analysis 2026-09-06 (n=3424 labeled
@@ -729,10 +804,19 @@ services:
       MOTION_HISTORY: "400"
       # Lowered 18 → 15 08/14 after 23:11:14 large-rat frame where MOG
       # only caught the front-paw region while the rat body (dark on
-      # dark bricks) had insufficient variance to fire. 5s earlier at
-      # 23:11:09 the same rat's bbox was full-body. 15 = ~15% more raw
-      # MOG events but tighter than 12 to limit FP growth. Modest step.
-      MOTION_VAR_THRESHOLD: "15"
+      # dark bricks) had insufficient variance to fire. 15 was set to
+      # limit FP growth vs 12.
+      # 2026-09-28 22:00: 15 → 12 to catch a missed raccoon at 23:36:03.
+      # 2026-09-29 morning: 12 → 14 after overnight data showed the
+      # trade-off didn't work. Volume ~doubled (24 alerts pre-change
+      # 19-22h → 49 alerts post-change 00-05h) but TP count DROPPED
+      # (23 TPs → 9 TPs), likely from added MOG noise flooding the
+      # VLM queue + baseline grinding. Precision fell 96% → 18%.
+      # 14 is the middle ground — one step below the previous 15, so
+      # we still get some slow-mammal sensitivity but avoid the 12-
+      # tier's noise flood. Watch tonight's numbers to decide whether
+      # to back off further to 15 or hold at 14.
+      MOTION_VAR_THRESHOLD: "14"
       MOTION_MIN_AREA: "80"
       # detectShadows=0: same rationale as yard — daytime skip handles
       # the FP window this was filtering, and shadow classifier risks
@@ -805,20 +889,18 @@ services:
     environment:
       CAMERA_ID: crawlspace
       ZONE_KEY: crawlspace_zone
-      # 2026-09-12: cutover from .229 to the YHD912-P Hiseeu at .105 (12MP,
-      # 3840x2880 HEVC main on /1/stream0). Also on Amcrest NVR channel 7 —
-      # NVR_CHANNEL_CRAWLSPACE bumped 1 → 7 in the web + archiver env blocks.
-      # 2026-09-15: live feed routed through Amcrest realmonitor relay
-      # instead of direct-to-camera. .105's tiny concurrent-session cap
-      # (verified 503 on ffprobe when detector+NVR+VLC all pulled direct)
-      # was bottlenecking the detector when the operator opened VLC. Now
-      # the camera has ONE consumer (Amcrest NVR), which fans out to
-      # detector + recording internally. 30-min A/B (scripts/rtsp_ab.sh)
-      # showed p95 pickup 647ms → 527ms and no downside. Trade-off is
-      # ~300ms added first-frame latency and NVR becomes a hard dep for
-      # live detection — but the NVR is already required for playback so
-      # incremental risk is near-zero.
-      RTSP_URL: rtsp://${AMCREST_USER:?}:${AMCREST_PASS:?}@${AMCREST_HOST:?}:554/cam/realmonitor?channel=7&subtype=0
+      # 2026-09-28: physical camera swap — the Amcrest dome that was watching
+      # sideyard (192.168.1.112, direct-IP with ONVIF flavor auth) is now
+      # mounted at the crawlspace_ext position. The previous crawlspace cam
+      # (YHD912-P Hiseeu at .105 on Amcrest NVR ch7) is retired from this
+      # role. Field of view + baseline calibration will drift on the first
+      # hour — recapture baseline_crawlspace day/night via /react/baselines
+      # after cutover. Zone polygon may also need a redraw once the new
+      # framing is visible in the editor.
+      # 12-factor: creds/host resolved from CAM_*_CRAWLSPACE in .env at
+      # container start; fail-fast if unset. Same shape as detector-
+      # under-adu-ptz's env-var pattern.
+      RTSP_URL: rtsp://${CAM_USER_CRAWLSPACE:?}:${CAM_PASS_CRAWLSPACE:?}@${CAM_HOST_CRAWLSPACE:?}:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif
       BASELINE_PATH: data/baseline_crawlspace.jpg
       # Indoor crawlspace has no sun cycle — permanent IR-lit night scene.
       # Crawlspace is IR-lit 24/7 with essentially zero brightness delta
@@ -899,6 +981,11 @@ services:
       # NUM_PARALLEL=1 default, which was tonight's root cause finding).
       VLM_WORKERS: "6"
       VLM_MAX_INFLIGHT: "6"
+      # 2026-10-01: shadow-mode dedup for fleet calibration — see yard
+      # block for the design rationale. Flip SHADOW_MODE=0 once per-cam
+      # suppression rate is validated.
+      VLM_DEDUP_ENABLED: "1"
+      VLM_DEDUP_SHADOW_MODE: "1"
       # Post-VLM classifier: shadow mode (default). No labeled crawlspace
       # data yet — collect ≥ 500 labeled rows before evaluating agreement
       # and flipping to active. Mirrors the rooftop hold pattern.
@@ -909,7 +996,13 @@ services:
       # small-bbox initial track (before MOG merge grew it past the
       # insect-filter cap). 150 keeps moth suppression working while
       # letting IR-lit mid-brightness rodents through.
-      NIGHT_INSECT_BRIGHTNESS_MIN: "150"
+      # 2026-09-30: raised 150 → 185 after sandbox replay of the
+      # 21:43:17 rat miss. Rat silhouette had mean=181 (bright IR
+      # reflection off fur) and was being classified insect; 185
+      # clears that specific case while still catching moths which
+      # typically run mean >= 200. Validated end-to-end: sandbox
+      # produced "rat 80%" VLM verdict at the correct bbox.
+      NIGHT_INSECT_BRIGHTNESS_MIN: "185"
       INSECT_MEAN_UNCAP_SIZE: "1"
       MOTION_MERGE_DIST_PX: "40"
       MOTION_MERGE_MAX_CLUSTER: "5"
@@ -929,7 +1022,14 @@ services:
       # drops. Higher-res source has more per-pixel variance from IR
       # noise; 0.10 keeps genuine motion above the floor while cutting
       # noise-driven VLM calls ~5x.
-      BASELINE_DIFF_THRESHOLD: "0.10"
+      # 2026-09-30: lowered 0.10 → 0.07 after sandbox replay of the
+      # 21:43:17 rat miss. Rat produced diff=0.082 — below prod's 0.10
+      # floor so pipeline skipped VLM. 0.07 lets the specific case
+      # through. Camera changed from 12MP .105 to 5MP .112 on 2026-09-28
+      # so the original 2026-09-12 rationale no longer applies; the
+      # lower-res source has less per-pixel IR noise. VLM queue load
+      # expected to rise 2-5x; monitor vlm_queue_age.
+      BASELINE_DIFF_THRESHOLD: "0.07"
       DAY_BASELINE_DIFF_THRESHOLD: "0.18"
       # 2026-09-13: raised 20 → 40 after two confirmed mouse detections
       # (track=1197 at 33.0s, track=1251 at 22.4s) were silently
@@ -1053,6 +1153,10 @@ services:
       # actually drain in parallel rather than just queuing.
       VLM_WORKERS: "6"
       VLM_MAX_INFLIGHT: "6"
+      # 2026-10-01: shadow-mode dedup for fleet calibration — see yard
+      # block for design rationale.
+      VLM_DEDUP_ENABLED: "1"
+      VLM_DEDUP_SHADOW_MODE: "1"
       # Per-camera rodent-alert debounce (wall clock). Observed 1485
       # alerts in 3h during initial deployment; notifier's 120s cooldown
       # only gates the webhook, so the DB and alerts page still flooded.
@@ -1120,9 +1224,37 @@ services:
   # while the plain flavor requires the (unknown) admin-user password.
   # Concurrent RTSP consumers on the camera now: Frigate + this detector +
   # Annke NVR + preview = well under the Amcrest ~20-session cap.
+  # 2026-09-28: RETIRED. The physical Amcrest dome at 192.168.1.112 that
+  # fed this camera has been moved to the crawlspace_ext mounting position;
+  # nothing is watching sideyard anymore. Container config kept intact for
+  # future re-adoption (drop a new camera at .112 or repoint CAM_HOST_
+  # SIDEYARD → new IP, then `docker compose up -d detector-sideyard`).
+  # To fully stop consuming resources today: `docker compose stop
+  # detector-sideyard`. The CPU quota block below already caps it at 0.5
+  # cores if it's left running.
   detector-sideyard:
     <<: *detector-common
     container_name: wildlife-detector-sideyard
+    # 2026-09-30: full retirement — gated behind the "disabled" profile
+    # so `docker compose up -d` no longer brings it up alongside the
+    # fleet. Reader-cadence showed ~2.5 fps at CPU-capped 0.5 cores,
+    # which is the right CPU floor but there's no camera behind the
+    # feed since 2026-09-28, so even that cost is pure waste. To
+    # resurrect: physically repopulate the sideyard camera role, update
+    # CAM_HOST_SIDEYARD, remove the `profiles: ["disabled"]` line
+    # below, add detector-sideyard:8106 back to DETECTOR_URLS in the
+    # web env block, then `docker compose up -d detector-sideyard web`.
+    profiles: ["disabled"]
+    # 2026-09-27/28: CPU quota to prevent the RTSP reader thread from
+    # consuming ~322% while the container has no physical camera behind
+    # it (2026-09-28 retirement — see block header). Camera physically
+    # moved to crawlspace_ext role; keep this cap until the sideyard
+    # role is repopulated.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "1G"
     environment:
       CAMERA_ID: sideyard
       ZONE_KEY: sideyard_zone
@@ -1211,6 +1343,276 @@ services:
       retries: 3
       start_period: 30s
 
+  # Seventh camera (2026-09-26). ADU crawlspace-entrance bulb cam —
+  # V380/CamHiPro family at .109 (Foxconn OUI 54:AE:BC, port 10554,
+  # RTSP path /tcp/av0_0). Purpose: cover the ADU crawlspace entrance
+  # during the ADU-cohort trapping phase — first labeled coverage on
+  # ADU visitor patterns, validates mom-multi-nest vs independent-nest
+  # hypothesis (see [[wildlife_detector_137_phase3]]).
+  # Direct-IP from day one — bulb cam has no NVR relay option, and
+  # Frigate already consumes the same feed so the fan-out concern
+  # that motivated NVR relays for Amcrest cams doesn't apply. Concurrent
+  # RTSP consumers: Frigate + this detector + occasional operator VLC
+  # = 3, well under V380's ~4-session cap.
+  detector-under-adu-ptz:
+    <<: *detector-common
+    container_name: wildlife-detector-under-adu-ptz
+    # 2026-09-26: opted into autoheal from day one — this camera watches
+    # a high-value trap zone (ADU cohort exclusion), a silent pipeline
+    # stall costs data more than on lower-value cams. Deep healthcheck
+    # below matches detector-crawlspace's pilot template.
+    labels:
+      autoheal: "true"
+    environment:
+      CAMERA_ID: under_adu_ptz
+      ZONE_KEY: under_adu_ptz_zone
+      # 2026-09-28: physical camera swap — V380 bulb at .109 replaced by
+      # the older crawlspace_ext hardware at .229 (Hiseeu-family, 2304x1296
+      # HEVC main / 640x360 HEVC sub on the simple /stream1 + /stream2
+      # paths). Port 554 (standard) not 10554, so the ${CAM_HOST_...}
+      # override in .env just needs the IP — the URL shape below already
+      # bakes in the new port + path.
+      RTSP_URL: rtsp://${CAM_USER_UNDER_ADU_PTZ:?}:${CAM_PASS_UNDER_ADU_PTZ:?}@${CAM_HOST_UNDER_ADU_PTZ:?}:554/stream1
+      BASELINE_PATH: data/baseline_under_adu_ptz.jpg
+      # Permanent-night indoor IR regime — bulb cam pointed at the ADU
+      # crawlspace entrance. Force night baseline so any daylight
+      # bleeding through the entrance doesn't flip the mode picker.
+      # Matches crawlspace_inside's setting.
+      DAY_NIGHT_BRIGHTNESS_THRESHOLD: "255"
+      SKIP_DAYTIME_DETECTION: "0"
+      TZ: America/Los_Angeles
+      # 1920x1080 native → shared 2048x1152 target so YOLO sees rats
+      # at the same pixel scale as siblings (~40-80 px close range).
+      INPUT_WIDTH: "2048"
+      INPUT_HEIGHT: "1152"
+      # 2026-09-26/27/28 tuning: 30 → 120 → 80 → 30 → 50 → 30.
+      # Back to the wide-cam default of 30 after 2026-09-28 hardware
+      # cutover (V380 bulb at .109 → Hiseeu-family at .229, 2304x1296).
+      # The new physical mount sits FURTHER from the crawlspace
+      # entrance than the old V380 bulb, so a rat traversing the
+      # aperture now occupies fewer pixels per body dimension. The
+      # 50 px floor that worked for the close-up V380 view drops
+      # legit rat crops at the new framing. 30 accepts more small-bug
+      # noise but recall matters more here than precision — the VLM
+      # REJECT-OVERRIDE path still catches missed rats when Qwen is
+      # confidently wrong. Retune upward if a night's FP profile
+      # shows sub-40 px bugs dominating.
+      MIN_MOTION_BBOX_PX: "30"
+      # First-week defaults borrowed from crawlspace_inside (same regime).
+      VLM_INTERVAL_S: "8"
+      # 2026-09-26: bumped 3 → 5 after the 50s replay clip fired ~10
+      # alerts (one every ~5-8s wall-clock) for what were likely 2-3
+      # physical rat traversals of the narrow ADU entrance. Tighter
+      # aperture = same rat produces more motion frames than a wide
+      # outdoor cam, so a slightly longer debounce collapses the
+      # duplicate alerts without dropping distinct events during the
+      # 03:00-05:00 return-home peak.
+      ALERT_DEBOUNCE_S: "5"
+      # Match Ollama NUM_PARALLEL=12 headroom, same rationale as
+      # sideyard / crawlspace pair (return-home peak concurrency).
+      VLM_WORKERS: "6"
+      VLM_MAX_INFLIGHT: "6"
+      # 2026-10-01: shadow-mode dedup for fleet calibration — see yard
+      # block for design rationale.
+      VLM_DEDUP_ENABLED: "1"
+      VLM_DEDUP_SHADOW_MODE: "1"
+      # No labeled ADU data yet — shadow mode until >= 500 verdicts.
+      CLASSIFIER_MODE: shadow
+      # Indoor IR without ambient light — no moth cloud expected. Start
+      # at 130 (below outdoor's 150) since indoor targets aren't as
+      # bright as IR-reflective foliage. Retune once first-week FP
+      # profile is visible.
+      NIGHT_INSECT_BRIGHTNESS_MIN: "130"
+      INSECT_MEAN_UNCAP_SIZE: "1"
+      MOTION_MERGE_DIST_PX: "40"
+      MOTION_MERGE_MAX_CLUSTER: "5"
+      ALERT_ANNOTATE_HISTORY_FRAMES: "15"
+      MOTION_BACKEND: mog2
+      MOTION_HISTORY: "400"
+      MOTION_VAR_THRESHOLD: "22"
+      MOTION_MIN_AREA: "80"
+      MOTION_DETECT_SHADOWS: "0"
+      # 2026-09-27: 0.10 → 0.05 after 05:58 replay showed max diff
+      # was 0.055 across a 90s window that included a real rat crossing
+      # (siblings caught it at crawlspace + yard). 0.10 was inherited
+      # from crawlspace-outdoor tuning and doesn't fit this camera's
+      # IR baseline — small dark rats against dark IR-lit floor produce
+      # sub-0.05 pixel diffs even when moving through the entrance.
+      BASELINE_DIFF_THRESHOLD: "0.05"
+      DAY_BASELINE_DIFF_THRESHOLD: "0.18"
+      VLM_MAX_ALERT_AGE_S: "40"
+      # HEDGED=0 from day one — same rationale as crawlspace_ext post-
+      # 2026-09-26 flip: Qwen phrases confident-but-wrong rejections
+      # on small IR-lit rat crops identically to genuine empty-scene
+      # rejections, so hedge-word gating misses baby rats. Accept the
+      # REJECT-OVERRIDE flood as review load in exchange for recall.
+      VLM_REJECT_OVERRIDE_ONLY_IF_HEDGED: "0"
+      DAYTIME_RODENT_MIN_CONF: "0.55"
+      EXCLUSION_MIN_CONF: "0.90"
+      VLM_BACKEND: ollama
+      OLLAMA_MODEL: qwen2.5vl:7b
+      CLAUDE_MODEL: claude-sonnet-5
+      CASCADE_CONFIRM_MODEL: claude-sonnet-5
+      OLLAMA_URL: http://host.docker.internal:11434
+      DETECTOR_INTERNAL_HOST: 0.0.0.0
+      # Seventh detector port — yard=8101, rooftop=8102, backyard=8103,
+      # crawlspace=8104, crawlspace-inside=8105, sideyard=8106,
+      # under_adu_ptz=8107.
+      DETECTOR_INTERNAL_PORT: 8107
+      # No PTZ — despite the "_ptz" suffix inherited from the earlier
+      # under_deck_ptz name, this is a fixed-mount V380 bulb cam.
+    expose:
+      - "8107"
+    # Deep healthcheck — see detector-crawlspace's pilot template for
+    # rationale. This cam gets it from day one because trap-zone data
+    # loss on a silent stall is expensive.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx, sys; r = httpx.get('http://localhost:8107/internal/health/deep', timeout=3); sys.exit(0 if r.status_code == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+
+  # 2026-09-30: added after discovering the operator was manually
+  # scrubbing garage_ptz recordings for weeks to track rat egress
+  # corridor (property → neighbor) events. Frigate stock COCO detector
+  # can't do rats; adding a custom detector surfaces those events as
+  # DB alerts automatically. See project_rat_colony_egress_corridor
+  # memory. First-week settings cloned from detector-under-adu-ptz;
+  # outdoor-cam specifics (day-night cycle, SKIP_DAYTIME_DETECTION)
+  # overridden below. Resource budget: ~1.5 GB RAM + ~1 GB VRAM; GPU
+  # headroom confirmed before launch.
+  detector-garage-ptz:
+    <<: *detector-common
+    container_name: wildlife-detector-garage-ptz
+    labels:
+      # 2026-10-02: autoheal off while paused — a CPU-throttled
+      # container reports slower healthcheck turnaround which can
+      # trip the healthy→unhealthy→restart loop otherwise.
+      autoheal: "false"
+    # 2026-10-02: paused via 0.5-core CPU cap, same pattern as rooftop
+    # + sideyard. Camera stays live in Frigate for recordings; this
+    # just throttles the custom-detector pipeline (MOG + YOLO + VLM)
+    # so it stops consuming the ~310% CPU the wide-angle 4K source
+    # was burning. Fast-mover tuning (MOTION_VAR_THRESHOLD=15,
+    # MIN_MOTION_BBOX_PX=20, MOTION_HISTORY=150) was flooding VLM
+    # with low-signal shadow/wind events — paused until a tighter
+    # garage_ptz_zone polygon is drawn via /react/preview OR a
+    # physical re-aim narrows the FOV to the rat corridor.
+    # To resume: remove the deploy.resources block + flip autoheal
+    # back on + `docker compose up -d detector-garage-ptz`.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "1G"
+    environment:
+      CAMERA_ID: garage_ptz
+      # 2026-10-01: switched from the shared "yard_zone" placeholder
+      # (which was overlaying yard's exclusion polygon on the driveway
+      # scene — the operator noticed the two cameras appeared to be
+      # sharing zone geometry) to a camera-specific "garage_ptz_zone"
+      # defined in config/detection.yaml. First-shape is a wide
+      # rectangle covering the lower 92% of the frame; operator should
+      # tighten it via /react/preview to focus on the brick-walkway
+      # rat corridor on the left + exclude parked-car region.
+      ZONE_KEY: garage_ptz_zone
+      # 3840x2160 native, pulled via /1/stream0 main (same shape as the
+      # Hiseeu-family at .229). Credentials in .env — add
+      # CAM_HOST_GARAGE_PTZ / CAM_USER_GARAGE_PTZ / CAM_PASS_GARAGE_PTZ
+      # before `up -d`. The URL shape bakes port 554 + /1/stream0.
+      RTSP_URL: rtsp://${CAM_USER_GARAGE_PTZ:?}:${CAM_PASS_GARAGE_PTZ:?}@${CAM_HOST_GARAGE_PTZ:?}:554/1/stream0
+      BASELINE_PATH: data/baseline_garage_ptz.jpg
+      # Outdoor driveway — real day/night cycle unlike indoor cams.
+      # Standard brightness threshold (default). Scene has human/vehicle
+      # activity daytime so SKIP_DAYTIME_DETECTION=1 narrows coverage
+      # to the rat-active window (dusk → dawn) and avoids FP flood from
+      # cars pulling in/out, operator foot traffic, etc.
+      SKIP_DAYTIME_DETECTION: "1"
+      TZ: America/Los_Angeles
+      SUN_LAT: "${SUN_LAT:-33.7455}"
+      SUN_LON: "${SUN_LON:--117.8677}"
+      # 3840x2160 native → shared 2048x1152 for YOLO consistency with
+      # siblings. Rats on the driveway at this focal distance project
+      # ~30-50 px — close to the yard camera's regime.
+      INPUT_WIDTH: "2048"
+      INPUT_HEIGHT: "1152"
+      # 2026-10-01: lowered 30 → 20 for fast-small-mover recall. Rat
+      # scurrying across the brick walkway → neighbor property went
+      # undetected because a rat at this focal distance only projects
+      # ~25-45 px per side (observed in matched opossum tracks: rat
+      # ~1/4 the pixel area of a nearby opossum). 20 catches the
+      # smaller-end rat crossings while still filtering sub-20 px
+      # insect/noise. Watch FP volume over the next 48h.
+      MIN_MOTION_BBOX_PX: "20"
+      VLM_INTERVAL_S: "8"
+      ALERT_DEBOUNCE_S: "5"
+      VLM_WORKERS: "6"
+      VLM_MAX_INFLIGHT: "6"
+      # 2026-10-01: shadow-mode dedup for fleet calibration — see yard
+      # block for design rationale.
+      VLM_DEDUP_ENABLED: "1"
+      VLM_DEDUP_SHADOW_MODE: "1"
+      CLASSIFIER_MODE: shadow
+      # Outdoor baseline — moths + car headlight reflections possible.
+      # Start at 150 (yard-equivalent) and retune.
+      NIGHT_INSECT_BRIGHTNESS_MIN: "150"
+      INSECT_MEAN_UNCAP_SIZE: "1"
+      MOTION_MERGE_DIST_PX: "40"
+      MOTION_MERGE_MAX_CLUSTER: "5"
+      ALERT_ANNOTATE_HISTORY_FRAMES: "15"
+      MOTION_BACKEND: mog2
+      # 2026-10-01: shortened 400 → 150 (27s → 10s at 15fps) so MOG
+      # baseline adapts faster. 400 was absorbing fast-rat crossings
+      # before they could register as foreground — a 3s rat sprint
+      # becomes <1% of the MOG history and gets flagged as noise.
+      # 150 keeps enough stability for parked-vehicle backgrounds
+      # while making brief fast moves actually trip the detector.
+      MOTION_HISTORY: "150"
+      # 2026-10-01: lowered 22 → 15 for fast-mover sensitivity.
+      # MOG per-pixel variance threshold — lower = more pixels get
+      # classified as foreground. Rats on concrete have low fur-to-
+      # background contrast (dark on grey), so 22 was rejecting
+      # legitimate rat silhouettes. 15 captures them at the cost of
+      # letting more wind/shadow pixels through. The dedup +
+      # VLM-reject-override downstream catch the FPs.
+      MOTION_VAR_THRESHOLD: "15"
+      MOTION_MIN_AREA: "80"
+      MOTION_DETECT_SHADOWS: "0"
+      # 2026-10-01: lowered 0.07 → 0.03 after missing an opossum
+      # traversal at 01:34:39 — real animal produced diff values
+      # of 0.011-0.048 (6 consecutive track-frames) all below the
+      # inherited 0.07 floor. Garage scene is outdoor concrete
+      # pavers (uniform grey background) where dark animal bodies
+      # produce much smaller pixel deltas vs baseline than crawlspace
+      # IR scenes. Same shape of fix as the 2026-09-30 crawlspace
+      # 21:43 rat miss (0.10 → 0.07 there). Will let more shadow /
+      # wind-blown debris reach VLM — accept the VLM-reject-override
+      # cost as the price of recall on dark animals against grey.
+      BASELINE_DIFF_THRESHOLD: "0.03"
+      DAY_BASELINE_DIFF_THRESHOLD: "0.18"
+      VLM_MAX_ALERT_AGE_S: "40"
+      VLM_REJECT_OVERRIDE_ONLY_IF_HEDGED: "0"
+      DAYTIME_RODENT_MIN_CONF: "0.55"
+      EXCLUSION_MIN_CONF: "0.90"
+      VLM_BACKEND: ollama
+      OLLAMA_MODEL: qwen2.5vl:7b
+      CLAUDE_MODEL: claude-sonnet-5
+      CASCADE_CONFIRM_MODEL: claude-sonnet-5
+      OLLAMA_URL: http://host.docker.internal:11434
+      DETECTOR_INTERNAL_HOST: 0.0.0.0
+      # Eighth detector port — see detector-under-adu-ptz above for
+      # the running port map (yard=8101 … under_adu_ptz=8107).
+      DETECTOR_INTERNAL_PORT: 8108
+    expose:
+      - "8108"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx, sys; r = httpx.get('http://localhost:8108/internal/health/deep', timeout=3); sys.exit(0 if r.status_code == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+
   web:
     build:
       context: .
@@ -1228,7 +1630,7 @@ services:
     environment:
       # Comma-separated so the sidecar can fan-out /status + fan-in /api/alerts.
       # Order defines display order in the UI.
-      DETECTOR_URLS: http://detector-yard:8101,http://detector-rooftop:8102,http://detector-backyard:8103,http://detector-crawlspace:8104,http://detector-crawlspace-inside:8105,http://detector-sideyard:8106
+      DETECTOR_URLS: http://detector-yard:8101,http://detector-rooftop:8102,http://detector-backyard:8103,http://detector-crawlspace:8104,http://detector-crawlspace-inside:8105,http://detector-under-adu-ptz:8107,http://detector-garage-ptz:8108
       # Back-compat: legacy single-detector consumers read this one.
       DETECTOR_INTERNAL_URL: http://detector-yard:8101
       PREVIEW_HOST: 0.0.0.0
@@ -1257,7 +1659,11 @@ services:
       # rooftop now recorded direct-IP via Frigate at 192.168.1.145.
       # NVR_CHANNEL_ROOFTOP intentionally unset so alert_playback falls
       # through to the Frigate branch. Restore "6" if NVR ch6 is fixed.
-      NVR_CHANNEL_BACKYARD: "8"
+      # 2026-09-30: backyard moved off Amcrest ch8 onto Beelink Frigate
+      # (strangler-fig continues). Amcrest slot 8 now empty per NVR
+      # RemoteDevice; cut the env binding so Replay falls through to
+      # Frigate cleanly instead of hitting a dead RTSP DESCRIBE.
+      # NVR_CHANNEL_BACKYARD: "8"
       # 2026-09-10: connected 192.168.1.229 to Amcrest NVR channel 1 as
       # a proper recording source. Archiver switched from the AgentDVR
       # local-chunk path back to the standard NVR RTSP path to match
@@ -1267,15 +1673,22 @@ services:
       # of three.
       # 2026-09-12: cutover from .229 (Amcrest ch1) to the YHD912-P at
       # .105 on Amcrest ch7. RTSP_URL on detector-crawlspace updated too.
-      # 2026-09-21: Annke decommissioned. Playback back on Amcrest ch7
-      # (2304x1296 HEVC — not the old 12MP main-stream that used to
-      # choke the Amcrest NVR). No per-camera NVR overrides — inherits
-      # fleet-wide AMCREST_HOST/USER/PASS.
-      NVR_CHANNEL_CRAWLSPACE: "7"
+      # 2026-09-21: Annke decommissioned. Playback back on Amcrest ch7.
+      # 2026-09-30: Amcrest ch7 reassigned on the NVR to a different
+      # physical camera during the PTZ additions (under_adu_ptz /
+      # under_deck_ptz / mid_sideyard). Detector still reads .112 direct
+      # so snapshots/labels stay correct, but NVR ch7 playback now serves
+      # the wrong camera. Cutting off NVR channel binding — Replay falls
+      # through to Frigate (Beelink records crawlspace_ext direct). Second
+      # camera on the strangler-fig migration after sideyard.
+      # NVR_CHANNEL_CRAWLSPACE: "7"
       # 2026-09-11: .86 moved to the Amcrest at .148 channel 3 (simpler
       # than the earlier Annke/AgentDVR arrangement). No per-camera NVR
       # overrides needed — inherits fleet-wide AMCREST_HOST/USER/PASS.
-      NVR_CHANNEL_CRAWLSPACE_INSIDE: "3"
+      # 2026-09-30: crawlspace_inside moved off Amcrest ch3 onto Beelink
+      # Frigate. Amcrest slot 3 now empty per NVR RemoteDevice; cut the
+      # env binding so Replay falls through to Frigate.
+      # NVR_CHANNEL_CRAWLSPACE_INSIDE: "3"
       # 2026-09-26: sideyard cut off Amcrest NVR to direct-IP .112. No NVR
       # channel binding — the playback branch at web_service.py:1707 falls
       # through to Frigate (which now records sideyard direct on the Beelink).
@@ -1361,7 +1774,8 @@ services:
       # 2026-09-21: Annke decommissioned — backyard on Amcrest.
       # 2026-09-23: rooftop routes through Frigate (Amcrest ch6 broke
       # post-outage — see web env block above).
-      NVR_CHANNEL_BACKYARD: "8"
+      # 2026-09-30: backyard cut off Amcrest — see web env block above.
+      # NVR_CHANNEL_BACKYARD: "8"
       # 2026-09-10: connected 192.168.1.229 to Amcrest NVR channel 1.
       # Retired the AgentDVR bind mount + AGENTDVR_DIR_CRAWLSPACE env —
       # archiver now dispatches to the standard NVR RTSP playback URL
@@ -1372,13 +1786,16 @@ services:
       # likely has footage for windows AgentDVR missed.
       # 2026-09-12: cutover from .229 (Amcrest ch1) to the YHD912-P at
       # .105 on Amcrest ch7. RTSP_URL on detector-crawlspace updated too.
-      # 2026-09-21: Annke decommissioned — playback back on Amcrest ch7
-      # (see web env block above for detail). No per-camera overrides.
-      NVR_CHANNEL_CRAWLSPACE: "7"
+      # 2026-09-21: Annke decommissioned — playback back on Amcrest ch7.
+      # 2026-09-30: Amcrest ch7 reassigned on the NVR (see web env block
+      # above for the full note). Archiver now skips crawlspace clips —
+      # Replay routes to Frigate on the Beelink.
+      # NVR_CHANNEL_CRAWLSPACE: "7"
       # 2026-09-11: .86 moved to the Amcrest at .148 channel 3 — see
       # matching note in the web env block above. Standard NVR dispatch,
       # no AgentDVR bind mount, no per-camera host overrides.
-      NVR_CHANNEL_CRAWLSPACE_INSIDE: "3"
+      # 2026-09-30: crawlspace_inside cut off Amcrest — see web env block.
+      # NVR_CHANNEL_CRAWLSPACE_INSIDE: "3"
       # 2026-09-26: sideyard cut off Amcrest NVR — playback routes to
       # Frigate via web_service.py:1707 branch. See web env block above.
     volumes:

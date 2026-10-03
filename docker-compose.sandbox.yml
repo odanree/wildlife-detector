@@ -1,0 +1,72 @@
+# Sandbox detector for parameter tuning against recorded footage.
+# Inherits detector-crawlspace's env + mounts, overrides CAMERA_ID so
+# sandbox alerts land in the DB as `crawlspace_sb` (easy to filter out
+# of the labeling UI), swaps live RTSP for the sandbox mp4, loops
+# forever, and relaxes the pre-VLM filters so the 2026-09-30 21:43 rat
+# event actually reaches the VLM instead of being filtered as insect/
+# baseline-similar.
+#
+# Launch:
+#   docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d detector-crawlspace-sb
+# Watch:
+#   docker logs -f wildlife-detector-crawlspace-sb | grep -E "VLM|insect|baseline|alert"
+# Iterate: edit env vars below, `docker compose ... up -d --force-recreate detector-crawlspace-sb`
+# Cleanup: docker compose ... stop detector-crawlspace-sb; delete alerts
+#   where camera_id='crawlspace_sb' from the DB.
+
+services:
+  detector-crawlspace-sb:
+    extends:
+      file: docker-compose.yml
+      service: detector-crawlspace
+    container_name: wildlife-detector-crawlspace-sb
+    labels:
+      autoheal: "false"
+    environment:
+      # Unique id so sandbox alerts are filterable in the labeling UI.
+      CAMERA_ID: crawlspace_sb
+      # File-source instead of live RTSP. VideoFileHandler (src/stream/
+      # video_file_handler.py) picks this up when VIDEO_PATH is set and
+      # stream_url is None. The mp4 lives in ./data (bind-mounted to
+      # /app/data) — same volume prod uses for baselines.
+      VIDEO_PATH: /app/data/sandbox_crawl_2143.mp4
+      # 2026-09-30: flipped to false after discovering MOG baseline
+      # absorbs the recurring rat moment on loop 2+. Then flipped back
+      # to true + slow speed so VLM has time to return after the
+      # single-pass's final motion event; MOG baseline-wash is OK now
+      # that var_threshold=10 keeps firing on ambient IR noise so
+      # pipeline doesn't go dark.
+      VIDEO_LOOP: "true"
+      VIDEO_SPEED: "0.5"
+      # Force-override the live RTSP so the pipeline doesn't try to
+      # connect — VideoFileHandler takes precedence when VIDEO_PATH is
+      # set, but keeping RTSP_URL present-but-dummy avoids startup
+      # fail-fast on the ${CAM_HOST_CRAWLSPACE:?} required marker.
+      RTSP_URL: file:///app/data/sandbox_crawl_2143.mp4
+      # ── Pre-VLM filter overrides for this iteration ────────────────
+      # Baseline-diff: real rat at 21:43:17 produced diff=0.082.
+      # Prod threshold 0.10 rejected it. Try 0.07 (below the observed
+      # value) so this rat gets through.
+      BASELINE_DIFF_THRESHOLD: "0.05"
+      # Insect filter mean-brightness gate: rat had mean=181 → caught
+      # at prod's 150 floor. Raise to 185 so this rat clears, but moths
+      # (typically mean=200+) are still caught.
+      NIGHT_INSECT_BRIGHTNESS_MIN: "185"
+      # Keep the max-brightness gate off (prod value, trap-reflection
+      # workaround still applies).
+      NIGHT_INSECT_MAX_BRIGHTNESS_MIN: "255"
+      # 2026-09-30 sandbox: prod MOG var_threshold=22 missed the rat's
+      # brief dart-and-freeze in the first-pass single-shot. Drop to 10
+      # so subtle frame-to-frame deltas register. Will mean more FP
+      # motion events but we're sandbox-only so cost is just extra VLM
+      # calls in this run, not persistent noise.
+      MOTION_VAR_THRESHOLD: "10"
+      MOTION_MIN_AREA: "30"
+      # Reduce log noise from the healthcheck/autoheal side effects —
+      # we don't care about health in sandbox.
+      SKIP_HEALTH_PROBE_LOG: "1"
+    # No port exposure — sandbox doesn't need to be reachable from web.
+    ports: []
+    # Don't let the sandbox block normal `docker compose up`.
+    profiles: ["sandbox"]
+    restart: "no"
