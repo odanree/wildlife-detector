@@ -319,6 +319,19 @@ _FRIGATE_CAMERAS: dict[str, str] = {
     "front_corner":   "front_corner",
     "garage_ptz":     "garage_ptz",
     "frontyard":      "frontyard",
+    "under_adu_ptz":  "under_adu_ptz",
+    "under_deck_ptz": "under_deck_ptz",
+    "mid_sideyard":   "mid_sideyard",
+    # 2026-10-01: .118 Amcrest (ex-backyard detector source) kept alive
+    # as Frigate-only recording under the new name "backyard_ptz". No
+    # custom detector attached — no alert rows for this camera_id —
+    # mapping is here so any UI link that references
+    # camera_id=backyard_ptz routes to the right Frigate recording.
+    # Note: the "backyard" entry above (identity-mapped) continues to
+    # work after Beelink Frigate renamed deck_steps → backyard; the
+    # .126 stream is now owned by Frigate's "backyard" camera name
+    # directly, so no remap needed.
+    "backyard_ptz":   "backyard_ptz",
 }
 # Pre-VLM drop crops — same dir the detector's PreVlmDropSink writes
 # to via PRE_VLM_DROP_CROP_DIR. Read-only bind mount in the web

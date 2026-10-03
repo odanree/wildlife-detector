@@ -18,7 +18,7 @@ import styles from "./PlaybackUrlPage.module.css";
  * common "same channel, another moment" flow doesn't re-input every time.
  */
 
-const CHANNELS: readonly number[] = [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14];
+const CHANNELS: readonly number[] = [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14, 16, 17, 18, 19];
 
 // Frigate host — build-time env for the frontend. When unset, the
 // Frigate option is hidden from the NVR picker (no host = no target).
@@ -47,7 +47,12 @@ const IS_WINDOWS =
 // of NVR (no NVR involved).
 const NVR_CHANNELS: Record<"amcrest" | "frigate", readonly number[]> = {
   amcrest: [1, 3, 4, 5, 6, 7, 8],
-  frigate: [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14],
+  // 2026-09-28: sideyard camera_id retired (physical .112 dome moved to
+  // crawlspace_ext mount) → dropped from Frigate; ch13/16/17 added for
+  // the new direct-IP feeds (crawlspace_ext .112 / under_adu_ptz .229 /
+  // under_deck_ptz .109). Amcrest NVR side unchanged — the operator
+  // hasn't rewired the NVR channel patch panel today.
+  frigate: [2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14, 16, 17, 18, 19],
 };
 
 // Frigate addresses cameras by their config-YAML name, not by NVR channel.
@@ -55,24 +60,30 @@ const NVR_CHANNELS: Record<"amcrest" | "frigate", readonly number[]> = {
 // Kept in sync manually with the Beelink Frigate compose (any camera
 // added there needs an entry here so the picker can route to it).
 const FRIGATE_CAMERA_BY_CHANNEL: Record<number, string> = {
-  1: "sideyard",
+  // ch1 (sideyard) removed 2026-09-28 — sideyard cam retired.
   2: "frontyard",
   3: "crawlspace_inside",
   4: "garage_ptz",
   5: "yard",
   6: "rooftop",
-  7: "crawlspace_ext",
-  8: "backyard",
+  7: "crawlspace_ext",     // ch7 records via NVR relay if operator kept it; Frigate name unchanged after 2026-09-28 dome remount
+  8: "backyard",           // 2026-10-01: back to default after Beelink Frigate rename deck_steps→backyard (the .126 stream — new backyard scene)
   10: "plant_pathway",
   12: "corner",
+  13: "crawlspace_ext",    // 2026-09-28: .112 dome moved to crawlspace_ext role (was sideyard direct)
   14: "front_corner",
+  // ch15 removed 2026-10-01 — "deck_steps" camera retired on Beelink Frigate; .126 stream now owned by the "backyard" key (ch8).
+  16: "under_adu_ptz",     // 2026-09-28: .229 direct — Hiseeu formerly crawlspace_ext hardware
+  17: "under_deck_ptz",    // 2026-09-28: .109 direct — V380 bulb, Frigate-only (no wildlife-detector)
+  18: "mid_sideyard",      // 2026-09-29: .117 direct — V380 bulb re-added at mid-sideyard mount, Frigate-only
+  19: "backyard_ptz",      // 2026-10-01: .118 Amcrest (ex-backyard) kept as Frigate-only recording under new name "backyard_ptz" — see docker-compose.yml backyard block
 };
 
 // Known channel → camera-name mapping (from NVR_CHANNEL_* env on the
 // web container). Only three channels are mapped today; the rest show
 // as "channel N" so the operator can still reach them.
 const CHANNEL_LABEL: Record<number, string> = {
-  1: "1 (sideyard)",
+  1: "1 (unassigned — sideyard retired 2026-09-28)",
   2: "2 (frontyard .142 — direct only)",
   3: "3 (crawlspace int)",
   4: "4 (garage PTZ)",
@@ -82,8 +93,13 @@ const CHANNEL_LABEL: Record<number, string> = {
   8: "8 (backyard)",
   10: "10 (plant pathway .105 — direct only)",
   12: "12 (corner .125 — direct only)",
-  13: "13 (sideyard .112 — direct only)",
+  13: "13 (crawlspace ext .112 — direct only)",   // was sideyard until 2026-09-28
   14: "14 (front corner .104 — direct only)",
+  // ch15 (deck steps) removed 2026-10-01 — camera retired, stream owned by ch8 (backyard) now.
+  16: "16 (under adu ptz .229 — direct only)",     // 2026-09-28 new
+  17: "17 (under deck ptz .109 — direct only)",    // 2026-09-28 new
+  18: "18 (mid sideyard .117 — direct only)",      // 2026-09-29 new
+  19: "19 (backyard PTZ .118 — direct only)",      // 2026-10-01 new (was ch8 before the .118→.126 swap)
 };
 
 // Per-NVR channel labels — Frigate uses camera-config-name lookup, so its
@@ -91,7 +107,7 @@ const CHANNEL_LABEL: Record<number, string> = {
 const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "frigate", Record<number, string>> = {
   amcrest: CHANNEL_LABEL,
   frigate: {
-    1: "1 (sideyard)",
+    // ch1 removed 2026-09-28 — sideyard retired.
     2: "2 (frontyard)",
     3: "3 (crawlspace int)",
     4: "4 (garage PTZ)",
@@ -101,7 +117,13 @@ const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "frigate", Record<number, string>
     8: "8 (backyard)",
     10: "10 (plant pathway)",
     12: "12 (corner)",
+    13: "13 (crawlspace ext .112)",
     14: "14 (front corner)",
+    // ch15 (deck steps) removed 2026-10-01 — camera retired.
+    16: "16 (under adu ptz .229)",
+    17: "17 (under deck ptz .109)",
+    18: "18 (mid sideyard .117)",
+    19: "19 (backyard PTZ .118)",
   },
 };
 
@@ -109,14 +131,18 @@ const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "frigate", Record<number, string>
 // page hands us ?camera=<id> and we preselect the picker so the operator
 // lands on the right NVR + channel for THAT camera's recording home.
 // All cameras land on Amcrest after the 2026-09-21 Annke decommission.
+// 2026-09-28: sideyard removed (retired); under_adu_ptz added at ch16
+// direct. crawlspace stays on ch7 amcrest — assumes the NVR channel
+// hasn't been re-plumbed. Adjust if the operator has moved the physical
+// wire on the NVR.
 const CAMERA_TO_CHANNEL: Record<string, { channel: number; nvr: "amcrest" }> = {
   yard: { channel: 5, nvr: "amcrest" },
   rooftop: { channel: 6, nvr: "amcrest" },
   backyard: { channel: 8, nvr: "amcrest" },
   crawlspace: { channel: 7, nvr: "amcrest" },
   crawlspace_inside: { channel: 3, nvr: "amcrest" },
-  sideyard: { channel: 1, nvr: "amcrest" },
   frontcorner: { channel: 14, nvr: "amcrest" },
+  under_adu_ptz: { channel: 16, nvr: "amcrest" },   // via Frigate direct-only pseudo channel
 };
 
 const DURATION_OPTIONS: readonly { label: string; seconds: number }[] = [
