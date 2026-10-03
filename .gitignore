@@ -41,3 +41,18 @@ docker-compose.override.yml
 
 # Session-local runtime monitoring artifacts (memory watch loops, etc.)
 *-memwatch.log
+
+# Operator's manually-curated clip archive — hundreds of MB of highlight
+# clips (baby-rat-drop-fruit, adult-rat-prison-break, etc). Local-only
+# reference material, never commit.
+clips-manual/
+
+# Per-camera pause sentinels — 0-byte flag files the pipeline reads at
+# runtime to toggle individual camera pause state. Ephemeral per-host
+# state, not source config.
+config/pause_*.flag
+
+# Credentials bucket for anything that doesn't belong in .env. Must stay
+# gitignored even when empty so a future `secrets_add` wrapper or manual
+# edit never leaks to the repo.
+secrets.yaml
