@@ -438,6 +438,54 @@ def _bbox_signature(frame: np.ndarray, bbox: tuple[int, int, int, int]) -> _Bbox
     )
 
 
+def _bbox_iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+    """IoU between two (x1, y1, x2, y2) bboxes. Zero on degenerate boxes."""
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1); iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2); iy2 = min(ay2, by2)
+    iw = max(0, ix2 - ix1); ih = max(0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _compute_dedup_backoff(
+    prior: dict,
+    det,
+    conf_thresh: float,
+    rodent_backoff_s: float,
+    other_backoff_s: float,
+    iou_cut: float,
+) -> float:
+    """How long to suppress follow-up VLM calls for a track with a prior verdict.
+
+    Returns 0.0 when the prior is weak (confidence < conf_thresh) — falls
+    through to the normal VLM_INTERVAL_S gate. Returns a non-zero backoff
+    when the prior is confident: rodent-positive gets a MEDIUM backoff
+    (confirm periodically for alert granularity), confirmed non-rodent
+    gets a LONG backoff (likely noise, low re-check priority). Backoff is
+    cut in half when the bbox has moved significantly (IoU below iou_cut),
+    reflecting that a moving animal is a new signal (different pose =
+    different VLM prompt input), not the same thing sitting still.
+    """
+    conf = float(prior.get("confidence", 0.0) or 0.0)
+    if conf < conf_thresh:
+        return 0.0
+    base = rodent_backoff_s if prior.get("is_rodent") else other_backoff_s
+    prior_bbox = prior.get("bbox")
+    if prior_bbox is None:
+        return base
+    iou = _bbox_iou(tuple(prior_bbox), tuple(det.bbox))
+    if iou < iou_cut:
+        return base * 0.5
+    return base
+
+
 # Per-track history of recent bboxes — used by the temporal-union
 # annotation to expand a single-frame MOG bbox to the swept path over
 # recent frames. Walking cat case: MOG's adaptive background absorbs
@@ -1035,6 +1083,39 @@ def run(stream_url: str | None = None, video_path: str | None = None,
     last_vlm_ts: dict[int, float] = {}
     VLM_INTERVAL_S = float(os.getenv("VLM_INTERVAL_S", "2.0"))
 
+    # ── Per-track VLM verdict dedup (2026-10-01) ─────────────────────────
+    # Backpressure complement to stale-drop. If a track already has a
+    # confident VLM verdict, suppress follow-up calls for N seconds —
+    # one baby-opossum dwelling in frame 60s shouldn't cost 20 VLM calls
+    # when the first already said "opossum 0.85". Sheds low-marginal-info
+    # work at admission instead of after-the-fact.
+    # Pattern: per-track request coalescing — same shape as
+    # MOTION_MERGE_DIST_PX but applied at the VLM queue layer.
+    # Feature-flagged off by default; flip VLM_DEDUP_ENABLED=1 per camera
+    # once backoff values are validated. Shadow mode logs would-have-
+    # skipped counts without actually skipping, for first-week calibration.
+    _VLM_DEDUP_ENABLED = os.getenv("VLM_DEDUP_ENABLED", "0") == "1"
+    _VLM_DEDUP_SHADOW = os.getenv("VLM_DEDUP_SHADOW_MODE", "0") == "1"
+    _VLM_DEDUP_RODENT_BACKOFF_S = float(os.getenv("VLM_DEDUP_RODENT_BACKOFF_S", "30"))
+    _VLM_DEDUP_OTHER_BACKOFF_S  = float(os.getenv("VLM_DEDUP_OTHER_BACKOFF_S",  "60"))
+    _VLM_DEDUP_CONFIDENCE_THRESH = float(os.getenv("VLM_DEDUP_CONFIDENCE_THRESH", "0.75"))
+    _VLM_DEDUP_IOU_CUT = float(os.getenv("VLM_DEDUP_IOU_CUT", "0.5"))
+    # Verdict cache keyed by track_id. Populated at harvest, consulted at
+    # submit. Pruned alongside last_vlm_ts when a track leaves frame.
+    last_vlm_verdict: dict[int, dict] = {}
+    # Observability counters — reset each hourly summary emit.
+    _vlm_submit_count = 0
+    _vlm_dedup_skip_count = 0
+    _vlm_dedup_shadow_count = 0
+    _vlm_summary_last_log_ts = time.time()
+    if _VLM_DEDUP_ENABLED:
+        logger.info(
+            "VLM dedup: ENABLED mode=%s rodent_backoff=%.0fs other_backoff=%.0fs conf_thresh=%.2f iou_cut=%.2f",
+            "shadow" if _VLM_DEDUP_SHADOW else "live",
+            _VLM_DEDUP_RODENT_BACKOFF_S, _VLM_DEDUP_OTHER_BACKOFF_S,
+            _VLM_DEDUP_CONFIDENCE_THRESH, _VLM_DEDUP_IOU_CUT,
+        )
+
     # ── Replay report sidecar (opt-in; scripts/event_triggered_replay.py) ──
     # REPLAY_REPORT_PATH=<file>: on exit, write a JSON report of every VLM
     # verdict + every notifier.send() call this process made, keyed to the
@@ -1173,6 +1254,14 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 logger.info("Shutdown event set — exiting main loop")
                 break
             frame = stream.get_frame()
+            # 2026-10-03: capture the frame-receive wall-clock so we can
+            # anchor alerts.ts to the actual event time. RTSPHandler sets
+            # this just before returning the frame; VideoFileHandler may
+            # not implement it (hence the fallback to current time, which
+            # is fine for file-replay where no VLM queue delay exists).
+            # See the record_alert ts=... usage below for the payoff:
+            # clip playback URLs land on the sighting, not on VLM-return.
+            frame_ts = getattr(stream, "last_captured_ts", None) or time.time()
             if frame is None:
                 if not (_replay_exit_on_eof and getattr(stream, "finished", False)):
                     continue
@@ -1595,7 +1684,13 @@ def run(stream_url: str | None = None, video_path: str | None = None,
 
             # ── Harvest completed VLM jobs ──────────────────────────────────
             for tid in list(vlm_jobs.keys()):
-                fut, snap_fr, bbox, yolo_conf, crop_bytes, submit_ts = vlm_jobs[tid]
+                # 2026-10-03: 7-tuple now — the trailing frame_ts anchors
+                # alerts.ts to the real event moment instead of submit_ts
+                # (which was off by up to 20s under RTSP buffer / stage
+                # backlog, breaking clip playback alignment). See
+                # vlm_jobs assignment site + record_alert ts=frame_ts
+                # below for the full chain.
+                fut, snap_fr, bbox, yolo_conf, crop_bytes, submit_ts, frame_ts = vlm_jobs[tid]
                 if not fut.done():
                     continue
                 del vlm_jobs[tid]
@@ -1632,6 +1727,21 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     _b_mean, _b_max, _b_ar, _b_wmean, _b_wmax,
                     _queue_age, _inflight,
                 )
+
+                # ── Dedup verdict cache update ────────────────────────
+                # Record even for alerts about to be stale-dropped — the
+                # dedup gate still benefits from the verdict signal
+                # ("we already classified this track as X"). Manual
+                # tracks bypass: operator always wants fresh VLM output.
+                if _VLM_DEDUP_ENABLED and tid < MANUAL_TRACK_ID_BASE:
+                    last_vlm_verdict[tid] = {
+                        "species":    result.get("species"),
+                        "confidence": float(result.get("confidence", 0.0) or 0.0),
+                        "is_rodent":  bool(result.get("is_rodent", False)),
+                        "at_ts":      time.time(),
+                        "bbox":       tuple(bbox) if bbox is not None else None,
+                    }
+
                 if _replay_report_path:
                     _replay_verdicts.append({
                         "clip_pos_s": _replay_submit_pos.pop(tid, None),
@@ -1828,7 +1938,12 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                             # clip archiver's playback URL opens VLC on
                             # the actual sighting instead of `queue_age`
                             # seconds past it (up to VLM_MAX_ALERT_AGE_S=40).
-                            ts=submit_ts,
+                            # 2026-10-03: moved from submit_ts → frame_ts.
+                            # submit_ts was still a few-to-twenty seconds
+                            # past the event when RTSP buffer or MOG/YOLO
+                            # stages backed up; frame_ts is read directly
+                            # off the RTSP socket at frame-receive time.
+                            ts=frame_ts,
                             # Override alerts are `other`, not rodent, so
                             # the embedder ignores them today — but the
                             # operator relabels a share of these as TP
@@ -2019,7 +2134,9 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     # capture time so late-VLM alerts don't get an
                     # inflated wallclock stamp and playback URLs land
                     # on the actual sighting.
-                    ts=submit_ts,
+                    # 2026-10-03: now using frame_ts (RTSP receive time)
+                    # instead of submit_ts; see override branch above.
+                    ts=frame_ts,
                     # Rat re-id: persist the bbox the snapshot was
                     # annotated with, in snap_fr's pixel space, so the
                     # embedder crops the animal instead of recovering
@@ -2131,6 +2248,44 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                 if det.track_id in vlm_jobs:
                     continue
                 now = time.time()
+
+                # ── Per-track verdict dedup gate (2026-10-01) ───────────
+                # If this track already has a confident verdict and the
+                # computed backoff hasn't elapsed, skip. Manual tracks
+                # bypass — operator-triggered VLM always runs. Shadow
+                # mode counts would-have-skipped without actually skipping.
+                if (
+                    _VLM_DEDUP_ENABLED
+                    and det.track_id < MANUAL_TRACK_ID_BASE
+                    and det.track_id in last_vlm_verdict
+                ):
+                    _prior = last_vlm_verdict[det.track_id]
+                    _backoff = _compute_dedup_backoff(
+                        _prior, det,
+                        _VLM_DEDUP_CONFIDENCE_THRESH,
+                        _VLM_DEDUP_RODENT_BACKOFF_S,
+                        _VLM_DEDUP_OTHER_BACKOFF_S,
+                        _VLM_DEDUP_IOU_CUT,
+                    )
+                    if _backoff > 0 and (now - _prior["at_ts"]) < _backoff:
+                        if _VLM_DEDUP_SHADOW:
+                            _vlm_dedup_shadow_count += 1
+                            logger.debug(
+                                "VLM dedup: SHADOW would-skip track=%d (backoff=%.0fs, prior=%s@%.2f age=%.1fs)",
+                                det.track_id, _backoff,
+                                _prior.get("species"), _prior.get("confidence", 0.0),
+                                now - _prior["at_ts"],
+                            )
+                        else:
+                            _vlm_dedup_skip_count += 1
+                            logger.debug(
+                                "VLM dedup: skip track=%d (backoff=%.0fs, prior=%s@%.2f age=%.1fs)",
+                                det.track_id, _backoff,
+                                _prior.get("species"), _prior.get("confidence", 0.0),
+                                now - _prior["at_ts"],
+                            )
+                            continue
+
                 if now - last_vlm_ts.get(det.track_id, 0.0) < VLM_INTERVAL_S:
                     continue
 
@@ -2545,8 +2700,15 @@ def run(stream_url: str | None = None, video_path: str | None = None,
                     fut = vlm_pool.submit(vlm.analyze, _vlm_input, _is_daytime)
                     # Stash `crop` (the current-frame JPEG bytes actually sent to VLM)
                     # so a rejected verdict can save it for eyeballing.
-                    vlm_jobs[det.track_id] = (fut, frame.copy(), det.bbox, det.confidence, crop, time.time())
+                    # 2026-10-03: also stash frame_ts (7th element) so the
+                    # harvest-side record_alert() can anchor alerts.ts to
+                    # the real event time instead of the submit_ts proxy
+                    # (which can be minutes-stale when the frame sat in
+                    # the RTSP buffer or the YOLO/MOG stage was blocked).
+                    vlm_jobs[det.track_id] = (fut, frame.copy(), det.bbox, det.confidence, crop, time.time(), frame_ts)
                     _preview_stats.record_vlm_call()
+                    if _VLM_DEDUP_ENABLED:
+                        _vlm_submit_count += 1
                     if _replay_report_path:
                         _replay_submit_pos[det.track_id] = _replay_clip_pos()
 
@@ -2554,6 +2716,31 @@ def run(stream_url: str | None = None, video_path: str | None = None,
             for tid in list(last_vlm_ts.keys()):
                 if tid not in active_ids and tid not in vlm_jobs:
                     del last_vlm_ts[tid]
+            # Prune verdict cache in lockstep with last_vlm_ts — a track
+            # that's gone from the frame has no reason to shape future
+            # dedup decisions (a fresh track_id will get a fresh VLM
+            # classification). Keeps cache size bounded.
+            if _VLM_DEDUP_ENABLED and last_vlm_verdict:
+                for tid in list(last_vlm_verdict.keys()):
+                    if tid not in active_ids and tid not in vlm_jobs:
+                        del last_vlm_verdict[tid]
+
+            # Hourly summary — dedup observability. Resets counters so
+            # each line reports the delta over the past ~1h, not cumulative.
+            if _VLM_DEDUP_ENABLED:
+                _now_summary = time.time()
+                if (_now_summary - _vlm_summary_last_log_ts) > 3600.0:
+                    _total = _vlm_submit_count + _vlm_dedup_skip_count
+                    _pct = (100.0 * _vlm_dedup_skip_count / _total) if _total else 0.0
+                    logger.info(
+                        "VLM dedup 1h summary: submit=%d dedup_skip=%d (%.0f%% suppressed) shadow_would_skip=%d verdict_cache=%d",
+                        _vlm_submit_count, _vlm_dedup_skip_count, _pct,
+                        _vlm_dedup_shadow_count, len(last_vlm_verdict),
+                    )
+                    _vlm_submit_count = 0
+                    _vlm_dedup_skip_count = 0
+                    _vlm_dedup_shadow_count = 0
+                    _vlm_summary_last_log_ts = _now_summary
 
             # ── Push annotated + raw frames to the preview server ───────────
             # Rate-limit to every Nth frame to keep JPEG encode cost down.

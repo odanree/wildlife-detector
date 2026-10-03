@@ -1760,8 +1760,15 @@ def create_app(registry: DetectorRegistry) -> Flask:
             # to see the event with pre-roll context, not so much that
             # Frigate has to concatenate multiple recording chunks.
             frigate_duration = int(os.environ.get("ARCHIVE_CLIP_DURATION_SECONDS") or "45")
-            start_ts = int(ts - frigate_pre_roll)
-            end_ts = start_ts + frigate_duration
+            # 2026-10-03: VLM-latency compensation retired. The pipeline
+            # now stamps alerts.ts with the frame-receive time (RTSPHandler
+            # last_captured_ts carried through vlm_jobs). Alerts fired
+            # BEFORE the retirement commit may still have late ts; set
+            # VLM_LATENCY_COMPENSATION_S=10 as a transient override until
+            # the backlog ages out. Default 0 on new alerts.
+            vlm_lat_comp = int(os.environ.get("VLM_LATENCY_COMPENSATION_S") or "0")
+            start_ts = int(ts - frigate_pre_roll - vlm_lat_comp)
+            end_ts = start_ts + frigate_duration + vlm_lat_comp
             http_clip = (
                 f"{frigate_url}/api/{frigate_cam}"
                 f"/start/{start_ts}/end/{end_ts}/clip.mp4"
