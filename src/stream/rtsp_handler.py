@@ -41,6 +41,18 @@ class RTSPHandler:
         self._thread: threading.Thread | None = None
         # Rolling pickup-age samples for consumer-side lag telemetry
         self._pickup_age_samples: list[float] = []
+        # 2026-10-03: capture-time of the frame most recently returned by
+        # get_frame(). Pipeline reads this immediately after get_frame()
+        # to anchor alerts.ts to real event time instead of VLM-submit
+        # time. Falls back to None before any frame has been pulled.
+        self._last_captured_ts: float | None = None
+
+    @property
+    def last_captured_ts(self) -> float | None:
+        """Wall-clock when the most-recently-returned frame was read off
+        the RTSP socket. Pipeline uses this as alerts.ts so clip playback
+        URLs land on the actual event moment, not VLM-return time."""
+        return self._last_captured_ts
 
     @property
     def is_playback(self) -> bool:
@@ -90,12 +102,19 @@ class RTSPHandler:
         cap.read() and consumer pickup — high age means our queue is
         holding stale frames (downstream bug); low age means any lag
         the user sees is upstream (camera / network buffer).
+
+        2026-10-03: also stash captured_ts on self so the pipeline can
+        read it after get_frame() returns. This anchors alerts.ts to
+        the frame-receive moment instead of VLM-submit time — fixes
+        clips that "play after" the event when queue is backed up.
+        Read via `self.last_captured_ts` on the next line of pipeline.
         """
         try:
             item = self._queue.get(timeout=timeout)
         except queue.Empty:
             return None
         captured_ts, frame = item
+        self._last_captured_ts = captured_ts
         age = time.time() - captured_ts
         self._pickup_age_samples.append(age)
         if len(self._pickup_age_samples) >= 100:
