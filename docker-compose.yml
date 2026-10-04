@@ -724,6 +724,18 @@ services:
       # = ~900 px² = usually not-a-real-target).
       MIN_MOTION_BBOX_PX: "30"
       VLM_INTERVAL_S: "3"
+      # 2026-10-04: added explicit VLM_WORKERS / MAX_INFLIGHT / MAX_ALERT_AGE
+      # after a 00:16 AM 3-animal event (two conf=0.85 rat verdicts + one
+      # 0.80 'other') ALL stale-dropped at queue_age 11-15s against the
+      # default VLM_MAX_ALERT_AGE_S=10. Backyard was running on the
+      # per-detector defaults (workers=1, inflight=1, max_age=10) — same
+      # root cause as the 2026-10-01 yard baby-opossum miss. Mirroring
+      # yard / crawlspace / under_adu_ptz / garage_ptz config (6 workers,
+      # 6 inflight, 40s stale window) so moderate queue backups don't
+      # drop confirmed-rat alerts.
+      VLM_WORKERS: "6"
+      VLM_MAX_INFLIGHT: "6"
+      VLM_MAX_ALERT_AGE_S: "40"
       # Priority-aware alert debounce (see src/alerts/debounce.py). 10s
       # matches yard. The VLM-reject-override path fires 75+ 'other'
       # alerts per 6h from static-noise hotspots on the fence line —
