@@ -37,7 +37,7 @@ interface AlertLightboxProps {
    *  fires setAlertLabel, rolls back on error. The lightbox calls this
    *  for both mouse-click votes (via LabelPicker.onChange) and keyboard
    *  votes (Y/N/U handlers). */
-  writeLabel?: (id: number, verdict: LabelVerdict, species: string | null) => Promise<void>;
+  writeLabel?: (alert: AlertRow, verdict: LabelVerdict, species: string | null) => Promise<void>;
 }
 
 /**
@@ -217,11 +217,10 @@ export function AlertLightbox({
     // preserves the original Y/N/U behavior (no fine-grained tag).
     const vote = (verdict: LabelVerdict, species: string | null = null) => {
       if (!current) return;
-      const alertId = current.id;
       // Fire-and-forget — writeLabel handles the optimistic update, so
       // the LabelPicker in the CURRENT frame already re-renders via the
       // overlay before we advance. Guards against wrap-around.
-      writeLabel?.(alertId, verdict, species).catch((e) => {
+      writeLabel?.(current, verdict, species).catch((e) => {
         console.error("keyboard vote failed:", e);
       });
       if (currentIdx < navList.length - 1) go(1);
@@ -441,7 +440,7 @@ export function AlertLightbox({
                   verdict={effVerdict}
                   species={effSpecies}
                   busy={busyIds?.has(current.id) ?? false}
-                  onChange={(v, s) => writeLabel?.(current.id, v, s)}
+                  onChange={(v, s) => writeLabel?.(current, v, s)}
                   showSpeciesDefault={true}
                 />
               );

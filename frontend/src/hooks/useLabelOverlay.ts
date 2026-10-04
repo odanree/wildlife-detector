@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { type LabelVerdict, setAlertLabel } from "../api/alerts";
+import { type AlertRow, type LabelVerdict, setAlertLabel } from "../api/alerts";
 
 /**
  * Optimistic-UI overlay for label writes — extracted from AlertsPage
@@ -20,9 +20,20 @@ import { type LabelVerdict, setAlertLabel } from "../api/alerts";
  *    disables its buttons for that row while a request is pending.
  *    Prevents rapid-fire double-clicks from queueing multiple writes.
  *
- * 4. **Bulk apply** for BulkLabelBar — `applyOverlay(ids, verdict, sp)`
+ * 4. **Bulk apply** for BulkLabelBar — `applyOverlay(rows, verdict, sp)`
  *    updates N rows in one setState. The server-side bulk endpoint
  *    handles the persistence; this hook only mirrors the local view.
+ *
+ * 5. **Pinned-rows session cache**: every writeLabel/applyOverlay also
+ *    stashes the full AlertRow in `pinnedRows`. AlertsPage merges this
+ *    set into its render list so a row that was just labeled stays
+ *    visible IN PLACE (preserving ts-DESC position) even after the
+ *    `label_filter=unlabeled` server response drops it. Lets the
+ *    operator backfix a mislabel mid-sift without losing scroll
+ *    position. Caller is expected to clear via `clearPinnedRows()`
+ *    when it detects a filter change — otherwise cross-filter pins
+ *    leak. Session-scoped (lost on reload) by design: active sifting
+ *    is single-tab, single-session.
  *
  * Stability:
  * - writeLabel is `useCallback([])` — stable across renders.
@@ -49,24 +60,38 @@ export interface LabelOverlayApi {
   /** Alert ids with a server write in flight — LabelPicker disables
    *  buttons for these. */
   busyIds: Set<number>;
+  /** Row-pin session cache: full AlertRow snapshotted at label-time so
+   *  the table can keep it rendered in place after a server-side filter
+   *  (e.g. `label_filter=unlabeled`) would otherwise drop it. */
+  pinnedRows: Map<number, AlertRow>;
   /** Optimistic single-row write: update overlay + fire API + rollback
-   *  overlay on error. */
-  writeLabel: (alertId: number, verdict: LabelVerdict, species: string | null) => Promise<void>;
-  /** Bulk apply — mirror a bulk write in the overlay. Caller is
-   *  responsible for the server-side bulk endpoint (BulkLabelBar
-   *  handles that itself). */
-  applyOverlay: (ids: number[], verdict: LabelVerdict, species: string | null) => void;
+   *  overlay on error. Also pins the full row into `pinnedRows`. */
+  writeLabel: (alert: AlertRow, verdict: LabelVerdict, species: string | null) => Promise<void>;
+  /** Bulk apply — mirror a bulk write in the overlay AND pin the rows.
+   *  Caller is responsible for the server-side bulk endpoint
+   *  (BulkLabelBar handles that itself). */
+  applyOverlay: (alerts: AlertRow[], verdict: LabelVerdict, species: string | null) => void;
+  /** Drop all pinned rows. Call when the sifting context changes
+   *  (filter / scope / camera change) so stale pins don't leak into a
+   *  different view. */
+  clearPinnedRows: () => void;
 }
 
 export function useLabelOverlay(): LabelOverlayApi {
   const [labelOverlay, setLabelOverlay] = useState<Map<number, OverlayEntry>>(() => new Map());
   const [busyIds, setBusyIds] = useState<Set<number>>(() => new Set());
+  const [pinnedRows, setPinnedRows] = useState<Map<number, AlertRow>>(() => new Map());
 
   const applyOverlay = useCallback(
-    (ids: number[], verdict: LabelVerdict, species: string | null) => {
+    (alerts: AlertRow[], verdict: LabelVerdict, species: string | null) => {
       setLabelOverlay((prev) => {
         const next = new Map(prev);
-        for (const id of ids) next.set(id, { verdict, species });
+        for (const a of alerts) next.set(a.id, { verdict, species });
+        return next;
+      });
+      setPinnedRows((prev) => {
+        const next = new Map(prev);
+        for (const a of alerts) next.set(a.id, a);
         return next;
       });
     },
@@ -74,7 +99,8 @@ export function useLabelOverlay(): LabelOverlayApi {
   );
 
   const writeLabel = useCallback(
-    async (alertId: number, verdict: LabelVerdict, species: string | null) => {
+    async (alert: AlertRow, verdict: LabelVerdict, species: string | null) => {
+      const alertId = alert.id;
       // Capture previous value via functional update so we can roll back
       // on server error without depending on closure-captured overlay.
       let prev: OverlayEntry | undefined;
@@ -82,6 +108,12 @@ export function useLabelOverlay(): LabelOverlayApi {
         prev = cur.get(alertId);
         const next = new Map(cur);
         next.set(alertId, { verdict, species });
+        return next;
+      });
+      setPinnedRows((cur) => {
+        if (cur.has(alertId)) return cur;
+        const next = new Map(cur);
+        next.set(alertId, alert);
         return next;
       });
       setBusyIds((cur) => {
@@ -99,7 +131,7 @@ export function useLabelOverlay(): LabelOverlayApi {
           else next.delete(alertId);
           return next;
         });
-        alert(`Label failed: ${e instanceof Error ? e.message : String(e)}`);
+        window.alert(`Label failed: ${e instanceof Error ? e.message : String(e)}`);
       } finally {
         setBusyIds((cur) => {
           const next = new Set(cur);
@@ -111,5 +143,9 @@ export function useLabelOverlay(): LabelOverlayApi {
     [],
   );
 
-  return { labelOverlay, busyIds, writeLabel, applyOverlay };
+  const clearPinnedRows = useCallback(() => {
+    setPinnedRows((cur) => (cur.size === 0 ? cur : new Map()));
+  }, []);
+
+  return { labelOverlay, busyIds, pinnedRows, writeLabel, applyOverlay, clearPinnedRows };
 }
