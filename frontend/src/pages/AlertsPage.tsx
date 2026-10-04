@@ -65,7 +65,40 @@ export function AlertsPage() {
     filters.autoRefresh ? 5000 : 3600_000,
   );
 
-  const items = data?.items ?? [];
+  const serverItems = data?.items ?? [];
+
+  // Merge rows pinned by useLabelOverlay (just-labeled this session) into
+  // the visible set so a mislabel can be clicked and re-voted without
+  // losing scroll position. In the "unlabeled" filter the server strips
+  // just-labeled rows at the next 5s poll; the pin keeps them rendered
+  // in place at their original ts, with their label badge visible via
+  // labelOverlay. In other filters this is a no-op (server already
+  // returns them). Dedup by id, prefer the fresh server copy for live
+  // confidence/description/snapshot values.
+  const items = useMemo<AlertRow[]>(() => {
+    if (overlay.pinnedRows.size === 0) return serverItems;
+    const serverIds = new Set(serverItems.map((a) => a.id));
+    const extras: AlertRow[] = [];
+    for (const [id, row] of overlay.pinnedRows) {
+      if (!serverIds.has(id)) extras.push(row);
+    }
+    if (extras.length === 0) return serverItems;
+    const merged = [...serverItems, ...extras];
+    merged.sort((a, b) => b.ts - a.ts);
+    return merged;
+  }, [serverItems, overlay.pinnedRows]);
+
+  // Clear the pin cache when the sifting context changes — otherwise a
+  // row pinned under one filter leaks into the next view (yard pin
+  // visible after switching to backyard, etc). Pattern: "flush cache
+  // on filter identity change" via sentinel string, so we don't need
+  // to list each filter field in a dep array that'll bitrot.
+  const filterKey = `${filters.species}|${filters.camera}|${filters.scope}|${filters.labelFilter}|${filters.labelSpecies}|${filters.dateFrom}|${filters.dateTo}`;
+  const [filterKeySentinel, setFilterKeySentinel] = useState(filterKey);
+  if (filterKey !== filterKeySentinel) {
+    setFilterKeySentinel(filterKey);
+    overlay.clearPinnedRows();
+  }
 
   // Every open path — row thumb, lightbox prev/next, preview-strip
   // jump — routes through this single setOpenId. Wrapping it here
@@ -330,12 +363,18 @@ export function AlertsPage() {
                 const selectedIdArr = Array.from(selection.selectedIds);
                 // Bulk-label also counts as "read" — look up each selected
                 // alert from items and mark it. Same reason as the row
-                // LabelPicker onChange handler above.
+                // LabelPicker onChange handler above. We also hand the
+                // full rows to applyOverlay so they get pinned (same
+                // backfix-mislabel UX as the row/lightbox vote path).
+                const selectedAlerts: AlertRow[] = [];
                 for (const id of selectedIdArr) {
                   const alert = items.find((a) => a.id === id);
-                  if (alert) markAlertRead(alert);
+                  if (alert) {
+                    markAlertRead(alert);
+                    selectedAlerts.push(alert);
+                  }
                 }
-                overlay.applyOverlay(selectedIdArr, verdict, species);
+                overlay.applyOverlay(selectedAlerts, verdict, species);
               }}
             />
           )}
@@ -423,7 +462,7 @@ function renderGroup(
   selectedIds: Set<number>,
   toggleOne: (id: number) => void,
   labelOverlay: Map<number, { verdict: LabelVerdict; species: string | null }>,
-  writeLabel: (id: number, verdict: LabelVerdict, species: string | null) => Promise<void>,
+  writeLabel: (alert: AlertRow, verdict: LabelVerdict, species: string | null) => Promise<void>,
   busyIds: Set<number>,
   eagerThumb: boolean,
 ): JSX.Element[] {
@@ -486,7 +525,7 @@ const Row = memo(function Row({
   labelOverrideVerdict: LabelVerdict;
   labelOverrideSpecies: string | null;
   hasLabelOverride: boolean;
-  writeLabel: (id: number, verdict: LabelVerdict, species: string | null) => Promise<void>;
+  writeLabel: (alert: AlertRow, verdict: LabelVerdict, species: string | null) => Promise<void>;
   busy: boolean;
   eagerThumb: boolean;
 }): JSX.Element {
@@ -550,7 +589,7 @@ const Row = memo(function Row({
             // otherwise operator can churn through 50 FPs via the row's
             // ✓/X buttons and the unread badge never decrements.
             markAlertRead(alert);
-            writeLabel(alert.id, v, s);
+            writeLabel(alert, v, s);
           }}
         />
       </td>
