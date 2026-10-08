@@ -18,7 +18,11 @@ import styles from "./PlaybackUrlPage.module.css";
  * common "same channel, another moment" flow doesn't re-input every time.
  */
 
-const CHANNELS: readonly number[] = [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14, 16, 17, 18, 19];
+// 2026-10-07: order mirrors Frigate camera-block order (same as
+// NVR_CHANNELS.frigate below) so the direct-mode picker matches the
+// NVR-mode picker. ch 1 (sideyard, retired 2026-09-28) dropped. ch 15
+// (backyard .116) added — was missing because today's swap created it.
+const CHANNELS: readonly number[] = [4, 2, 14, 5, 16, 18, 17, 3, 13, 7, 12, 10, 8, 15, 19, 6];
 
 // Frigate host — build-time env for the frontend. When unset, the
 // Frigate option is hidden from the NVR picker (no host = no target).
