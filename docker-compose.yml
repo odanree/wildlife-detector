@@ -462,12 +462,17 @@ services:
       DETECTOR_INTERNAL_PORT: 8101
     expose:
       - "8101"
+    # 2026-10-07: moved to /internal/health/deep after yard went 8h with a
+    # wedged pipeline consumer while shallow /internal/health kept returning
+    # 200 — autoheal never caught it. Deep check observes pipeline tick age
+    # (last_frame_age_s) via record_frame() in pipeline.py:1496. See
+    # detector-crawlspace's healthcheck comment for the broader rationale.
     healthcheck:
-      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8101/internal/health', timeout=2)"]
+      test: ["CMD", "python", "-c", "import httpx, sys; r = httpx.get('http://localhost:8101/internal/health/deep', timeout=3); sys.exit(0 if r.status_code == 200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 90s
 
   detector-rooftop:
     <<: *detector-common
@@ -644,12 +649,13 @@ services:
       DETECTOR_INTERNAL_PORT: 8102
     expose:
       - "8102"
+    # 2026-10-07: moved to deep healthcheck — see detector-yard's comment.
     healthcheck:
-      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8102/internal/health', timeout=2)"]
+      test: ["CMD", "python", "-c", "import httpx, sys; r = httpx.get('http://localhost:8102/internal/health/deep', timeout=3); sys.exit(0 if r.status_code == 200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 90s
 
   # ── detector-backyard ───────────────────────────────────────────────
   # Third camera (2026-08-08). Side-angle view — inherits yard's motion
@@ -666,26 +672,17 @@ services:
       # 4K main stream from the Hikvision path — /stream1 on this cam
       # is only 720x480 sub-stream, insufficient for small-target
       # detection.
-      # 2026-10-01: physical camera swap — backyard scene now served by
-      # the camera formerly at the deck_steps mount (192.168.1.126,
-      # Hiseeu-flavor on /stream1, different password shape). The
-      # previous Amcrest at .118 is retired from this role. Follow-ups
-      # that MUST land before this detector produces usable alerts:
-      #   1. Update CAM_PASS_BACKYARD in .env to the .126 password
-      #      (previously cctv1234! per CAMERA_RTSP_15 line in .env;
-      #      the previous .118 password cctv123! will NOT auth here).
-      #   2. Recapture data/baseline_backyard.jpg via /react/baselines
-      #      — the old baseline is from the .118 scene geometry.
-      #   3. Redraw backyard_zone polygon in config/detection.yaml via
-      #      /react/preview — framing/FOV differ between the two cams.
-      #   4. Beelink Frigate: backyard camera input still points at
-      #      .118. Either update Beelink's frigate/config.yml to point
-      #      backyard at .126 (and remove the standalone deck_steps
-      #      block since it's the same stream), OR leave as-is and
-      #      rely on the web_service _FRIGATE_CAMERAS remap below so
-      #      backyard alerts' Replay routes through Frigate's
-      #      "deck_steps" camera name (which already points at .126).
-      RTSP_URL: rtsp://${CAM_USER_BACKYARD:?}:${CAM_PASS_BACKYARD:?}@192.168.1.126:554/stream1
+      # 2026-10-07: second physical camera swap — backyard scene now
+      # served by 192.168.1.116 (same OEM firmware as the previous .126
+      # Hiseeu, same /stream1 path, same cctv1234! password). The .126
+      # camera reverts to the standalone "deck_steps" Frigate recording
+      # role it held pre-2026-10-01. Follow-ups to land after this
+      # detector restarts:
+      #   1. Recapture data/baseline_backyard.jpg via /react/baselines
+      #      — the old baseline is from the .126 scene geometry.
+      #   2. Redraw backyard_zone polygon in config/detection.yaml via
+      #      /react/preview — framing/FOV differ between .126 and .116.
+      RTSP_URL: rtsp://${CAM_USER_BACKYARD:?}:${CAM_PASS_BACKYARD:?}@192.168.1.116:554/stream1
       BASELINE_PATH: data/baseline_backyard.jpg
       # Daytime detection: HISTORICALLY skipped wholesale because ground-
       # level shadow FPs dominated the daytime signal. PR #165 shipped
@@ -875,12 +872,13 @@ services:
       PTZ_ONVIF_PROFILE_2: "MainStream"
     expose:
       - "8103"
+    # 2026-10-07: moved to deep healthcheck — see detector-yard's comment.
     healthcheck:
-      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8103/internal/health', timeout=2)"]
+      test: ["CMD", "python", "-c", "import httpx, sys; r = httpx.get('http://localhost:8103/internal/health/deep', timeout=3); sys.exit(0 if r.status_code == 200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 90s
 
   # Fourth camera (2026-09-10). Indoor crawlspace under the house — permanent
   # IR-night scene (no sun cycle), close-range side-angle view of the floor
@@ -1133,7 +1131,10 @@ services:
       ZONE_KEY: crawlspace_inside_zone
       # 2304x1296 HEVC main stream on /stream1 — same firmware family
       # as .229, ffprobe 2026-09-11 confirmed identical response.
-      RTSP_URL: rtsp://${CAM_USER_CRAWLSPACE_INSIDE:?}:${CAM_PASS_CRAWLSPACE_INSIDE:?}@192.168.1.86:554/stream1
+      # 2026-10-07: moved to .155 after .86 found to be outside the router's
+      # DHCP pool (couldn't be reserved). Hiseeu-5MP-2 reservation slot
+      # repurposed for this cam's MAC.
+      RTSP_URL: rtsp://${CAM_USER_CRAWLSPACE_INSIDE:?}:${CAM_PASS_CRAWLSPACE_INSIDE:?}@192.168.1.155:554/stream1
       BASELINE_PATH: data/baseline_crawlspace_inside.jpg
       # Indoor — IR-lit 24/7. Force baseline slot to night via the
       # unreachable brightness threshold, exactly like the sibling
@@ -1209,7 +1210,7 @@ services:
       # Same shape as detector-crawlspace's PTZ_*_6 for .105 —
       # /onvif/ptz SOAP with profile MainStream (Hiseeu's default,
       # unlike YHD912-P which uses 'media_profile1').
-      PTZ_HOST_7: "192.168.1.86"
+      PTZ_HOST_7: "192.168.1.155"
       PTZ_USER_7: "${CAM_USER_CRAWLSPACE_INSIDE:?}"
       PTZ_PASS_7: "${CAM_PASS_CRAWLSPACE_INSIDE:?}"
       PTZ_BACKEND_7: "onvif"
@@ -1220,12 +1221,13 @@ services:
       DETECTOR_INTERNAL_PORT: 8105
     expose:
       - "8105"
+    # 2026-10-07: moved to deep healthcheck — see detector-yard's comment.
     healthcheck:
-      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8105/internal/health', timeout=2)"]
+      test: ["CMD", "python", "-c", "import httpx, sys; r = httpx.get('http://localhost:8105/internal/health/deep', timeout=3); sys.exit(0 if r.status_code == 200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 90s
 
   # Sixth camera (2026-09-16). Sideyard vent-adjacent — Amcrest IP8M-2493EW-AI-V3
   # at .112, 4K HEVC main stream. Direct-IP since 2026-09-26 (was Amcrest NVR
@@ -1348,12 +1350,13 @@ services:
       # No PTZ — sideyard cam is fixed mount.
     expose:
       - "8106"
+    # 2026-10-07: moved to deep healthcheck — see detector-yard's comment.
     healthcheck:
-      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8106/internal/health', timeout=2)"]
+      test: ["CMD", "python", "-c", "import httpx, sys; r = httpx.get('http://localhost:8106/internal/health/deep', timeout=3); sys.exit(0 if r.status_code == 200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 90s
 
   # Seventh camera (2026-09-26). ADU crawlspace-entrance bulb cam —
   # V380/CamHiPro family at .109 (Foxconn OUI 54:AE:BC, port 10554,
