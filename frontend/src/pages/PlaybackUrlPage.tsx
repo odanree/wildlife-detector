@@ -50,7 +50,7 @@ const NVR_CHANNELS: Record<"amcrest" | "frigate", readonly number[]> = {
   // 2026-10-07: picker order mirrors the Frigate camera-block order
   // on the Beelink so the two UIs stay visually aligned. Any Frigate
   // re-order needs an equivalent reorder here.
-  frigate: [4, 2, 14, 5, 16, 18, 17, 3, 13, 7, 10, 12, 8, 15, 19, 6],
+  frigate: [4, 2, 14, 5, 16, 18, 17, 3, 13, 7, 12, 10, 8, 15, 19, 6],
 };
 
 // Frigate addresses cameras by their config-YAML name, not by NVR channel.
