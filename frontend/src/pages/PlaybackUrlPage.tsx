@@ -69,12 +69,12 @@ const FRIGATE_CAMERA_BY_CHANNEL: Record<number, string> = {
   5: "yard",
   6: "rooftop",
   7: "crawlspace_ext", // ch7 records via NVR relay if operator kept it; Frigate name unchanged after 2026-09-28 dome remount
-  8: "deck_steps", // 2026-10-07: back to pre-10/01 assignment — NVR ch 8 is physically patched to the .126 cable, which is deck_steps again after backyard moved to .116
+  8: "backyard", // 2026-10-09: ch 8 → backyard (operator correction — picker had this swapped with deck_steps)
   10: "plant_pathway",
   12: "corner",
   13: "crawlspace_ext", // 2026-09-28: .112 dome moved to crawlspace_ext role (was sideyard direct)
   14: "front_corner",
-  15: "backyard", // 2026-10-07: backyard scene now on .116 (direct cam, not NVR-recorded); ch 15 slot picked because it's a Frigate-only pseudo channel
+  15: "deck_steps", // 2026-10-09: ch 15 → deck_steps (swap with ch 8)
   16: "under_adu_ptz", // 2026-09-28: .229 direct — Hiseeu formerly crawlspace_ext hardware
   17: "under_deck_ptz", // 2026-09-28: .109 direct — V380 bulb, Frigate-only (no wildlife-detector)
   18: "mid_sideyard", // 2026-09-29: .117 direct — V380 bulb re-added at mid-sideyard mount, Frigate-only
@@ -92,12 +92,12 @@ const CHANNEL_LABEL: Record<number, string> = {
   5: "5 (yard)",
   6: "6 (rooftop)",
   7: "7 (crawlspace ext)",
-  8: "8 (deck steps .126)", // 2026-10-07: NVR ch 8 physically wired to .126 — now deck_steps again
+  8: "8 (backyard .116 — direct only)", // 2026-10-09: ch 8 ↔ ch 15 swap, operator correction
   10: "10 (plant pathway .105 — direct only)",
   12: "12 (corner .125 — direct only)",
   13: "13 (crawlspace ext .112 — direct only)", // was sideyard until 2026-09-28
   14: "14 (front corner .104 — direct only)",
-  15: "15 (backyard .116 — direct only)", // 2026-10-07: new backyard scene
+  15: "15 (deck steps .126 — direct only)", // 2026-10-09: swap with ch 8
   16: "16 (under adu ptz .229 — direct only)", // 2026-09-28 new
   17: "17 (under deck ptz .109 — direct only)", // 2026-09-28 new
   18: "18 (mid sideyard .117 — direct only)", // 2026-09-29 new
@@ -116,12 +116,12 @@ const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "frigate", Record<number, string>
     5: "5 (yard)",
     6: "6 (rooftop)",
     7: "7 (crawlspace ext)",
-    8: "8 (deck steps .126)", // 2026-10-07: NVR ch 8 is .126, now deck_steps
+    8: "8 (backyard .116)", // 2026-10-09: swapped with ch 15 — operator correction
     10: "10 (plant pathway)",
     12: "12 (corner)",
     13: "13 (crawlspace ext .112)",
     14: "14 (front corner)",
-    15: "15 (backyard .116)", // 2026-10-07: backyard moved here
+    15: "15 (deck steps .126)", // 2026-10-09: swapped with ch 8
     16: "16 (under adu ptz .229)",
     17: "17 (under deck ptz .109)",
     18: "18 (mid sideyard .117)",
@@ -140,7 +140,7 @@ const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "frigate", Record<number, string>
 const CAMERA_TO_CHANNEL: Record<string, { channel: number; nvr: "amcrest" | "frigate" }> = {
   yard: { channel: 5, nvr: "amcrest" },
   rooftop: { channel: 6, nvr: "amcrest" },
-  backyard: { channel: 15, nvr: "frigate" }, // 2026-10-07: .116 direct — Amcrest NVR ch8 is the .126 (deck_steps) cable, not .116
+  backyard: { channel: 8, nvr: "frigate" }, // 2026-10-09: ch 8 after operator swap with deck_steps (ch 15)
   crawlspace: { channel: 7, nvr: "amcrest" },
   crawlspace_inside: { channel: 3, nvr: "amcrest" },
   frontcorner: { channel: 14, nvr: "amcrest" },
