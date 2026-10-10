@@ -763,7 +763,14 @@ services:
       # tighten again later.
       CLASSIFIER_MODE: active
       CLASSIFIER_ACTIVE_CAMERAS: backyard
-      CLASSIFIER_THRESHOLD: "0.20"
+      # 2026-10-10: bumped 0.20 → 0.40 after shadow analysis of 9,824
+      # decisions. At 0.20 V2 was only suppressing 29% of backyard's
+      # 'other' noise despite 94% of them being operator-confirmed FPs.
+      # Prob distribution is bimodal — the 2,416 obvious FPs cluster at
+      # prob<0.2, next 1,043 at 0.2-0.4, TPs concentrated at prob>=0.8.
+      # Raising to 0.4 adds ~1k more suppressions with low TP-loss risk.
+      # Soak 1-2 weeks, measure actual TP-loss in alerts table, retune.
+      CLASSIFIER_THRESHOLD: "0.40"
       # Bumped 110 → 160 after Aug 9 21:23 fence-rat miss: the backyard
       # fence slats reflect IR strongly (bbox mean_brightness on fence
       # blobs runs 116-182), so the default 110 threshold classified
@@ -997,9 +1004,11 @@ services:
       VLM_DEDUP_ENABLED: "1"
       VLM_DEDUP_SHADOW_MODE: "0"
       # Post-VLM classifier: shadow mode (default). No labeled crawlspace
-      # data yet — collect ≥ 500 labeled rows before evaluating agreement
-      # and flipping to active. Mirrors the rooftop hold pattern.
-      CLASSIFIER_MODE: shadow
+      # 2026-10-10: promoted shadow → active. 98.6% agreement w/ VLM
+      # across 1,808 shadow decisions, 26 would-suppress-TPs, 0 FP leaks
+      # — exceeds the #137 Phase 3 promotion threshold.
+      CLASSIFIER_MODE: active
+      CLASSIFIER_ACTIVE_CAMERAS: crawlspace
       # Insect brightness pre-filter — crawlspace is enclosed, so no moths
       # 2026-09-12: raised 130 → 150 after cutover to .105. A real mouse
       # (track=23257) with mean=137 was misclassified as insect on the
@@ -1183,9 +1192,10 @@ services:
       # a 10s debounce window during multi-track same-visit events. 5s
       # halves the loss while still coalescing rapid track-fragment noise.
       ALERT_DEBOUNCE_S: "5"
-      # Post-VLM classifier: shadow mode. No labeled data for this
-      # framing yet — mirror the sibling's rooftop-style hold pattern.
-      CLASSIFIER_MODE: shadow
+      # 2026-10-10: promoted shadow → active. 97.5% agreement w/ VLM
+      # across 3,806 shadow decisions, 96 would-suppress-TPs, 0 FP leaks.
+      CLASSIFIER_MODE: active
+      CLASSIFIER_ACTIVE_CAMERAS: crawlspace_inside
       NIGHT_INSECT_BRIGHTNESS_MIN: "130"
       INSECT_MEAN_UNCAP_SIZE: "1"
       MOTION_MERGE_DIST_PX: "40"
@@ -1431,8 +1441,10 @@ services:
       # block for design rationale.
       VLM_DEDUP_ENABLED: "1"
       VLM_DEDUP_SHADOW_MODE: "0"
-      # No labeled ADU data yet — shadow mode until >= 500 verdicts.
-      CLASSIFIER_MODE: shadow
+      # 2026-10-10: promoted shadow → active. 99.2% agreement w/ VLM
+      # across 527 shadow decisions, 4 would-suppress-TPs, 0 FP leaks.
+      CLASSIFIER_MODE: active
+      CLASSIFIER_ACTIVE_CAMERAS: under_adu_ptz
       # Indoor IR without ambient light — no moth cloud expected. Start
       # at 130 (below outdoor's 150) since indoor targets aren't as
       # bright as IR-reflective foliage. Retune once first-week FP
@@ -1500,6 +1512,14 @@ services:
   detector-garage-ptz:
     <<: *detector-common
     container_name: wildlife-detector-garage-ptz
+    # 2026-10-09: full retirement — gated behind the "disabled" profile
+    # so `docker compose up -d` no longer brings it up alongside the
+    # fleet. Camera stays live in Frigate for passive recording; this
+    # detector's wildlife-detection slot was no longer earning its CPU/
+    # memory keep (intermittent unhealthy, pipeline wedge-prone). To
+    # resurrect: remove the `profiles: ["disabled"]` line below and
+    # `docker compose up -d detector-garage-ptz`.
+    profiles: ["disabled"]
     labels:
       # 2026-10-02: autoheal off while paused — a CPU-throttled
       # container reports slower healthcheck turnaround which can
