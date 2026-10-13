@@ -1140,10 +1140,13 @@ services:
       ZONE_KEY: crawlspace_inside_zone
       # 2304x1296 HEVC main stream on /stream1 — same firmware family
       # as .229, ffprobe 2026-09-11 confirmed identical response.
-      # 2026-10-07: moved to .155 after .86 found to be outside the router's
-      # DHCP pool (couldn't be reserved). Hiseeu-5MP-2 reservation slot
-      # repurposed for this cam's MAC.
-      RTSP_URL: rtsp://${CAM_USER_CRAWLSPACE_INSIDE:?}:${CAM_PASS_CRAWLSPACE_INSIDE:?}@192.168.1.155:554/stream1
+      # 2026-10-07: STAGED .155 reservation (cam MAC pinned there in router)
+      # but the camera hasn't yet power-cycled to pick up the new lease — it
+      # still answers on .86. Reverted here so detection stays live; swap to
+      # .155 once the operator confirms a power-cycle. Historical note:
+      # .86 is outside the router's DHCP pool so it can't be reserved —
+      # the eventual target is .155.
+      RTSP_URL: rtsp://${CAM_USER_CRAWLSPACE_INSIDE:?}:${CAM_PASS_CRAWLSPACE_INSIDE:?}@192.168.1.86:554/stream1
       BASELINE_PATH: data/baseline_crawlspace_inside.jpg
       # Indoor — IR-lit 24/7. Force baseline slot to night via the
       # unreachable brightness threshold, exactly like the sibling
@@ -1220,7 +1223,7 @@ services:
       # Same shape as detector-crawlspace's PTZ_*_6 for .105 —
       # /onvif/ptz SOAP with profile MainStream (Hiseeu's default,
       # unlike YHD912-P which uses 'media_profile1').
-      PTZ_HOST_7: "192.168.1.155"
+      PTZ_HOST_7: "192.168.1.86"
       PTZ_USER_7: "${CAM_USER_CRAWLSPACE_INSIDE:?}"
       PTZ_PASS_7: "${CAM_PASS_CRAWLSPACE_INSIDE:?}"
       PTZ_BACKEND_7: "onvif"
@@ -1679,7 +1682,11 @@ services:
       # harvest under any VLM queue depth, because pipeline.py:1680/1835
       # now stamp alert.ts = submit_ts (frame capture time), not the
       # notifier's datetime.now() at harvest.
-      ARCHIVE_PRE_ROLL_SECONDS: "15"
+      # 2026-10-12: 15 -> 10. Operator reported ~30s VLC lead-in on
+      # crawlspace_ext clips (15s configured + Amcrest NVR keyframe-seek
+      # roundup can add another ~15s on long-GOP streams). Cutting the
+      # configured pre-roll to 10s tightens the open-to-event lag.
+      ARCHIVE_PRE_ROLL_SECONDS: "10"
       # NVR playback channel per camera — used by /api/alerts/<id>/playback-url
       # to build the rtsp:// URL that opens the alert's timestamp in VLC/mpv.
       # Fleet default (empty NVR_HOST_<CAM>) is the Amcrest NVR at .148
@@ -1801,7 +1808,10 @@ services:
       # opened past the event). After pipeline.py:1680/1835 anchor
       # alert.ts to submit_ts, 15s covers the natural capture→harvest
       # gap on any camera regardless of VLM queue depth.
-      ARCHIVE_PRE_ROLL_SECONDS: "15"
+      # 2026-10-12: 15 -> 10. See web block above for operator-reported
+      # VLC lead-in; keeping archiver aligned with web picker so both
+      # paths produce the same clip-start offset.
+      ARCHIVE_PRE_ROLL_SECONDS: "10"
       # NVR playback channel per camera — mirror the web block's values.
       # Rooftop + backyard route through the Annke NVR at .130 (hikvision
       # family). See web env block above for the two-NVR rationale.
