@@ -366,11 +366,21 @@ class ClipArchiver:
                         f.write(chunk)
                         written += len(chunk)
         except urllib.error.HTTPError as e:
-            if e.code == 404:
+            # 404: Frigate has no segment matching this window.
+            # 400: Frigate rejects the window as "too old" (outside its
+            # continuous+alert retention). Both are permanent misses —
+            # tombstone so backfill doesn't re-attempt them every 20 min.
+            # 5xx and other codes are transient (Frigate restart, DB
+            # hiccup) and should retry.
+            if e.code in (400, 404):
                 logger.info(
-                    "Archiver (frigate): alert=%d camera=%s — no recording "
-                    "for window (HTTP 404). Tombstoning.",
-                    alert_id, camera_id,
+                    "Archiver (frigate): alert=%d camera=%s — HTTP %d "
+                    "(no recording for window or outside retention). Tombstoning.",
+                    alert_id, camera_id, e.code,
+                )
+                self._mark_permanent_failure(
+                    alert_id, alert_ts,
+                    reason=f"frigate HTTP {e.code} for {frigate_cam} window",
                 )
             else:
                 logger.warning(

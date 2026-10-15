@@ -30,6 +30,9 @@ COPY src/archiver ./src/archiver
 RUN mkdir -p src/stream
 COPY src/stream/__init__.py ./src/stream/__init__.py
 COPY src/stream/playback_url.py ./src/stream/playback_url.py
+# nvr_channel_map imported by clip_archiver.__init__ for the startup
+# NVR-channel-vs-env cross-check. cv2-free, safe to include.
+COPY src/stream/nvr_channel_map.py ./src/stream/nvr_channel_map.py
 
 RUN mkdir -p clips
 
