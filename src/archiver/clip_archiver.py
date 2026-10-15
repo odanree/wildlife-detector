@@ -237,9 +237,33 @@ class ClipArchiver:
         out_path = self.clip_path(alert_id, alert_ts)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Dispatch priority: AgentDVR → Frigate → NVR. AgentDVR is only
+        # set for the handful of cams routed through the Windows AgentDVR
+        # recorder (ground-truth local chunks). Frigate is the modern
+        # path for direct-RTSP cams whose recordings land on the Beelink
+        # (added 2026-10-15 after yard replay bug: NVR_CHANNEL_YARD was
+        # stale pointing at a reassigned NVR channel, archiving crawlspace
+        # footage under yard alert IDs). NVR is the legacy path, still
+        # live for cams physically wired to the Amcrest NVR.
         agentdvr_dir = os.environ.get(f"AGENTDVR_DIR_{camera_id.upper()}")
         if agentdvr_dir:
             return self._pull_from_agentdvr(alert_id, alert_ts, camera_id, agentdvr_dir, out_path)
+
+        frigate_url = (os.environ.get("FRIGATE_URL") or "").strip().rstrip("/")
+        frigate_cams = {
+            c.strip() for c in (os.environ.get("FRIGATE_CAMERAS") or "").split(",") if c.strip()
+        }
+        if frigate_url and camera_id in frigate_cams:
+            # Alias: alert DB camera_id may differ from Frigate's camera
+            # name (e.g. wildlife-detector 'crawlspace' = Frigate's
+            # 'crawlspace_ext'). FRIGATE_CAM_<WILDLIFE_ID>=<frigate_name>
+            # overrides; default is identity.
+            frigate_cam = (
+                os.environ.get(f"FRIGATE_CAM_{camera_id.upper()}") or camera_id
+            ).strip()
+            return self._pull_from_frigate(
+                alert_id, alert_ts, camera_id, frigate_cam, frigate_url, out_path,
+            )
 
         env_channel = os.environ.get(f"NVR_CHANNEL_{camera_id.upper()}")
         if env_channel:
@@ -251,7 +275,7 @@ class ClipArchiver:
 
         logger.warning(
             "Archiver: no footage source configured for camera=%s (alert=%d) — "
-            "set AGENTDVR_DIR_%s or NVR_CHANNEL_%s in env. Skipping.",
+            "set AGENTDVR_DIR_%s, add to FRIGATE_CAMERAS, or set NVR_CHANNEL_%s. Skipping.",
             camera_id, alert_id, camera_id.upper(), camera_id.upper(),
         )
         return None
@@ -296,6 +320,90 @@ class ClipArchiver:
             cmd, alert_id, alert_ts, camera_id, out_path,
             source="nvr", channel=channel,
         )
+
+    def _pull_from_frigate(
+        self,
+        alert_id: int,
+        alert_ts: float,
+        camera_id: str,
+        frigate_cam: str,
+        frigate_url: str,
+        out_path: Path,
+    ) -> Optional[Path]:
+        """Pull a clip from Frigate's clip API — the ground-truth source
+        for direct-RTSP cams whose main stream Frigate records continuously.
+
+        URL shape: GET {FRIGATE_URL}/api/{camera}/start/{start}/end/{end}/clip.mp4
+        Frigate stitches the matching segments on the fly and streams back
+        an mp4. 404 means Frigate has no recording for that window
+        (retention lapsed, camera was offline, or Frigate not yet started
+        when the event fired). Treated as a permanent miss like the NVR's
+        DESCRIBE 404 — tombstone and skip future retries.
+
+        Window: alert_ts - pre_roll_seconds .. alert_ts + (duration - pre_roll).
+        Matches the NVR branch's window shape so a clip from either source
+        covers the same real-time slice.
+        """
+        import urllib.error
+        import urllib.request
+
+        start_ts = int(alert_ts - self.pre_roll_seconds)
+        end_ts = int(alert_ts + max(1, self.duration_seconds - self.pre_roll_seconds))
+        url = f"{frigate_url}/api/{frigate_cam}/start/{start_ts}/end/{end_ts}/clip.mp4"
+
+        try:
+            # 30s timeout: Frigate stitches segments server-side which
+            # can take a few seconds on a loaded Beelink; 30s gives room
+            # without blocking an archiver worker forever on a stuck
+            # Frigate container.
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                written = 0
+                with open(out_path, "wb") as f:
+                    while True:
+                        chunk = resp.read(1 << 16)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        written += len(chunk)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                logger.info(
+                    "Archiver (frigate): alert=%d camera=%s — no recording "
+                    "for window (HTTP 404). Tombstoning.",
+                    alert_id, camera_id,
+                )
+            else:
+                logger.warning(
+                    "Archiver (frigate): HTTP %d from %s (alert=%d). Not tombstoning.",
+                    e.code, url, alert_id,
+                )
+            if out_path.exists() and out_path.stat().st_size == 0:
+                out_path.unlink()
+            return None
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Archiver (frigate): fetch failed %s (alert=%d): %s",
+                url, alert_id, e,
+            )
+            if out_path.exists() and out_path.stat().st_size == 0:
+                out_path.unlink()
+            return None
+
+        if not out_path.exists() or out_path.stat().st_size == 0:
+            logger.info(
+                "Archiver (frigate): alert=%d camera=%s — empty response, "
+                "treating as no-footage.",
+                alert_id, camera_id,
+            )
+            if out_path.exists():
+                out_path.unlink()
+            return None
+
+        logger.info(
+            "Archiver (frigate): alert=%d camera=%s %d bytes → %s",
+            alert_id, camera_id, out_path.stat().st_size, out_path,
+        )
+        return out_path
 
     def _pull_from_agentdvr(
         self,

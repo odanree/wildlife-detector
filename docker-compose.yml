@@ -1682,11 +1682,11 @@ services:
       # harvest under any VLM queue depth, because pipeline.py:1680/1835
       # now stamp alert.ts = submit_ts (frame capture time), not the
       # notifier's datetime.now() at harvest.
-      # 2026-10-12: 15 -> 10. Operator reported ~30s VLC lead-in on
+      # 2026-10-12: 15 -> 10 -> 7. Operator reported ~30s VLC lead-in on
       # crawlspace_ext clips (15s configured + Amcrest NVR keyframe-seek
       # roundup can add another ~15s on long-GOP streams). Cutting the
-      # configured pre-roll to 10s tightens the open-to-event lag.
-      ARCHIVE_PRE_ROLL_SECONDS: "10"
+      # configured pre-roll to 7s tightens the open-to-event lag.
+      ARCHIVE_PRE_ROLL_SECONDS: "7"
       # NVR playback channel per camera — used by /api/alerts/<id>/playback-url
       # to build the rtsp:// URL that opens the alert's timestamp in VLC/mpv.
       # Fleet default (empty NVR_HOST_<CAM>) is the Amcrest NVR at .148
@@ -1695,7 +1695,14 @@ services:
       # &endtime= URL shape, different from Amcrest's /cam/playback).
       # Two-NVR shape wired via NVR_HOST_/USER_/PASS_/FAMILY_<CAM>. See
       # src/stream/playback_url.py::_nvr_env for the resolution order.
-      NVR_CHANNEL_YARD: "5"
+      # 2026-10-15: yard physically unplugged from Amcrest ch5 some time
+      # ago (direct Reolink .100 is the source now via Frigate). The
+      # stale NVR_CHANNEL_YARD="5" was pulling crawlspace footage from
+      # whatever camera now sits on ch5 and archiving it under yard
+      # alert IDs. Cut the env binding; replay falls through to a
+      # "no footage source" note until a Frigate-pull archiver branch
+      # is wired in.
+      # NVR_CHANNEL_YARD: "5"
       # 2026-09-21: Annke decommissioned; both back on Amcrest.
       # 2026-09-23: Amcrest NVR ch6 broke after IP shuffle post-outage;
       # rooftop now recorded direct-IP via Frigate at 192.168.1.145.
@@ -1808,14 +1815,15 @@ services:
       # opened past the event). After pipeline.py:1680/1835 anchor
       # alert.ts to submit_ts, 15s covers the natural capture→harvest
       # gap on any camera regardless of VLM queue depth.
-      # 2026-10-12: 15 -> 10. See web block above for operator-reported
+      # 2026-10-12: 15 -> 10 -> 7. See web block above for operator-reported
       # VLC lead-in; keeping archiver aligned with web picker so both
       # paths produce the same clip-start offset.
-      ARCHIVE_PRE_ROLL_SECONDS: "10"
+      ARCHIVE_PRE_ROLL_SECONDS: "7"
       # NVR playback channel per camera — mirror the web block's values.
       # Rooftop + backyard route through the Annke NVR at .130 (hikvision
       # family). See web env block above for the two-NVR rationale.
-      NVR_CHANNEL_YARD: "5"
+      # 2026-10-15: see web env block above for yard-off-Amcrest rationale.
+      # NVR_CHANNEL_YARD: "5"
       # 2026-09-21: Annke decommissioned — backyard on Amcrest.
       # 2026-09-23: rooftop routes through Frigate (Amcrest ch6 broke
       # post-outage — see web env block above).
