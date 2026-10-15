@@ -54,7 +54,12 @@ const NVR_CHANNELS: Record<"amcrest" | "frigate", readonly number[]> = {
   // 2026-10-07: picker order mirrors the Frigate camera-block order
   // on the Beelink so the two UIs stay visually aligned. Any Frigate
   // re-order needs an equivalent reorder here.
-  frigate: [4, 2, 14, 5, 16, 18, 17, 3, 13, 7, 12, 10, 8, 15, 19, 6],
+  // 2026-10-14/15: Frigate order after crawlspace cluster regrouping:
+  // garage_ptz, frontyard, front_corner, yard, mid_sideyard, crawlspace_inside,
+  // crawlspace_southwest (ex-corridor), crawlspace_northeast (ex-under_deck_ptz),
+  // under_adu_ptz, crawlspace_ext (both .112 direct ch13 + NVR-relay ch7),
+  // corner, plant_pathway, deck_steps, backyard, backyard_ptz, rooftop.
+  frigate: [4, 2, 14, 5, 18, 3, 20, 17, 16, 13, 7, 12, 10, 15, 8, 19, 6],
 };
 
 // Frigate addresses cameras by their config-YAML name, not by NVR channel.
@@ -76,9 +81,10 @@ const FRIGATE_CAMERA_BY_CHANNEL: Record<number, string> = {
   14: "front_corner",
   15: "deck_steps", // 2026-10-09: ch 15 → deck_steps (swap with ch 8)
   16: "under_adu_ptz", // 2026-09-28: .229 direct — Hiseeu formerly crawlspace_ext hardware
-  17: "under_deck_ptz", // 2026-09-28: .109 direct — V380 bulb, Frigate-only (no wildlife-detector)
+  17: "crawlspace_northeast", // 2026-10-14: renamed from under_deck_ptz (.109 V380 bulb), Frigate-only (no wildlife-detector)
   18: "mid_sideyard", // 2026-09-29: .117 direct — V380 bulb re-added at mid-sideyard mount, Frigate-only
   19: "backyard_ptz", // 2026-10-01: .118 Amcrest (ex-backyard) kept as Frigate-only recording under new name "backyard_ptz" — see docker-compose.yml backyard block
+  20: "crawlspace_southwest", // 2026-10-15: renamed from corridor (.170 V380 bulb), Frigate-only
 };
 
 // Known channel → camera-name mapping (from NVR_CHANNEL_* env on the
@@ -99,9 +105,10 @@ const CHANNEL_LABEL: Record<number, string> = {
   14: "14 (front corner .104 — direct only)",
   15: "15 (deck steps .126 — direct only)", // 2026-10-09: swap with ch 8
   16: "16 (under adu ptz .229 — direct only)", // 2026-09-28 new
-  17: "17 (under deck ptz .109 — direct only)", // 2026-09-28 new
+  17: "17 (crawlspace NE .109 — direct only)", // 2026-10-14 rename from under_deck_ptz
   18: "18 (mid sideyard .117 — direct only)", // 2026-09-29 new
   19: "19 (backyard PTZ .118 — direct only)", // 2026-10-01 new (was ch8 before the .118→.126 swap)
+  20: "20 (crawlspace SW .170 — direct only)", // 2026-10-15 rename from corridor
 };
 
 // Per-NVR channel labels — Frigate uses camera-config-name lookup, so its
@@ -123,9 +130,10 @@ const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "frigate", Record<number, string>
     14: "14 (front corner)",
     15: "15 (deck steps .126)", // 2026-10-09: swapped with ch 8
     16: "16 (under adu ptz .229)",
-    17: "17 (under deck ptz .109)",
+    17: "17 (crawlspace NE .109)", // 2026-10-14 rename from under_deck_ptz
     18: "18 (mid sideyard .117)",
     19: "19 (backyard PTZ .118)",
+    20: "20 (crawlspace SW .170)", // 2026-10-15 rename from corridor
   },
 };
 
@@ -138,13 +146,15 @@ const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "frigate", Record<number, string>
 // hasn't been re-plumbed. Adjust if the operator has moved the physical
 // wire on the NVR.
 const CAMERA_TO_CHANNEL: Record<string, { channel: number; nvr: "amcrest" | "frigate" }> = {
-  yard: { channel: 5, nvr: "amcrest" },
-  rooftop: { channel: 6, nvr: "amcrest" },
+  yard: { channel: 5, nvr: "frigate" }, // 2026-10-14: moved off NVR to direct Reolink .100; replay via Frigate now
+  rooftop: { channel: 6, nvr: "frigate" }, // 2026-10-14: direct Hikvision .145, Frigate records it
   backyard: { channel: 8, nvr: "frigate" }, // 2026-10-09: ch 8 after operator swap with deck_steps (ch 15)
-  crawlspace: { channel: 7, nvr: "amcrest" },
-  crawlspace_inside: { channel: 3, nvr: "amcrest" },
-  frontcorner: { channel: 14, nvr: "amcrest" },
+  crawlspace: { channel: 7, nvr: "frigate" }, // 2026-10-14: crawlspace_ext is direct .112 ONVIF, Frigate records it
+  crawlspace_inside: { channel: 3, nvr: "amcrest" }, // still on NVR .148 ch3
+  frontcorner: { channel: 14, nvr: "frigate" }, // 2026-10-14: front_corner is direct Dahua .104
   under_adu_ptz: { channel: 16, nvr: "frigate" }, // direct-only pseudo channel
+  crawlspace_northeast: { channel: 17, nvr: "frigate" }, // 2026-10-14 rename from under_deck_ptz, direct .109
+  crawlspace_southwest: { channel: 20, nvr: "frigate" }, // 2026-10-15 rename from corridor, direct .170
 };
 
 const DURATION_OPTIONS: readonly { label: string; seconds: number }[] = [
