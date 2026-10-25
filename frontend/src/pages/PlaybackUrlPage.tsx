@@ -22,7 +22,10 @@ import styles from "./PlaybackUrlPage.module.css";
 // NVR_CHANNELS.frigate below) so the direct-mode picker matches the
 // NVR-mode picker. ch 1 (sideyard, retired 2026-09-28) dropped. ch 15
 // (backyard .116) added — was missing because today's swap created it.
-const CHANNELS: readonly number[] = [4, 2, 14, 5, 16, 18, 17, 3, 13, 7, 12, 10, 8, 15, 19, 6];
+// 2026-10-20: order mirrors Frigate camera-block order so Direct (live) and
+// Frigate NVR modes show channels in the same sequence. Adds 20 (crawlspace_southwest),
+// 21 (sideyard_sw), 22 (corner_mount) which are Frigate-only direct cams.
+const CHANNELS: readonly number[] = [4, 2, 14, 5, 18, 21, 3, 20, 17, 16, 13, 7, 12, 22, 10, 15, 8, 19, 6];
 
 // Frigate host — build-time env for the frontend. When unset, the
 // Frigate option is hidden from the NVR picker (no host = no target).
@@ -59,7 +62,10 @@ const NVR_CHANNELS: Record<"amcrest" | "frigate", readonly number[]> = {
   // crawlspace_southwest (ex-corridor), crawlspace_northeast (ex-under_deck_ptz),
   // under_adu_ptz, crawlspace_ext (both .112 direct ch13 + NVR-relay ch7),
   // corner, plant_pathway, deck_steps, backyard, backyard_ptz, rooftop.
-  frigate: [4, 2, 14, 5, 18, 3, 20, 17, 16, 13, 7, 12, 10, 15, 8, 19, 6],
+  // 2026-10-20: adds ch 22 (corner_mount, XMeye .171) right after corner (ch 12);
+  // sideyard_sw (ch 21) moved to position 6 to match Frigate's actual camera-block
+  // ordering (after mid_sideyard).
+  frigate: [4, 2, 14, 5, 18, 21, 3, 20, 17, 16, 13, 7, 12, 22, 10, 15, 8, 19, 6],
 };
 
 // Frigate addresses cameras by their config-YAML name, not by NVR channel.
@@ -85,6 +91,8 @@ const FRIGATE_CAMERA_BY_CHANNEL: Record<number, string> = {
   18: "mid_sideyard", // 2026-09-29: .117 direct — V380 bulb re-added at mid-sideyard mount, Frigate-only
   19: "backyard_ptz", // 2026-10-01: .118 Amcrest (ex-backyard) kept as Frigate-only recording under new name "backyard_ptz" — see docker-compose.yml backyard block
   20: "crawlspace_southwest", // 2026-10-15: renamed from corridor (.170 V380 bulb), Frigate-only
+  21: "sideyard_sw", // 2026-10-15: HHL CGP-UPKG14 2K bulb .107, SW sideyard vantage, Frigate-only
+  22: "corner_mount", // 2026-10-20: XMeye 8MP PoE bullet .171 (I704-P-HS82), Frigate-only
 };
 
 // Known channel → camera-name mapping (from NVR_CHANNEL_* env on the
@@ -109,6 +117,8 @@ const CHANNEL_LABEL: Record<number, string> = {
   18: "18 (mid sideyard .117 — direct only)", // 2026-09-29 new
   19: "19 (backyard PTZ .118 — direct only)", // 2026-10-01 new (was ch8 before the .118→.126 swap)
   20: "20 (crawlspace SW .170 — direct only)", // 2026-10-15 rename from corridor
+  21: "21 (sideyard SW .107 — HHL bulb, direct only)", // 2026-10-15 renamed from mobile
+  22: "22 (corner mount .171 — XMeye 8MP, direct only)", // 2026-10-20 new
 };
 
 // Per-NVR channel labels — Frigate uses camera-config-name lookup, so its
@@ -134,6 +144,8 @@ const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "frigate", Record<number, string>
     18: "18 (mid sideyard .117)",
     19: "19 (backyard PTZ .118)",
     20: "20 (crawlspace SW .170)", // 2026-10-15 rename from corridor
+    21: "21 (sideyard SW .107)", // 2026-10-15 renamed from mobile
+    22: "22 (corner mount .171)", // 2026-10-20 new XMeye 8MP
   },
 };
 
@@ -155,6 +167,8 @@ const CAMERA_TO_CHANNEL: Record<string, { channel: number; nvr: "amcrest" | "fri
   under_adu_ptz: { channel: 16, nvr: "frigate" }, // direct-only pseudo channel
   crawlspace_northeast: { channel: 17, nvr: "frigate" }, // 2026-10-14 rename from under_deck_ptz, direct .109
   crawlspace_southwest: { channel: 20, nvr: "frigate" }, // 2026-10-15 rename from corridor, direct .170
+  sideyard_sw: { channel: 21, nvr: "frigate" }, // 2026-10-15 renamed from mobile, HHL .107 SW sideyard
+  corner_mount: { channel: 22, nvr: "frigate" }, // 2026-10-20 new XMeye 8MP .171
 };
 
 const DURATION_OPTIONS: readonly { label: string; seconds: number }[] = [

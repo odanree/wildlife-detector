@@ -1794,8 +1794,23 @@ def create_app(registry: DetectorRegistry) -> Flask:
                 f"{frigate_url}/api/{frigate_cam}"
                 f"/start/{start_ts}/end/{end_ts}/clip.mp4"
             )
+            # 2026-10-20: scheme is env-selectable. Default "http" so
+            # browsers play the clip inline (works on any device without
+            # a protocol handler). Set REPLAY_SCHEME=mpv on the web
+            # container when every viewing machine has the mpv:// handler
+            # registered (docs/mpv-scheme.reg for Windows; equivalent on
+            # macOS/Linux). The mpv-launch path gives hw-decoded playback
+            # of 4K HEVC which browsers can be sluggish on, but breaks
+            # replays on devices without the handler installed (observed
+            # 2026-10-20 after a reboot wiped the handler reg on operator's
+            # Windows PC and the MacBook never had it).
+            _replay_scheme = (os.environ.get("REPLAY_SCHEME") or "http").strip().lower()
+            if _replay_scheme == "mpv":
+                replay_url = f"mpv://{http_clip}"
+            else:
+                replay_url = http_clip
             return jsonify({
-                "url":              f"mpv://{http_clip}",
+                "url":              replay_url,
                 "camera_id":        camera_id,
                 "ts":               ts,
                 "channel":          channel,
