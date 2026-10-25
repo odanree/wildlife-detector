@@ -48,11 +48,22 @@ export function SnapshotImg({
   const [fellBackToBase, setFellBackToBase] = useState(false);
 
   const base = snapshotUrl(snapshot);
+  // 2026-10-20: `preferThumb` now requests the backend's resize-on-request
+  // endpoint (`/snapshots/<path>?w=240`) which returns a width-constrained
+  // JPEG from a server-side cache. The previous `.thumb.jpg` variant
+  // (same filename pattern) is the embedder's bbox-annotated FULL-RES
+  // image, not a size thumbnail — swapping to it saved ~23% but still
+  // shipped ~600 KB per row. The resize endpoint ships ~15 KB per thumb
+  // (~40x reduction) so the alerts list loads cleanly even at 500 rows.
   const useThumb = preferThumb && !fellBackToBase;
-  const url = useThumb ? base.replace(/\.jpg(\?|$)/, ".thumb.jpg$1") : base;
+  const url = useThumb ? `${base}?w=240` : base;
   // Add cache-bust ONLY on retries; the first request uses the canonical
-  // URL so the browser cache still helps most-of-the-time.
-  const src = attempt === 0 ? url : `${url}?v=${attempt}`;
+  // URL so the browser cache still helps most-of-the-time. The resize
+  // endpoint falls through to full-res on failure, so onError's switch
+  // to base is a safety net for OSError or disk-cache-write races.
+  const src = attempt === 0
+    ? url
+    : (useThumb ? `${base}?w=240&v=${attempt}` : `${base}?v=${attempt}`);
 
   if (gaveUp) {
     return (

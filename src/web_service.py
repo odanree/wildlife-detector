@@ -1830,7 +1830,65 @@ def create_app(registry: DetectorRegistry) -> Flask:
 
     @app.get("/snapshots/<path:filename>")
     def serve_snapshot(filename: str):
-        # send_from_directory blocks ../ traversal safely.
+        # Optional on-demand resize: /snapshots/foo.jpg?w=240 returns a
+        # width-constrained version from a sibling cache dir. Added
+        # 2026-10-20 because the alerts page was loading 500 x ~800 KB
+        # full-res snapshots per view (~400 MB payload) even though
+        # the UI only displays them as thumbnails. The `.thumb.jpg`
+        # variant in the snapshot directory is the embedder's bbox-
+        # annotated full-res image, not a size thumbnail — hence the
+        # dedicated resize path here.
+        #
+        # Cached under `/tmp/snapshot_thumb_cache/<w>/<path>` because the
+        # snapshot volume is bind-mounted read-only in the sidecar (the
+        # pipeline-detector containers own the write side, the sidecar
+        # just reads). /tmp survives for the container's lifetime; a
+        # restart regenerates the ~15 KB thumbs lazily on request, so
+        # the warm-up cost is a few seconds of page load after each
+        # redeploy. cv2 is already in the sidecar image for preview.py
+        # so no new dep.
+        w_arg = (request.args.get("w") or "").strip()
+        if w_arg:
+            try:
+                w = max(32, min(1024, int(w_arg)))
+            except ValueError:
+                w = 0
+            if w > 0:
+                src = _SNAPSHOT_DIR / filename
+                if src.is_file():
+                    cache_root = Path("/tmp/snapshot_thumb_cache") / str(w)
+                    cache_path = cache_root / filename
+                    if not cache_path.exists():
+                        try:
+                            import cv2
+                            cache_path.parent.mkdir(parents=True, exist_ok=True)
+                            img = cv2.imread(str(src))
+                            if img is not None:
+                                h0, w0 = img.shape[:2]
+                                if w0 > w:
+                                    new_h = int(round(h0 * w / w0))
+                                    resized = cv2.resize(
+                                        img, (w, new_h),
+                                        interpolation=cv2.INTER_AREA,
+                                    )
+                                else:
+                                    resized = img  # already small; just recompress
+                                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                                cv2.imwrite(
+                                    str(cache_path), resized,
+                                    [cv2.IMWRITE_JPEG_QUALITY, 75],
+                                )
+                        except Exception as e:
+                            logger.warning(
+                                "snapshot resize failed for %s (w=%d): %s — serving full-res",
+                                filename, w, e,
+                            )
+                    if cache_path.exists():
+                        return send_from_directory(
+                            cache_root, filename,
+                            max_age=86400,  # thumbs immutable per (w, filename)
+                        )
+        # Fallback: original full-res image.
         return send_from_directory(_SNAPSHOT_DIR, filename, max_age=3600)
 
     @app.get("/clips/<path:filename>")
