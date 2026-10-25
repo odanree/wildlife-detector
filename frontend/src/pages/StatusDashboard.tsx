@@ -1,3 +1,4 @@
+import { FrigateStorageBadge } from "../components/FrigateStorageBadge";
 import { GlobalHeader } from "../components/GlobalHeader";
 import { StatusBar } from "../components/StatusBar";
 import { useCameras } from "../hooks/useCameras";
@@ -20,7 +21,10 @@ export function StatusDashboard() {
     <div className={styles.wrap}>
       <GlobalHeader
         right={
-          <span className={styles.blurb}>Per-camera resources, gate funnel, and VLM cost.</span>
+          <span className={styles.blurb}>
+            <FrigateStorageBadge />
+            {" "}Per-camera resources, gate funnel, and VLM cost.
+          </span>
         }
       />
       <main className={styles.main}>

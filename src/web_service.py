@@ -2276,6 +2276,53 @@ def create_app(registry: DetectorRegistry) -> Flask:
         result, status_code = detector.post_command("/internal/baseline/clear", params=params)
         return jsonify(result), status_code
 
+    # ── Frigate storage health badge (status dashboard) ───────────────────
+    #
+    # Proxies Frigate's /api/stats and returns a tiny health summary suitable
+    # for a dashboard tile. Primary purpose: catch the 4TB external drive
+    # silently unmounting on the Beelink (happened 2026-10-21 → 10/24, lost
+    # 60 hours of recordings before anyone noticed). If the recordings volume
+    # drops below ~1TB total, Frigate has fallen back to the boot disk and
+    # we're on a collision course with a full-disk incident.
+
+    @app.get("/api/frigate/storage-health")
+    def api_frigate_storage_health():
+        import httpx
+        frigate_url = (os.environ.get("FRIGATE_URL") or "").strip().rstrip("/")
+        if not frigate_url:
+            return jsonify({"status": "unknown", "reason": "FRIGATE_URL not set"}), 200
+        try:
+            with httpx.Client(timeout=3.0) as c:
+                r = c.get(f"{frigate_url}/api/stats")
+                r.raise_for_status()
+                svc = r.json().get("service", {})
+        except Exception as e:
+            return jsonify({"status": "unreachable", "reason": str(e)[:160]}), 200
+        rec = (svc.get("storage") or {}).get("/media/frigate/recordings") or {}
+        total_mb = int(rec.get("total") or 0)
+        used_mb = int(rec.get("used") or 0)
+        used_pct = (used_mb / total_mb * 100) if total_mb else 0
+        # 1 TB floor: anything less and the external drive isn't mounted.
+        # 90% ceiling: aging past the retention knife-edge.
+        status = "ok"
+        reason = None
+        if total_mb < 1_000_000:
+            status = "critical"
+            reason = f"recordings volume only {total_mb/1024:.0f}GB — external drive unmounted?"
+        elif used_pct >= 95:
+            status = "critical"
+            reason = f"recordings volume {used_pct:.1f}% full"
+        elif used_pct >= 90:
+            status = "warning"
+            reason = f"recordings volume {used_pct:.1f}% full"
+        return jsonify({
+            "status":   status,
+            "reason":   reason,
+            "total_gb": round(total_mb / 1024, 1),
+            "used_gb":  round(used_mb / 1024, 1),
+            "used_pct": round(used_pct, 1),
+        })
+
     # ── Tier-3 anti-pattern instrumentation: React Profiler sink ───────────
     #
     # Receives batched slow-commit events from the frontend's <Profiler>
