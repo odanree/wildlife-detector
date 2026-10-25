@@ -25,7 +25,9 @@ import styles from "./PlaybackUrlPage.module.css";
 // 2026-10-20: order mirrors Frigate camera-block order so Direct (live) and
 // Frigate NVR modes show channels in the same sequence. Adds 20 (crawlspace_southwest),
 // 21 (sideyard_sw), 22 (corner_mount) which are Frigate-only direct cams.
-const CHANNELS: readonly number[] = [4, 2, 14, 5, 18, 21, 3, 20, 17, 16, 13, 7, 12, 22, 10, 15, 8, 19, 6];
+const CHANNELS: readonly number[] = [
+  4, 2, 14, 5, 18, 21, 3, 20, 17, 16, 13, 7, 12, 22, 10, 15, 8, 19, 6,
+];
 
 // Frigate host — build-time env for the frontend. When unset, the
 // Frigate option is hidden from the NVR picker (no host = no target).

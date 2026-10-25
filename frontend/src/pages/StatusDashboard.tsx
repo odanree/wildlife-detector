@@ -22,8 +22,7 @@ export function StatusDashboard() {
       <GlobalHeader
         right={
           <span className={styles.blurb}>
-            <FrigateStorageBadge />
-            {" "}Per-camera resources, gate funnel, and VLM cost.
+            <FrigateStorageBadge /> Per-camera resources, gate funnel, and VLM cost.
           </span>
         }
       />

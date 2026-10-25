@@ -61,9 +61,8 @@ export function SnapshotImg({
   // URL so the browser cache still helps most-of-the-time. The resize
   // endpoint falls through to full-res on failure, so onError's switch
   // to base is a safety net for OSError or disk-cache-write races.
-  const src = attempt === 0
-    ? url
-    : (useThumb ? `${base}?w=240&v=${attempt}` : `${base}?v=${attempt}`);
+  const src =
+    attempt === 0 ? url : useThumb ? `${base}?w=240&v=${attempt}` : `${base}?v=${attempt}`;
 
   if (gaveUp) {
     return (
