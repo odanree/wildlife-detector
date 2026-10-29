@@ -308,7 +308,7 @@ services:
       # stale-dropped post-VLM because queue_age reached 23-58s against
       # VLM_MAX_ALERT_AGE_S=10. Root cause: at VLM_INTERVAL_S=3 yard
       # pushes 2-3 calls/sec at peak, single worker drains ~1/sec.
-      # Matches crawlspace / under_adu_ptz / garage_ptz configuration;
+      # Matches crawlspace / driveway_ptz / garage_ptz configuration;
       # Ollama NUM_PARALLEL=12 absorbs the aggregated 6×N demand.
       VLM_WORKERS: "6"
       VLM_MAX_INFLIGHT: "6"
@@ -727,7 +727,7 @@ services:
       # default VLM_MAX_ALERT_AGE_S=10. Backyard was running on the
       # per-detector defaults (workers=1, inflight=1, max_age=10) — same
       # root cause as the 2026-10-01 yard baby-opossum miss. Mirroring
-      # yard / crawlspace / under_adu_ptz / garage_ptz config (6 workers,
+      # yard / crawlspace / driveway_ptz / garage_ptz config (6 workers,
       # 6 inflight, 40s stale window) so moderate queue backups don't
       # drop confirmed-rat alerts.
       VLM_WORKERS: "6"
@@ -916,7 +916,7 @@ services:
       # framing is visible in the editor.
       # 12-factor: creds/host resolved from CAM_*_CRAWLSPACE in .env at
       # container start; fail-fast if unset. Same shape as detector-
-      # under-adu-ptz's env-var pattern.
+      # driveway-ptz's env-var pattern.
       RTSP_URL: rtsp://${CAM_USER_CRAWLSPACE:?}:${CAM_PASS_CRAWLSPACE:?}@${CAM_HOST_CRAWLSPACE:?}:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif
       BASELINE_PATH: data/baseline_crawlspace.jpg
       # Indoor crawlspace has no sun cycle — permanent IR-lit night scene.
@@ -1382,9 +1382,9 @@ services:
   # that motivated NVR relays for Amcrest cams doesn't apply. Concurrent
   # RTSP consumers: Frigate + this detector + occasional operator VLC
   # = 3, well under V380's ~4-session cap.
-  detector-under-adu-ptz:
+  detector-driveway-ptz:
     <<: *detector-common
-    container_name: wildlife-detector-under-adu-ptz
+    container_name: wildlife-detector-driveway-ptz
     # 2026-09-26: opted into autoheal from day one — this camera watches
     # a high-value trap zone (ADU cohort exclusion), a silent pipeline
     # stall costs data more than on lower-value cams. Deep healthcheck
@@ -1392,16 +1392,16 @@ services:
     labels:
       autoheal: "true"
     environment:
-      CAMERA_ID: under_adu_ptz
-      ZONE_KEY: under_adu_ptz_zone
+      CAMERA_ID: driveway_ptz
+      ZONE_KEY: driveway_ptz_zone
       # 2026-09-28: physical camera swap — V380 bulb at .109 replaced by
       # the older crawlspace_ext hardware at .229 (Hiseeu-family, 2304x1296
       # HEVC main / 640x360 HEVC sub on the simple /stream1 + /stream2
       # paths). Port 554 (standard) not 10554, so the ${CAM_HOST_...}
       # override in .env just needs the IP — the URL shape below already
       # bakes in the new port + path.
-      RTSP_URL: rtsp://${CAM_USER_UNDER_ADU_PTZ:?}:${CAM_PASS_UNDER_ADU_PTZ:?}@${CAM_HOST_UNDER_ADU_PTZ:?}:554/stream1
-      BASELINE_PATH: data/baseline_under_adu_ptz.jpg
+      RTSP_URL: rtsp://${CAM_USER_DRIVEWAY_PTZ:?}:${CAM_PASS_DRIVEWAY_PTZ:?}@${CAM_HOST_DRIVEWAY_PTZ:?}:554/stream1
+      BASELINE_PATH: data/baseline_driveway_ptz.jpg
       # Permanent-night indoor IR regime — bulb cam pointed at the ADU
       # crawlspace entrance. Force night baseline so any daylight
       # bleeding through the entrance doesn't flip the mode picker.
@@ -1447,7 +1447,7 @@ services:
       # 2026-10-10: promoted shadow → active. 99.2% agreement w/ VLM
       # across 527 shadow decisions, 4 would-suppress-TPs, 0 FP leaks.
       CLASSIFIER_MODE: active
-      CLASSIFIER_ACTIVE_CAMERAS: under_adu_ptz
+      CLASSIFIER_ACTIVE_CAMERAS: driveway_ptz
       # Indoor IR without ambient light — no moth cloud expected. Start
       # at 130 (below outdoor's 150) since indoor targets aren't as
       # bright as IR-reflective foliage. Retune once first-week FP
@@ -1487,7 +1487,7 @@ services:
       DETECTOR_INTERNAL_HOST: 0.0.0.0
       # Seventh detector port — yard=8101, rooftop=8102, backyard=8103,
       # crawlspace=8104, crawlspace-inside=8105, sideyard=8106,
-      # under_adu_ptz=8107.
+      # driveway_ptz=8107.
       DETECTOR_INTERNAL_PORT: 8107
       # No PTZ — despite the "_ptz" suffix inherited from the earlier
       # under_deck_ptz name, this is a fixed-mount V380 bulb cam.
@@ -1508,7 +1508,7 @@ services:
   # corridor (property → neighbor) events. Frigate stock COCO detector
   # can't do rats; adding a custom detector surfaces those events as
   # DB alerts automatically. See project_rat_colony_egress_corridor
-  # memory. First-week settings cloned from detector-under-adu-ptz;
+  # memory. First-week settings cloned from detector-driveway-ptz;
   # outdoor-cam specifics (day-night cycle, SKIP_DAYTIME_DETECTION)
   # overridden below. Resource budget: ~1.5 GB RAM + ~1 GB VRAM; GPU
   # headroom confirmed before launch.
@@ -1639,8 +1639,8 @@ services:
       CASCADE_CONFIRM_MODEL: claude-sonnet-5
       OLLAMA_URL: http://host.docker.internal:11434
       DETECTOR_INTERNAL_HOST: 0.0.0.0
-      # Eighth detector port — see detector-under-adu-ptz above for
-      # the running port map (yard=8101 … under_adu_ptz=8107).
+      # Eighth detector port — see detector-driveway-ptz above for
+      # the running port map (yard=8101 … driveway_ptz=8107).
       DETECTOR_INTERNAL_PORT: 8108
     expose:
       - "8108"
@@ -1668,7 +1668,7 @@ services:
     environment:
       # Comma-separated so the sidecar can fan-out /status + fan-in /api/alerts.
       # Order defines display order in the UI.
-      DETECTOR_URLS: http://detector-yard:8101,http://detector-rooftop:8102,http://detector-backyard:8103,http://detector-crawlspace:8104,http://detector-crawlspace-inside:8105,http://detector-under-adu-ptz:8107,http://detector-garage-ptz:8108
+      DETECTOR_URLS: http://detector-yard:8101,http://detector-rooftop:8102,http://detector-backyard:8103,http://detector-crawlspace:8104,http://detector-crawlspace-inside:8105,http://detector-driveway-ptz:8107,http://detector-garage-ptz:8108
       # Back-compat: legacy single-detector consumers read this one.
       DETECTOR_INTERNAL_URL: http://detector-yard:8101
       PREVIEW_HOST: 0.0.0.0
@@ -1724,7 +1724,7 @@ services:
       # .105 on Amcrest ch7. RTSP_URL on detector-crawlspace updated too.
       # 2026-09-21: Annke decommissioned. Playback back on Amcrest ch7.
       # 2026-09-30: Amcrest ch7 reassigned on the NVR to a different
-      # physical camera during the PTZ additions (under_adu_ptz /
+      # physical camera during the PTZ additions (driveway_ptz /
       # under_deck_ptz / mid_sideyard). Detector still reads .112 direct
       # so snapshots/labels stay correct, but NVR ch7 playback now serves
       # the wrong camera. Cutting off NVR channel binding — Replay falls

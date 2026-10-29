@@ -26,7 +26,7 @@ import styles from "./PlaybackUrlPage.module.css";
 // Frigate NVR modes show channels in the same sequence. Adds 20 (crawlspace_southwest),
 // 21 (sideyard_sw), 22 (corner_mount) which are Frigate-only direct cams.
 const CHANNELS: readonly number[] = [
-  4, 2, 14, 5, 18, 21, 3, 20, 17, 16, 13, 7, 12, 22, 10, 15, 8, 19, 6,
+  16, 4, 2, 14, 5, 18, 21, 3, 20, 17, 13, 7, 12, 22, 10, 15, 8, 19, 6,
 ];
 
 // Frigate host — build-time env for the frontend. When unset, the
@@ -67,7 +67,9 @@ const NVR_CHANNELS: Record<"amcrest" | "frigate", readonly number[]> = {
   // 2026-10-20: adds ch 22 (corner_mount, XMeye .171) right after corner (ch 12);
   // sideyard_sw (ch 21) moved to position 6 to match Frigate's actual camera-block
   // ordering (after mid_sideyard).
-  frigate: [4, 2, 14, 5, 18, 21, 3, 20, 17, 16, 13, 7, 12, 22, 10, 15, 8, 19, 6],
+  // 2026-10-26: under_adu_ptz renamed driveway_ptz and moved to slot #1 (ch 16
+  // leads the list; was between crawlspace_northeast and crawlspace_ext).
+  frigate: [16, 4, 2, 14, 5, 18, 21, 3, 20, 17, 13, 7, 12, 22, 10, 15, 8, 19, 6],
 };
 
 // Frigate addresses cameras by their config-YAML name, not by NVR channel.
@@ -88,7 +90,7 @@ const FRIGATE_CAMERA_BY_CHANNEL: Record<number, string> = {
   13: "crawlspace_ext", // 2026-09-28: .112 dome moved to crawlspace_ext role (was sideyard direct)
   14: "front_corner",
   15: "deck_steps", // 2026-10-09: ch 15 → deck_steps (swap with ch 8)
-  16: "under_adu_ptz", // 2026-09-28: .229 direct — Hiseeu formerly crawlspace_ext hardware
+  16: "driveway_ptz", // 2026-10-26 renamed from under_adu_ptz: .229 moved to driveway coverage
   17: "crawlspace_northeast", // 2026-10-14: renamed from under_deck_ptz (.109 V380 bulb), Frigate-only (no wildlife-detector)
   18: "mid_sideyard", // 2026-09-29: .117 direct — V380 bulb re-added at mid-sideyard mount, Frigate-only
   19: "backyard_ptz", // 2026-10-01: .118 Amcrest (ex-backyard) kept as Frigate-only recording under new name "backyard_ptz" — see docker-compose.yml backyard block
@@ -114,7 +116,7 @@ const CHANNEL_LABEL: Record<number, string> = {
   13: "13 (crawlspace ext .112 — direct only)", // was sideyard until 2026-09-28
   14: "14 (front corner .104 — direct only)",
   15: "15 (deck steps .126 — direct only)", // 2026-10-09: swap with ch 8
-  16: "16 (under adu ptz .229 — direct only)", // 2026-09-28 new
+  16: "16 (driveway PTZ .229 — direct only)", // 2026-10-26 renamed from under adu ptz
   17: "17 (crawlspace NE .109 — direct only)", // 2026-10-14 rename from under_deck_ptz
   18: "18 (mid sideyard .117 — direct only)", // 2026-09-29 new
   19: "19 (backyard PTZ .118 — direct only)", // 2026-10-01 new (was ch8 before the .118→.126 swap)
@@ -141,7 +143,7 @@ const CHANNEL_LABEL_BY_NVR: Record<"amcrest" | "frigate", Record<number, string>
     13: "13 (crawlspace ext .112)",
     14: "14 (front corner)",
     15: "15 (deck steps .126)", // 2026-10-09: swapped with ch 8
-    16: "16 (under adu ptz .229)",
+    16: "16 (driveway PTZ .229)", // 2026-10-26 renamed from under adu ptz
     17: "17 (crawlspace NE .109)", // 2026-10-14 rename from under_deck_ptz
     18: "18 (mid sideyard .117)",
     19: "19 (backyard PTZ .118)",
@@ -166,7 +168,7 @@ const CAMERA_TO_CHANNEL: Record<string, { channel: number; nvr: "amcrest" | "fri
   crawlspace: { channel: 7, nvr: "frigate" }, // 2026-10-14: crawlspace_ext is direct .112 ONVIF, Frigate records it
   crawlspace_inside: { channel: 3, nvr: "amcrest" }, // still on NVR .148 ch3
   frontcorner: { channel: 14, nvr: "frigate" }, // 2026-10-14: front_corner is direct Dahua .104
-  under_adu_ptz: { channel: 16, nvr: "frigate" }, // direct-only pseudo channel
+  driveway_ptz: { channel: 16, nvr: "frigate" }, // 2026-10-26 renamed from under_adu_ptz
   crawlspace_northeast: { channel: 17, nvr: "frigate" }, // 2026-10-14 rename from under_deck_ptz, direct .109
   crawlspace_southwest: { channel: 20, nvr: "frigate" }, // 2026-10-15 rename from corridor, direct .170
   sideyard_sw: { channel: 21, nvr: "frigate" }, // 2026-10-15 renamed from mobile, HHL .107 SW sideyard

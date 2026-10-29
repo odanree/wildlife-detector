@@ -10,7 +10,7 @@ runtime path (never blocks startup or serving; if the NVR is
 unreachable we keep the env-declared map and mark it stale).
 
 The concrete failure this catches: a channel silently repurposed on
-the NVR OSD (e.g. under_adu_ptz landing on channel 7 after crawlspace
+the NVR OSD (e.g. driveway_ptz landing on channel 7 after crawlspace
 ext was moved) will make Replay pull the wrong footage even though
 detectors keep alerting correctly (they read direct-RTSP, not NVR).
 Live-vs-recorded split-brain — hard to spot from telemetry, obvious in

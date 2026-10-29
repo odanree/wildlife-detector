@@ -319,7 +319,7 @@ _FRIGATE_CAMERAS: dict[str, str] = {
     "front_corner":   "front_corner",
     "garage_ptz":     "garage_ptz",
     "frontyard":      "frontyard",
-    "under_adu_ptz":  "under_adu_ptz",
+    "driveway_ptz":   "driveway_ptz",
     "under_deck_ptz": "under_deck_ptz",
     "mid_sideyard":   "mid_sideyard",
     # 2026-10-01: .118 Amcrest (ex-backyard detector source) kept alive
