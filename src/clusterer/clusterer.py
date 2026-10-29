@@ -284,10 +284,21 @@ class RatClusterer:
         ]
         params: list = [_utc(start).timestamp(), _utc(end).timestamp(), self.params.model_version]
         if self.params.labeled_only:
-            where.append("a.label_verdict = 'correct'")
+            # Correctness floor: an alert that triggered the rodent pipeline but
+            # was operator-corrected to real_opossum/real_cat/real_raccoon must
+            # NOT seed a rat cluster. CLIP embeddings for small nocturnal mammals
+            # are visually similar enough that opossums happily colocate near
+            # rats in the embedding space, so filtering by label_verdict alone
+            # (as this code did pre-2026-10-26) contaminated active rat_ids
+            # with 247 non-rodent alerts. Require label_species='real_rodent'.
+            where.append("a.label_verdict = 'correct' AND a.label_species = 'real_rodent'")
         else:
-            # Unlabelled rows ride along; explicit FP labels never do.
-            where.append("(a.label_verdict IS NULL OR a.label_verdict = 'correct')")
+            # Unlabelled rows ride along; explicit FP labels and non-rodent
+            # positive labels never do.
+            where.append(
+                "(a.label_verdict IS NULL OR "
+                "(a.label_verdict = 'correct' AND a.label_species = 'real_rodent'))"
+            )
         sql = f"""
             SELECT a.id, a.camera_id, a.ts, a.rat_id, e.embedding
             FROM alerts a
